@@ -213,7 +213,11 @@ record_dnsmasq_ownership() {
 apply_dnsmasq() {
   local previous
   previous="$(mktemp)"
-  [[ -f "$CONF" ]] && cp -a "$CONF" "$previous" || : > "$previous"
+  if [[ -f "$CONF" ]]; then
+    cp -a "$CONF" "$previous"
+  else
+    : > "$previous"
+  fi
   write_dnsmasq_config
   if dnsmasq --test >/dev/null 2>&1 && systemctl restart dnsmasq; then
     rm -f "$previous"
@@ -222,6 +226,7 @@ apply_dnsmasq() {
   err "Nova configuração do dnsmasq falhou; revertendo."
   if [[ -s "$previous" ]]; then
     cp -a "$previous" "$CONF"
+    chmod 0644 "$CONF"
     systemctl restart dnsmasq 2>/dev/null || true
   else
     rm -f "$CONF"
