@@ -4,6 +4,32 @@ Todas as mudanças relevantes do MANAGER serão registradas aqui.
 
 O projeto usa versionamento semântico (`MAJOR.MINOR.PATCH`) enquanto a API/estrutura ainda está evoluindo.
 
+## [0.5.1] - 2026-10-10
+
+### Contas, revenda e migração
+
+- Adicionada hierarquia local de `revendedor` e `subrevendedor`, com estado ativo/bloqueado, cota de contas e vínculo do subrevendedor ao revendedor pai.
+- Contas SSH podem ser associadas a um proprietário; o uso da cota considera somente usuários Linux que ainda existem.
+- Cota de revendedor inclui as contas dos subrevendedores vinculados, preparando o modelo para Automation v2 e Colmeia.
+- O estado de revenda/propriedade fica protegido em `/etc/manager/access` e agora participa do backup/restore do MANAGER.
+- Novo exportador de usuários SSH em `/var/backups/manager/users`, com SHA-256, permissões restritas, expiração, limite simultâneo e propriedade.
+- Exportação guarda somente os hashes já existentes do sistema; senhas em texto claro não são gravadas nem publicadas por HTTP.
+- A restauração recria cada usuário individualmente e nunca substitui `/etc/passwd`, `/etc/shadow`, `/etc/group` ou `/etc/gshadow` inteiros.
+- Detector de estruturas SSHPlus antigas reconhece `/root/usuarios.db`, `/etc/SSHPlus/senha` e `/root/backup.vps` sem importar automaticamente formatos inseguros.
+
+### Monitoramento SSH
+
+- Novo monitor de sessões SSH com resumo por usuário, origem, duração, limite configurado e processos/sockets relacionados.
+- Encerramento seletivo por TTY, recusando encerramento de sessão `root` pelo menu.
+- Histórico de login via `last`.
+- Novo modo não interativo `manager --ssh-sessions`.
+
+### Integração e testes
+
+- Menu principal ganhou a área `CONTAS E REVENDA` com monitor SSH, backup/migração de usuários e gestão de revendedores/cotas.
+- Instalador passou a entregar os novos módulos de revenda, migração e monitoramento.
+- CI passou a verificar os novos módulos, a CLI `--ssh-sessions` e a criação protegida do estado de revenda.
+
 ## [0.5.0] - 2026-10-10
 
 ### Paridade SSHPlus
