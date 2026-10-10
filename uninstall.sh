@@ -9,6 +9,20 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   exit 1
 fi
 
+# O enforcement depende do código instalado. Antes de remover /opt/manager,
+# retire hooks/runtime de forma controlada; o estado das identidades permanece
+# em /etc/manager quando não há --purge e volta a ser aplicado numa reinstalação.
+if [[ -x /opt/manager/modules/policy_engine.sh ]]; then
+  /opt/manager/modules/policy_engine.sh --detach >/dev/null 2>&1 || true
+else
+  systemctl disable --now manager-policy-reconcile.timer manager-policy-reconcile.path >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-policy-reconcile.timer \
+    /etc/systemd/system/manager-policy-reconcile.service \
+    /etc/systemd/system/manager-policy-reconcile.path \
+    /etc/ssh/sshd_config.d/65-manager-identity-policy.conf \
+    /etc/security/limits.d/98-manager-identity.conf
+fi
+
 if $PURGE; then
   echo "ATENÇÃO: --purge remove configurações criadas pelo MANAGER."
   echo "Certificados Let's Encrypt, pacotes instalados e regras UFW são preservados para evitar perda de acesso/serviços."
@@ -94,7 +108,8 @@ if $PURGE; then
   rm -f /etc/fail2ban/jail.d/99-manager-sshd.local
   rm -f /etc/ssh/sshd_config.d/99-manager.conf
   rm -f /etc/ssh/sshd_config.d/70-manager-banner.conf
-  rm -f /etc/security/limits.d/99-manager-ssh.conf
+  rm -f /etc/ssh/sshd_config.d/65-manager-identity-policy.conf
+  rm -f /etc/security/limits.d/99-manager-ssh.conf /etc/security/limits.d/98-manager-identity.conf
   rm -f /etc/sysctl.d/99-manager-wireguard.conf \
     /etc/sysctl.d/99-manager-openvpn.conf \
     /etc/sysctl.d/99-manager-performance.conf
@@ -135,6 +150,7 @@ rm -rf /opt/manager /opt/manager.rollback
 echo "[OK] Código do MANAGER removido."
 if ! $PURGE; then
   echo "As configurações em /etc/manager e serviços configurados foram preservados."
+  echo "O enforcement de identidades foi desanexado junto com o código e volta a ser aplicado numa reinstalação."
   echo "Execute manager-uninstall --purge somente se quiser remover também as configurações do MANAGER."
 else
   echo "Configurações e unidades próprias do MANAGER removidas. Pacotes do sistema, certificados Let's Encrypt, backups e regras UFW foram preservados."
