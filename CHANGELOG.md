@@ -4,6 +4,24 @@ Todas as mudanças relevantes do MANAGER serão registradas aqui.
 
 O projeto usa versionamento semântico (`MAJOR.MINOR.PATCH`) enquanto a API/estrutura ainda está evoluindo.
 
+## [0.4.0] - 2026-10-10
+
+### Adicionado
+
+- Painel de saúde do servidor com checks de disco, inodes, memória, carga, systemd, SSH, rota, DNS, atualizações, UFW e Fail2ban.
+- Modo não interativo `manager --health` com códigos de saída úteis para monitoramento: `0` saudável, `1` avisos e `2` crítico.
+- CLI com `--version`, `--help`, `--status` e `--diagnostics`.
+- Módulo de manutenção do sistema com APT, atualizações, unattended-upgrades, limpeza segura, journal, NTP e reboot explícito.
+- Gerenciador de chaves públicas SSH com validação, fingerprints e correção de permissões.
+- Resumo principal com consumo de RAM, disco, carga e aviso de reboot pendente.
+
+### Segurança e confiabilidade
+
+- Self-update deixou de executar diretamente `curl | bash`: o instalador é baixado para arquivo temporário, restrito e validado com `bash -n` antes da execução.
+- Downloads do self-update exigem HTTPS/TLS moderno por padrão.
+- Falha de um módulo não derruba mais o menu principal e agora preserva o código de saída para diagnóstico.
+- Health check é somente leitura e pode ser integrado a cron, systemd ou monitoramento externo.
+
 ## [0.3.0] - 2026-10-10
 
 ### Adicionado
