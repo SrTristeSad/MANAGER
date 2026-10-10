@@ -19,6 +19,7 @@ if $PURGE; then
   certbot_owner=""
   previous_cc=""
   previous_qdisc=""
+  previous_forward=""
   if [[ -f /etc/manager/adblock/dnsmasq.owner ]]; then
     dnsmasq_owner="$(cat /etc/manager/adblock/dnsmasq.owner)"
   fi
@@ -30,6 +31,9 @@ if $PURGE; then
   fi
   if [[ -f /etc/manager/performance/previous-qdisc ]]; then
     previous_qdisc="$(tr -d '[:space:]' < /etc/manager/performance/previous-qdisc)"
+  fi
+  if [[ -f /etc/manager/network/previous-ip-forward ]]; then
+    previous_forward="$(tr -d '[:space:]' < /etc/manager/network/previous-ip-forward)"
   fi
 
   systemctl disable --now manager-adblock-update.timer >/dev/null 2>&1 || true
@@ -72,6 +76,9 @@ if $PURGE; then
   if [[ "$previous_cc" =~ ^[A-Za-z0-9_-]+$ ]]; then
     sysctl -w "net.ipv4.tcp_congestion_control=$previous_cc" >/dev/null 2>&1 || true
   fi
+  if [[ "$previous_forward" == 0 || "$previous_forward" == 1 ]]; then
+    sysctl -w "net.ipv4.ip_forward=$previous_forward" >/dev/null 2>&1 || true
+  fi
 
   rm -rf /etc/manager
   systemctl daemon-reload || true
@@ -89,7 +96,6 @@ if $PURGE; then
       systemctl disable --now dnsmasq >/dev/null 2>&1 || true
     fi
   fi
-  sysctl --system >/dev/null 2>&1 || true
 fi
 
 rm -f /usr/local/bin/manager /usr/local/bin/menu \
