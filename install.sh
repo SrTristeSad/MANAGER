@@ -83,6 +83,7 @@ FILES=(
   "modules/resellers.sh"
   "modules/reseller_accounts.sh"
   "modules/connection_engine.sh"
+  "modules/policy_engine.sh"
   "modules/proxy_hosts.sh"
   "modules/proxies.sh"
   "modules/banner.sh"
@@ -181,6 +182,9 @@ printf '%s\n' "$NEW_VERSION" > "$ETC_DIR/installed-version"
 chmod 0644 "$ETC_DIR/installed-version"
 
 "$INSTALL_DIR/modules/connection_engine.sh" --init >/dev/null
+"$INSTALL_DIR/modules/policy_engine.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] O motor de políticas foi instalado, mas a reconciliação inicial encontrou uma inconsistência." >&2
+}
 if [[ -d "$ETC_DIR/proxy" ]]; then
   "$INSTALL_DIR/modules/proxies.sh" --reconcile >/dev/null 2>&1 || true
 fi
@@ -196,6 +200,7 @@ echo "Expirados:   manager --expired"
 echo "Sessões SSH: manager --ssh-sessions"
 echo "Proxies:     manager --proxy-status"
 echo "Identidades: manager --identities"
+echo "Sessões ID:  manager --identity-sessions"
 echo "Rollback:    manager-rollback"
 echo "Remover:     manager-uninstall"
 [[ -d "$ROLLBACK_DIR" ]] && echo "Código anterior preservado em: $ROLLBACK_DIR"
