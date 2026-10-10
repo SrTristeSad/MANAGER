@@ -4,7 +4,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 > O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva as capacidades úteis, reimplementa o que envelheceu com código auditável e prepara uma arquitetura nova para Automation v2, Telegram e Modo Colmeia.
 
-Versão atual: **0.5.0**.
+Versão atual: **0.5.1**.
 
 ## Princípios
 
@@ -22,13 +22,27 @@ Versão atual: **0.5.0**.
 ### Servidor, SSH e VPN
 
 - informações do sistema: SO, kernel, uptime, memória, disco, carga, IPs e serviços;
-- usuários SSH: criar/remover, alterar senha, expiração, limite simultâneo, sessões online, bloqueio/desbloqueio e desconexão;
+- usuários SSH: criar/remover, alterar senha, expiração, limite simultâneo, sessões online, bloquear/desbloquear e desconectar;
 - **usuários teste** com duração em minutos e remoção automática por timer systemd;
 - listagem e limpeza confirmada de usuários expirados;
 - **banner SSH** por drop-in do OpenSSH, validado com `sshd -t`;
 - WireGuard com servidor `wg0`, clientes, revogação, QR Code e NAT específico;
 - OpenVPN moderno com PKI Easy-RSA, clientes `.ovpn`, CRL e UDP/TCP;
 - DNS Ad Block com dnsmasq, whitelist/blacklist e atualização diária.
+
+### Contas e revenda
+
+- **revendedor e subrevendedor** com hierarquia local;
+- cota de contas por revendedor/subrevendedor;
+- bloqueio/reativação do revendedor;
+- propriedade de conta SSH por revendedor;
+- cota do revendedor considera também as contas de seus subrevendedores;
+- estado protegido em `/etc/manager/access`;
+- exportação/restauração segura de usuários SSH;
+- detector de estruturas conhecidas do SSHPlus antigo;
+- monitor moderno de sessões SSH com encerramento seletivo por TTY.
+
+Essa camada já prepara o modelo de propriedade/cota que será usado posteriormente por Automation v2, Telegram e Colmeia. Nesta fase, a criação de contas pelo próprio revendedor ainda não é uma API remota: o administrador associa as contas pelo MANAGER.
 
 ### Segurança
 
@@ -44,6 +58,7 @@ Versão atual: **0.5.0**.
 - health check do servidor;
 - diagnóstico de rede, DNS, SSH, NTP, recursos e serviços;
 - tráfego/conexões e suporte opcional a vnStat;
+- monitor dedicado de sessões SSH;
 - logs centralizados;
 - backup e rollback de configurações gerenciadas;
 - BBR + fq reversível;
@@ -69,6 +84,53 @@ O MANAGER:
 7. mantém uma expiração adicional no próprio sistema como proteção de retaguarda.
 
 O timer continua funcionando após reboot.
+
+## Revendedores, subrevendedores e cotas
+
+O estado é separado das contas Linux e fica em:
+
+```text
+/etc/manager/access/resellers/
+/etc/manager/access/owners/
+```
+
+Um revendedor pode possuir contas diretamente e também subrevendedores. A cota total do revendedor contabiliza as contas válidas pertencentes aos subrevendedores vinculados.
+
+A estrutura já oferece operações internas não interativas de consulta de uso, teste de cota e associação de propriedade para que a futura Automation v2 não precise manipular os arquivos diretamente.
+
+## Backup e migração de usuários SSH
+
+A exportação de usuários fica em:
+
+```text
+/var/backups/manager/users/
+```
+
+O formato atual preserva nome, hash de senha já existente no sistema, expiração, shell, limite simultâneo e proprietário. Os arquivos são restritos a root e acompanhados de SHA-256.
+
+Ao contrário do `userbackup` histórico do SSHPlus, o MANAGER **não** substitui `/etc/passwd`, `/etc/shadow`, `/etc/group` ou `/etc/gshadow` inteiros e não publica o backup automaticamente por servidor HTTP. Na restauração, cada conta é validada e recriada individualmente; usuários já existentes são preservados.
+
+O detector de legado reconhece estruturas como:
+
+```text
+/root/usuarios.db
+/etc/SSHPlus/senha/
+/root/backup.vps
+```
+
+A versão 0.5.1 apenas detecta esses formatos. A importação específica do SSHPlus será feita posteriormente por conversão controlada, sem restaurar cegamente arquivos de sistema antigos.
+
+## Monitor SSH
+
+O monitor mostra sessões por usuário, origem, duração, limite configurado, processos e sockets relacionados ao OpenSSH.
+
+Também permite encerrar **uma sessão específica** informando a TTY, em vez de matar todos os processos do usuário. Sessões de `root` não podem ser encerradas por esse menu.
+
+Consulta simples sem abrir o menu:
+
+```bash
+manager --ssh-sessions
+```
 
 ## Expirados
 
@@ -160,6 +222,7 @@ menu
 manager --health        health check (0=OK, 1=aviso, 2=crítico)
 manager --status        status dos serviços sem abrir menu
 manager --expired       lista contas SSH expiradas
+manager --ssh-sessions  mostra as sessões SSH atuais
 manager --diagnostics   diagnóstico
 manager --version       versão
 manager --help          ajuda
@@ -182,6 +245,11 @@ SEGURANÇA
  8) Fail2ban
  9) TLS / Let's Encrypt
 18) Chaves públicas SSH
+
+CONTAS E REVENDA
+22) Monitor de sessões SSH
+23) Backup / migração de usuários
+24) Revendedores, subrevendedores e cotas
 
 MONITORAMENTO E MANUTENÇÃO
 10) Tráfego e conexões
@@ -207,9 +275,11 @@ Backups ficam em:
 /var/backups/manager/
 ```
 
-Eles têm permissão restrita e podem conter chaves privadas de VPN. A versão 0.5 também inclui no backup o estado do banner e os metadados/timers de contas teste.
+Eles têm permissão restrita e podem conter chaves privadas de VPN e dados de revenda. O backup de configuração inclui o estado do banner, contas teste e `/etc/manager/access`.
 
 A restauração valida escopo e SHA-256 antes de extrair o arquivo e cria um snapshot adicional do estado atual.
+
+A exportação de **usuários Linux** é intencionalmente separada do backup de configurações e fica em `/var/backups/manager/users/`, porque contém hashes de autenticação e exige tratamento como segredo.
 
 ## Atualização e rollback
 
@@ -257,6 +327,8 @@ Resumo:
 1.0.0  release de produção
 ```
 
+Os principais itens ainda pendentes da paridade 0.5.x são hosts/proxies suportados, Squid/WebSocket/TLS legado quando fizer sentido, integração mais profunda entre criação de usuário e propriedade/cota, e conversão controlada de backups SSHPlus.
+
 ### Legacy
 
 O futuro **Legacy v1** será uma única conexão compatível com o antigo ecossistema `syncpainel`; não haverá uma implementação separada por versão de painel.
@@ -282,7 +354,8 @@ O CI executa:
 - regressões contra padrões destrutivos conhecidos;
 - política de fonte segura do instalador;
 - instalação/update/rollback/uninstall em smoke test;
-- checks não interativos do MANAGER.
+- checks não interativos do MANAGER;
+- presença dos módulos de revenda, migração e monitor de sessões.
 
 O roteiro para VPS real está em:
 
