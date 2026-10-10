@@ -18,7 +18,8 @@ is_regular_login_user() {
 }
 
 field_from_owner() {
-  local user="$1" file="$OWNERS_DIR/$user"
+  local user="$1" file
+  file="$OWNERS_DIR/$user"
   [[ -f "$file" ]] || return 0
   awk -F= '$1=="owner" {print $2; exit}' "$file" 2>/dev/null || true
 }
