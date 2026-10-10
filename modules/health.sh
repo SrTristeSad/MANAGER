@@ -87,9 +87,8 @@ check_network() {
 }
 
 check_updates() {
-  local reboot updates
-  if [[ -f /var/run/reboot-required ]]; then reboot=yes; else reboot=no; fi
-  [[ "$reboot" == yes ]] && warning "Reinicialização do sistema pendente" || pass "Sem reboot pendente"
+  local updates
+  [[ -f /var/run/reboot-required ]] && warning "Reinicialização do sistema pendente" || pass "Sem reboot pendente"
 
   if command_exists apt-get; then
     updates="$(apt list --upgradable 2>/dev/null | tail -n +2 | grep -c . || true)"
@@ -125,7 +124,7 @@ run_health() {
 
   say ""
   if (( CRITICAL > 0 )); then
-    critical "Resumo: $CRITICAL crítico(s), $WARNINGS aviso(s)"
+    say "${C_RED}Resumo: $CRITICAL crítico(s), $WARNINGS aviso(s).${C_RESET}"
   elif (( WARNINGS > 0 )); then
     say "${C_YELLOW}Resumo: saudável com $WARNINGS aviso(s).${C_RESET}"
   else
