@@ -186,6 +186,10 @@ chmod 0644 "$ETC_DIR/installed-version"
 "$INSTALL_DIR/modules/session_engine.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O Session/Lease Engine foi instalado, mas o timer de limpeza não pôde ser iniciado." >&2
 }
+session_runtime="$("$INSTALL_DIR/modules/session_engine.sh" --init)"
+if [[ ! -d "$session_runtime/active" ]]; then
+  echo "[AVISO] O diretório runtime de leases não pôde ser inicializado em $session_runtime." >&2
+fi
 "$INSTALL_DIR/modules/policy_engine.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O motor de políticas foi instalado, mas a reconciliação inicial encontrou uma inconsistência." >&2
 }
