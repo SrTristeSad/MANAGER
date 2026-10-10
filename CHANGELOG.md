@@ -4,6 +4,20 @@ Todas as mudanças relevantes do MANAGER serão registradas aqui.
 
 O projeto usa versionamento semântico (`MAJOR.MINOR.PATCH`) enquanto a API/estrutura ainda está evoluindo.
 
+## [0.4.1] - 2026-10-10
+
+### Corrigido
+
+- Seleção do usuário no módulo de chaves SSH não é mais contaminada por mensagens de aviso ao administrar `root`.
+- Health check interativo agora retorna ao menu normalmente mesmo quando há avisos ou checks críticos, evitando uma segunda pausa e falso erro de módulo.
+
+### Segurança e confiabilidade
+
+- O instalador agora aceita somente fontes `https://` em uso normal.
+- `file://` permanece disponível apenas para CI ou testes locais com `MANAGER_ALLOW_FILE_SOURCE=1` explícito.
+- Fontes `http://` e outros esquemas são recusadas antes de qualquer download.
+- CI ganhou testes de regressão para garantir que a política de fontes do instalador continue sendo aplicada.
+
 ## [0.4.0] - 2026-10-10
 
 ### Adicionado
