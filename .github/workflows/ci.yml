@@ -71,7 +71,7 @@ jobs:
           set -euo pipefail
           source_url="file://${GITHUB_WORKSPACE}"
 
-          sudo env MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
           test -x /opt/manager/manager
           test -x /opt/manager/modules/wireguard.sh
           test -x /opt/manager/modules/openvpn.sh
@@ -90,7 +90,7 @@ jobs:
           test "$health_rc" -le 2
           grep -q 'SAÚDE DO SERVIDOR' /tmp/manager-health.log
 
-          sudo env MANAGER_REPO_RAW="$source_url" bash install.sh --update
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh --update
           test -d /opt/manager.rollback
           test -f /opt/manager.rollback/VERSION
 
