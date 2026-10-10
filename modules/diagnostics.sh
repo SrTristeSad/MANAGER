@@ -49,9 +49,16 @@ run_checks() {
   fi
 
   say "\n${C_WHITE}Serviços opcionais:${C_RESET}"
-  for unit in wg-quick@wg0 fail2ban dnsmasq; do
+  for unit in wg-quick@wg0 openvpn-server@manager fail2ban dnsmasq manager-certbot-renew.timer; do
     if systemctl is-active --quiet "$unit" 2>/dev/null; then pass "$unit ativo"; else notice "$unit não ativo"; fi
   done
+
+  if [[ -f /etc/wireguard/wg0.conf ]] && ! ip link show wg0 >/dev/null 2>&1; then
+    notice "Há configuração WireGuard, mas wg0 não existe"
+  fi
+  if [[ -f /etc/openvpn/server/manager.conf ]] && ! ip link show tun0 >/dev/null 2>&1; then
+    notice "Há configuração OpenVPN MANAGER, mas tun0 não existe"
+  fi
 
   say "\n${C_WHITE}Porta 53:${C_RESET}"
   ss -lnup 2>/dev/null | awk 'NR==1 || /:53[[:space:]]/' || true
