@@ -4,7 +4,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 > O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva as capacidades úteis, reimplementa o que envelheceu com código auditável e prepara uma arquitetura nova para Automation v2, Telegram e Modo Colmeia.
 
-Versão atual: **0.5.1**.
+Versão atual: **0.5.2**.
 
 ## Princípios
 
@@ -28,7 +28,9 @@ Versão atual: **0.5.1**.
 - **banner SSH** por drop-in do OpenSSH, validado com `sshd -t`;
 - WireGuard com servidor `wg0`, clientes, revogação, QR Code e NAT específico;
 - OpenVPN moderno com PKI Easy-RSA, clientes `.ovpn`, CRL e UDP/TCP;
-- DNS Ad Block com dnsmasq, whitelist/blacklist e atualização diária.
+- DNS Ad Block com dnsmasq, whitelist/blacklist e atualização diária;
+- hosts de proxy gerenciados pelo próprio MANAGER;
+- Squid privado, proxy TCP, túnel WebSocket e túnel TLS opcionais.
 
 ### Contas e revenda
 
@@ -37,12 +39,14 @@ Versão atual: **0.5.1**.
 - bloqueio/reativação do revendedor;
 - propriedade de conta SSH por revendedor;
 - cota do revendedor considera também as contas de seus subrevendedores;
+- criação direta de usuário SSH já vinculada ao proprietário;
+- validação dupla de cota para evitar corrida durante criação;
 - estado protegido em `/etc/manager/access`;
 - exportação/restauração segura de usuários SSH;
 - detector de estruturas conhecidas do SSHPlus antigo;
 - monitor moderno de sessões SSH com encerramento seletivo por TTY.
 
-Essa camada já prepara o modelo de propriedade/cota que será usado posteriormente por Automation v2, Telegram e Colmeia. Nesta fase, a criação de contas pelo próprio revendedor ainda não é uma API remota: o administrador associa as contas pelo MANAGER.
+Essa camada já prepara o modelo de propriedade/cota que será usado posteriormente por Automation v2, Telegram e Colmeia.
 
 ### Segurança
 
@@ -51,7 +55,9 @@ Essa camada já prepara o modelo de propriedade/cota que será usado posteriorme
 - firewall UFW com proteção da porta SSH detectada;
 - atualizações automáticas de segurança;
 - TLS/Let's Encrypt via Certbot isolado;
-- chaves públicas SSH com fingerprints e correção de permissões.
+- chaves públicas SSH com fingerprints e correção de permissões;
+- Squid do MANAGER não usa `http_access allow all` e não nasce aceitando origem pública irrestrita;
+- túneis TCP/WebSocket/TLS encaminham somente para serviços locais em `127.0.0.1`.
 
 ### Monitoramento e manutenção
 
@@ -96,7 +102,58 @@ O estado é separado das contas Linux e fica em:
 
 Um revendedor pode possuir contas diretamente e também subrevendedores. A cota total do revendedor contabiliza as contas válidas pertencentes aos subrevendedores vinculados.
 
-A estrutura já oferece operações internas não interativas de consulta de uso, teste de cota e associação de propriedade para que a futura Automation v2 não precise manipular os arquivos diretamente.
+A opção **Criar conta vinculada a revendedor** valida a disponibilidade antes de criar o usuário e repete a atribuição sob lock. Se outra operação consumir a última vaga durante a criação, o usuário recém-criado é removido para não ficar órfão ou ultrapassar a cota.
+
+A estrutura também oferece operações internas não interativas de consulta de uso, teste de cota e associação de propriedade para que a futura Automation v2 não precise manipular os arquivos diretamente.
+
+## Hosts de proxy
+
+A lista moderna de destinos fica em:
+
+```text
+/etc/manager/proxy/hosts.txt
+```
+
+Ela aceita domínios normalizados como `.example.com`. O módulo permite listar, adicionar, remover e importar domínios válidos de um `payload.txt` antigo do SSHPlus sem copiar a configuração antiga do Squid.
+
+Consulta não interativa:
+
+```bash
+manager --proxy-hosts
+```
+
+## Proxies e túneis
+
+O estado fica em:
+
+```text
+/etc/manager/proxy/
+```
+
+Os serviços disponíveis são:
+
+- **Squid privado**: configuração própria do MANAGER, sem substituir `/etc/squid/squid.conf`;
+- **TCP**: `socat` encaminhando uma porta de escuta para `127.0.0.1:<porta>`;
+- **WebSocket**: `websockify` opcional encaminhando para serviço TCP local;
+- **TLS**: `stunnel4` opcional encaminhando para serviço TCP local.
+
+O Squid aceita somente localhost e redes privadas RFC1918 por padrão. É possível ativar também a restrição pela lista de hosts. O MANAGER não configura automaticamente um Squid aberto para toda a internet.
+
+Os módulos TCP/WebSocket/TLS não alteram o UFW automaticamente. Se o firewall estiver ativo, o MANAGER avisa para que a porta seja liberada conscientemente no módulo Firewall.
+
+O túnel TLS inicial gera certificado autoassinado. Para uso público de produção, use certificado confiável quando a integração específica estiver configurada.
+
+As unidades systemd são regeneráveis a partir do estado com:
+
+```bash
+/opt/manager/modules/proxies.sh --reconcile
+```
+
+Status não interativo:
+
+```bash
+manager --proxy-status
+```
 
 ## Backup e migração de usuários SSH
 
@@ -118,7 +175,7 @@ O detector de legado reconhece estruturas como:
 /root/backup.vps
 ```
 
-A versão 0.5.1 apenas detecta esses formatos. A importação específica do SSHPlus será feita posteriormente por conversão controlada, sem restaurar cegamente arquivos de sistema antigos.
+A série 0.5 apenas detecta esses formatos. A importação específica do SSHPlus será feita posteriormente por conversão controlada, sem restaurar cegamente arquivos de sistema antigos.
 
 ## Monitor SSH
 
@@ -223,6 +280,8 @@ manager --health        health check (0=OK, 1=aviso, 2=crítico)
 manager --status        status dos serviços sem abrir menu
 manager --expired       lista contas SSH expiradas
 manager --ssh-sessions  mostra as sessões SSH atuais
+manager --proxy-status  mostra proxies/túneis gerenciados
+manager --proxy-hosts   lista hosts permitidos no proxy
 manager --diagnostics   diagnóstico
 manager --version       versão
 manager --help          ajuda
@@ -238,6 +297,8 @@ SERVIDOR E VPN
  4) OpenVPN
  5) Bloqueio de anúncios DNS
 19) Banner SSH
+25) Hosts do proxy
+26) Proxies e túneis
 
 SEGURANÇA
  6) Segurança / hardening SSH
@@ -250,6 +311,7 @@ CONTAS E REVENDA
 22) Monitor de sessões SSH
 23) Backup / migração de usuários
 24) Revendedores, subrevendedores e cotas
+27) Criar conta vinculada a revendedor
 
 MONITORAMENTO E MANUTENÇÃO
 10) Tráfego e conexões
@@ -275,9 +337,9 @@ Backups ficam em:
 /var/backups/manager/
 ```
 
-Eles têm permissão restrita e podem conter chaves privadas de VPN e dados de revenda. O backup de configuração inclui o estado do banner, contas teste e `/etc/manager/access`.
+Eles têm permissão restrita e podem conter chaves privadas de VPN/TLS e dados de revenda. O backup de configuração inclui o estado do banner, contas teste, `/etc/manager/access` e `/etc/manager/proxy`.
 
-A restauração valida escopo e SHA-256 antes de extrair o arquivo e cria um snapshot adicional do estado atual.
+A restauração valida escopo e SHA-256 antes de extrair o arquivo e cria um snapshot adicional do estado atual. Quando há estado de proxies, o MANAGER tenta regenerar as unidades systemd usando os módulos instalados; dependências opcionais ausentes continuam precisando ser instaladas antes do serviço voltar a operar.
 
 A exportação de **usuários Linux** é intencionalmente separada do backup de configurações e fica em `/var/backups/manager/users/`, porque contém hashes de autenticação e exige tratamento como segredo.
 
@@ -297,19 +359,19 @@ Rollback:
 manager-rollback
 ```
 
-Desinstalar código preservando configuração:
+Desinstalar código preservando configuração e serviços:
 
 ```bash
 manager-uninstall
 ```
 
-Remover também o estado gerenciado:
+Remover também o estado e as unidades próprias do MANAGER:
 
 ```bash
 manager-uninstall --purge
 ```
 
-O purge remove timers/drop-ins criados pelo MANAGER e contas **teste** ainda registradas, mas não apaga usuários SSH comuns apenas porque foram administrados pelo MANAGER.
+O purge remove timers/drop-ins e unidades de proxy criadas pelo MANAGER e contas **teste** ainda registradas, mas não apaga usuários SSH comuns, pacotes do sistema, certificados Let's Encrypt, backups ou regras UFW.
 
 ## Próximas etapas
 
@@ -327,7 +389,7 @@ Resumo:
 1.0.0  release de produção
 ```
 
-Os principais itens ainda pendentes da paridade 0.5.x são hosts/proxies suportados, Squid/WebSocket/TLS legado quando fizer sentido, integração mais profunda entre criação de usuário e propriedade/cota, e conversão controlada de backups SSHPlus.
+A maior parte da paridade operacional 0.5.x já está implementada. Os pontos restantes ficam concentrados em conversão assistida do legado e pequenos ajustes de compatibilidade. O próximo salto estrutural é o **Connection Engine 0.6**, que vai transformar “usuário SSH” em identidade MANAGER com protocolos e políticas associados.
 
 ### Legacy
 
@@ -352,10 +414,12 @@ O CI executa:
 - `bash -n`;
 - ShellCheck;
 - regressões contra padrões destrutivos conhecidos;
+- regressão contra configuração de Squid aberto;
 - política de fonte segura do instalador;
 - instalação/update/rollback/uninstall em smoke test;
 - checks não interativos do MANAGER;
-- presença dos módulos de revenda, migração e monitor de sessões.
+- presença dos módulos de revenda, migração, proxy e monitor de sessões;
+- inicialização e CRUD básico da lista de hosts do proxy.
 
 O roteiro para VPS real está em:
 
