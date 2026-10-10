@@ -25,6 +25,7 @@ Uso:
   manager --health        executa health check (0=OK, 1=avisos, 2=crítico)
   manager --status        mostra status resumido dos serviços
   manager --expired       lista contas SSH expiradas
+  manager --ssh-sessions  mostra sessões SSH atuais
   manager --diagnostics   abre o diagnóstico
   manager --version       mostra a versão
   manager --help          mostra esta ajuda
@@ -123,6 +124,9 @@ case "${1:-}" in
   --expired)
     exec "$MANAGER_HOME/modules/ssh_users.sh" --list-expired
     ;;
+  --ssh-sessions)
+    exec "$MANAGER_HOME/modules/ssh_monitor.sh" --summary
+    ;;
   --diagnostics)
     exec "$MANAGER_HOME/modules/diagnostics.sh"
     ;;
@@ -151,6 +155,11 @@ while true; do
   say "  ${C_CYAN}8${C_RESET}) Fail2ban"
   say "  ${C_CYAN}9${C_RESET}) TLS / Let's Encrypt"
   say " ${C_CYAN}18${C_RESET}) Chaves públicas SSH"
+  say ""
+  say " ${C_WHITE}CONTAS E REVENDA${C_RESET}"
+  say " ${C_CYAN}22${C_RESET}) Monitor de sessões SSH"
+  say " ${C_CYAN}23${C_RESET}) Backup / migração de usuários"
+  say " ${C_CYAN}24${C_RESET}) Revendedores, subrevendedores e cotas"
   say ""
   say " ${C_WHITE}MONITORAMENTO E MANUTENÇÃO${C_RESET}"
   say " ${C_CYAN}10${C_RESET}) Tráfego e conexões"
@@ -191,6 +200,9 @@ while true; do
     19) run_module banner.sh ;;
     20) run_module system.sh service-menu ;;
     21) run_module speedtest.sh ;;
+    22) run_module ssh_monitor.sh ;;
+    23) run_module user_transfer.sh ;;
+    24) run_module resellers.sh ;;
     90) self_update ;;
     0) clear 2>/dev/null || true; exit 0 ;;
     *) warn "Opção inválida"; sleep 1 ;;
