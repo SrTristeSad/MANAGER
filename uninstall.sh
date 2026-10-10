@@ -14,10 +14,11 @@ fi
 if [[ -x /opt/manager/modules/session_engine.sh ]]; then
   /opt/manager/modules/session_engine.sh --detach >/dev/null 2>&1 || true
 else
-  systemctl disable --now manager-session-cleanup.timer >/dev/null 2>&1 || true
+  systemctl disable --now manager-session-cleanup.timer manager-session-reconcile.path >/dev/null 2>&1 || true
   rm -f /etc/systemd/system/manager-session-cleanup.timer \
-    /etc/systemd/system/manager-session-cleanup.service
-  rm -rf /run/manager/session-leases
+    /etc/systemd/system/manager-session-cleanup.service \
+    /etc/systemd/system/manager-session-reconcile.path
+  rm -rf /run/manager-session-leases
 fi
 
 # O enforcement depende do código instalado. Antes de remover /opt/manager,
