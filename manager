@@ -26,6 +26,8 @@ Uso:
   manager --status        mostra status resumido dos serviços
   manager --expired       lista contas SSH expiradas
   manager --ssh-sessions  mostra sessões SSH atuais
+  manager --proxy-status  mostra proxies/túneis gerenciados
+  manager --proxy-hosts   lista hosts cadastrados para o Squid
   manager --diagnostics   abre o diagnóstico
   manager --version       mostra a versão
   manager --help          mostra esta ajuda
@@ -127,6 +129,12 @@ case "${1:-}" in
   --ssh-sessions)
     exec "$MANAGER_HOME/modules/ssh_monitor.sh" --summary
     ;;
+  --proxy-status)
+    exec "$MANAGER_HOME/modules/proxies.sh" --status
+    ;;
+  --proxy-hosts)
+    exec "$MANAGER_HOME/modules/proxy_hosts.sh" --list
+    ;;
   --diagnostics)
     exec "$MANAGER_HOME/modules/diagnostics.sh"
     ;;
@@ -148,6 +156,8 @@ while true; do
   say "  ${C_CYAN}4${C_RESET}) OpenVPN"
   say "  ${C_CYAN}5${C_RESET}) Bloqueio de anúncios DNS"
   say " ${C_CYAN}19${C_RESET}) Banner SSH"
+  say " ${C_CYAN}25${C_RESET}) Hosts do proxy"
+  say " ${C_CYAN}26${C_RESET}) Proxies e túneis"
   say ""
   say " ${C_WHITE}SEGURANÇA${C_RESET}"
   say "  ${C_CYAN}6${C_RESET}) Segurança / hardening SSH"
@@ -160,6 +170,7 @@ while true; do
   say " ${C_CYAN}22${C_RESET}) Monitor de sessões SSH"
   say " ${C_CYAN}23${C_RESET}) Backup / migração de usuários"
   say " ${C_CYAN}24${C_RESET}) Revendedores, subrevendedores e cotas"
+  say " ${C_CYAN}27${C_RESET}) Criar conta vinculada a revendedor"
   say ""
   say " ${C_WHITE}MONITORAMENTO E MANUTENÇÃO${C_RESET}"
   say " ${C_CYAN}10${C_RESET}) Tráfego e conexões"
@@ -203,6 +214,9 @@ while true; do
     22) run_module ssh_monitor.sh ;;
     23) run_module user_transfer.sh ;;
     24) run_module resellers.sh ;;
+    25) run_module proxy_hosts.sh ;;
+    26) run_module proxies.sh ;;
+    27) run_module reseller_accounts.sh ;;
     90) self_update ;;
     0) clear 2>/dev/null || true; exit 0 ;;
     *) warn "Opção inválida"; sleep 1 ;;
