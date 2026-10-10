@@ -9,6 +9,28 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   exit 1
 fi
 
+CONNECTION_SNAPSHOT=""
+if ! $PURGE && [[ -d /etc/manager/connection ]]; then
+  CONNECTION_SNAPSHOT="$(mktemp -d)"
+  [[ -d /etc/manager/connection/identities ]] && cp -a /etc/manager/connection/identities "$CONNECTION_SNAPSHOT/"
+  [[ -d /etc/manager/connection/session-epochs ]] && cp -a /etc/manager/connection/session-epochs "$CONNECTION_SNAPSHOT/"
+fi
+
+restore_connection_state() {
+  [[ -n "$CONNECTION_SNAPSHOT" && -d "$CONNECTION_SNAPSHOT" ]] || return 0
+  install -d -m 0700 /etc/manager/connection
+  if [[ -d "$CONNECTION_SNAPSHOT/identities" ]]; then
+    rm -rf /etc/manager/connection/identities
+    cp -a "$CONNECTION_SNAPSHOT/identities" /etc/manager/connection/
+  fi
+  if [[ -d "$CONNECTION_SNAPSHOT/session-epochs" ]]; then
+    rm -rf /etc/manager/connection/session-epochs
+    cp -a "$CONNECTION_SNAPSHOT/session-epochs" /etc/manager/connection/
+  fi
+  rm -rf "$CONNECTION_SNAPSHOT"
+  CONNECTION_SNAPSHOT=""
+}
+
 # Leases ativas são runtime e não sobrevivem sem o código do MANAGER.
 # Os epochs persistentes ficam em /etc/manager quando não há --purge.
 if [[ -x /opt/manager/modules/session_engine.sh ]]; then
@@ -33,6 +55,10 @@ else
     /etc/systemd/system/manager-policy-reconcile.path \
     /etc/ssh/sshd_config.d/65-manager-identity-policy.conf \
     /etc/security/limits.d/98-manager-identity.conf
+fi
+
+if ! $PURGE; then
+  restore_connection_state
 fi
 
 if $PURGE; then
