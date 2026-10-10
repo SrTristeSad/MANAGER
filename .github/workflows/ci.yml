@@ -75,6 +75,18 @@ jobs:
           set -euxo pipefail
           source_url="file://${GITHUB_WORKSPACE}"
 
+          assert_connection_state() {
+            local stage="$1"
+            if ! sudo test -f /etc/manager/connection/identities/ci-bound.conf || \
+               ! sudo test -f /etc/manager/connection/session-epochs/ci-bound.epoch; then
+              echo "Connection state missing at stage: $stage" >&2
+              sudo find /etc/manager/connection -maxdepth 3 -printf '%y %p\n' 2>/dev/null | sort >&2 || true
+              exit 1
+            fi
+            printf '[CI] connection-state-ok stage=%s epoch=%s\n' \
+              "$stage" "$(sudo cat /etc/manager/connection/session-epochs/ci-bound.epoch)"
+          }
+
           sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
           test -x /opt/manager/manager
           test -f /opt/manager/lib/identity.sh
@@ -239,19 +251,22 @@ jobs:
           test "$health_rc" -le 2
           grep -q 'SAÚDE DO SERVIDOR' /tmp/manager-health.log
 
+          assert_connection_state before-update
           sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh --update
           test -d /opt/manager.rollback
           test -f /opt/manager.rollback/VERSION
+          assert_connection_state after-update
 
           printf 's\n' | sudo /opt/manager/rollback.sh
           test -x /opt/manager/manager
           test -d /opt/manager.rollback
+          assert_connection_state after-rollback
 
           sudo /opt/manager/uninstall.sh
           test ! -e /opt/manager
           test ! -e /usr/local/bin/manager
           test -d /etc/manager
-          test -f /etc/manager/connection/session-epochs/ci-bound.epoch
+          assert_connection_state after-uninstall
           test ! -d /run/manager-session-leases
           test ! -e /etc/systemd/system/manager-session-cleanup.timer
           test ! -e /etc/systemd/system/manager-session-cleanup.service
