@@ -7,24 +7,35 @@ source "$MANAGER_HOME/lib/common.sh"
 require_root
 
 SSH_DROPIN="/etc/ssh/sshd_config.d/99-manager.conf"
+AUTO_UPDATES="/etc/apt/apt.conf.d/20auto-upgrades"
 
 ssh_unit() {
-  if systemctl list-unit-files ssh.service >/dev/null 2>&1; then echo ssh; else echo sshd; fi
+  if systemctl show -p LoadState --value ssh.service 2>/dev/null | grep -qx loaded; then
+    echo ssh
+  else
+    echo sshd
+  fi
+}
+
+dropins_supported() {
+  grep -Eiq '^[[:space:]]*Include[[:space:]]+.*/sshd_config\.d/\*\.conf' /etc/ssh/sshd_config 2>/dev/null
 }
 
 apply_ssh_hardening() {
   header
   say "${C_WHITE}HARDENING DO OPENSSH${C_RESET}\n"
-  say "O perfil mantém autenticação por senha e TCP forwarding para compatibilidade com o MANAGER."
-  say "Ele reduz tentativas, timeout de login e bloqueia recursos desnecessários."
-  confirm "Aplicar perfil seguro?" || return
-  mkdir -p /etc/ssh/sshd_config.d
-  if [[ -f "$SSH_DROPIN" ]]; then
-    cp -a "$SSH_DROPIN" "$SSH_DROPIN.bak.$(date +%Y%m%d-%H%M%S)"
+  if ! dropins_supported; then
+    err "Este sshd_config não inclui sshd_config.d/*.conf. O MANAGER se recusa a editar o arquivo principal automaticamente."
+    pause
+    return
   fi
+  say "O perfil NÃO desativa senha, NÃO muda a porta e NÃO bloqueia login root por senha."
+  say "Isso evita cortar o seu acesso remoto. Ele apenas reduz superfície e abuso."
+  confirm "Aplicar perfil seguro?" || return
+  backup_file "$SSH_DROPIN"
+  mkdir -p /etc/ssh/sshd_config.d
   cat > "$SSH_DROPIN" <<'EOF'
 # Managed by MANAGER
-PermitRootLogin prohibit-password
 MaxAuthTries 4
 LoginGraceTime 30
 ClientAliveInterval 300
@@ -50,8 +61,12 @@ show_effective_ssh() {
   header
   say "${C_WHITE}OPENSSH EFETIVO${C_RESET}\n"
   sshd -T 2>/dev/null | grep -E '^(port|permitrootlogin|passwordauthentication|pubkeyauthentication|maxauthtries|logingracetime|clientaliveinterval|clientalivecountmax|x11forwarding|allowagentforwarding|allowtcpforwarding) ' || true
-  say "\nArquivos do MANAGER:"
-  [[ -f "$SSH_DROPIN" ]] && cat "$SSH_DROPIN" || warn "Hardening do MANAGER não aplicado"
+  say "\nArquivo do MANAGER:"
+  if [[ -f "$SSH_DROPIN" ]]; then
+    cat "$SSH_DROPIN"
+  else
+    warn "Hardening do MANAGER não aplicado"
+  fi
   pause
 }
 
@@ -59,6 +74,7 @@ remove_ssh_hardening() {
   header
   [[ -f "$SSH_DROPIN" ]] || { warn "Nada para remover"; pause; return; }
   confirm "Remover o hardening do MANAGER?" || return
+  backup_file "$SSH_DROPIN"
   rm -f "$SSH_DROPIN"
   if sshd -t; then
     systemctl reload "$(ssh_unit)"
@@ -76,7 +92,8 @@ enable_updates() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
   apt-get install -y unattended-upgrades apt-listchanges
-  cat > /etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
+  backup_file "$AUTO_UPDATES"
+  cat > "$AUTO_UPDATES" <<'EOF'
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 EOF
@@ -88,11 +105,19 @@ EOF
 security_summary() {
   header
   say "${C_WHITE}RESUMO DE SEGURANÇA${C_RESET}\n"
-  printf '%-28s %s\n' "SSH hardening:" "$([[ -f "$SSH_DROPIN" ]] && echo ativo || echo não aplicado)"
-  printf '%-28s %s\n' "Fail2ban:" "$(systemctl is-active fail2ban 2>/dev/null || true)"
-  printf '%-28s %s\n' "UFW:" "$(command_exists ufw && ufw status | head -n1 || echo não instalado)"
-  printf '%-28s %s\n' "Unattended upgrades:" "$([[ -f /etc/apt/apt.conf.d/20auto-upgrades ]] && echo configurado || echo não configurado)"
-  printf '%-28s %s\n' "Reboot necessário:" "$([[ -f /var/run/reboot-required ]] && echo SIM || echo não)"
+  local ssh_hardening f2b ufw_state updates reboot
+  if [[ -f "$SSH_DROPIN" ]]; then ssh_hardening="ativo"; else ssh_hardening="não aplicado"; fi
+  f2b="$(systemctl is-active fail2ban 2>/dev/null || true)"
+  [[ -n "$f2b" ]] || f2b="não instalado"
+  if command_exists ufw; then ufw_state="$(ufw status 2>/dev/null | head -n1)"; else ufw_state="não instalado"; fi
+  if [[ -f "$AUTO_UPDATES" ]]; then updates="configurado"; else updates="não configurado"; fi
+  if [[ -f /var/run/reboot-required ]]; then reboot="SIM"; else reboot="não"; fi
+
+  printf '%-28s %s\n' "SSH hardening:" "$ssh_hardening"
+  printf '%-28s %s\n' "Fail2ban:" "$f2b"
+  printf '%-28s %s\n' "UFW:" "$ufw_state"
+  printf '%-28s %s\n' "Unattended upgrades:" "$updates"
+  printf '%-28s %s\n' "Reboot necessário:" "$reboot"
   say "\nÚltimos logins:"
   last -n 8 -a 2>/dev/null || true
   pause
