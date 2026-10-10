@@ -4,6 +4,34 @@ Todas as mudanças relevantes do MANAGER serão registradas aqui.
 
 O projeto usa versionamento semântico (`MAJOR.MINOR.PATCH`) enquanto a API/estrutura ainda está evoluindo.
 
+## [0.6.1] - 2026-10-10
+
+### Policy Enforcement
+
+- Novo `policy_engine.sh` para aplicar o estado efetivo das identidades aos recursos vinculados.
+- Identidades `disabled` ou `expired` passam a bloquear o usuário SSH vinculado por drop-in `DenyUsers`, cobrindo senha e chave pública sem alterar o `sshd_config` principal.
+- Sessões SSH existentes de identidades inativas são encerradas por TTY, sem matar processos de `root`.
+- O limite local disponível para SSH passa a ser escrito em arquivo PAM separado, descontando sessões WireGuard/OpenVPN observadas da mesma identidade.
+- WireGuard usa o peer em runtime como mecanismo reversível: identidade inativa remove o peer da interface sem apagar chaves/config; ao reativar, o peer pode ser restaurado a partir do estado existente.
+- OpenVPN recebe um hook `client-connect` gerenciado para consultar a política antes de aceitar novas conexões de clientes vinculados.
+- Clientes OpenVPN já conectados de uma identidade inativa têm o tráfego bloqueado por regras específicas e reversíveis, sem revogar o certificado.
+- O hook OpenVPN só é ativado por restart automático quando não há clientes conectados; caso contrário o restart é adiado para evitar derrubar sessões válidas.
+
+### Sessões e limite local
+
+- Nova visão consolidada de sessões por identidade: SSH, WireGuard, OpenVPN, total observado e `max_sessions`.
+- Novo comando `manager --identity-sessions [ID]`.
+- `max_sessions` começa a ser aplicado localmente: OpenVPN consulta o total antes de nova conexão; SSH recebe `maxlogins` calculado; WireGuard não é reativado para uma nova sessão quando outras conexões já ocupam todas as vagas.
+- Esta limitação local é deliberadamente conservadora e não substitui o futuro lease atômico da Colmeia para concorrência multi-VPS.
+
+### Reconciliação e lifecycle
+
+- `manager-policy-reconcile.path` reage a alterações do estado de identidades e um timer de 30 segundos funciona como retaguarda para expiração/atividade de sessões.
+- Nova opção de menu para visualizar sessões e solicitar reconciliação manual.
+- Instalador inicializa o enforcement automaticamente.
+- Desinstalação sem `--purge` desanexa o enforcement antes de remover o código, preservando o estado das identidades para uma futura reinstalação.
+- CI passou a validar autorização/bloqueio/reabilitação de uma identidade SSH vinculada, além da instalação e remoção das unidades de política.
+
 ## [0.6.0] - 2026-10-10
 
 ### Connection Engine
