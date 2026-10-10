@@ -18,8 +18,9 @@ list_users() {
     (( uid >= 1000 )) || continue
     [[ "$shell" =~ (nologin|false)$ ]] && continue
     local expiry logins limit
-    expiry="$(chage -l "$user" 2>/dev/null | awk -F': ' '/Account expires/ {print $2}')"
+    expiry="$(LANG=C chage -l "$user" 2>/dev/null | awk -F': ' '/Account expires/ {print $2}')"
     [[ "$expiry" == "never" ]] && expiry="nunca"
+    [[ -z "$expiry" ]] && expiry="-"
     logins="$(who | awk -v u="$user" '$1==u {c++} END{print c+0}')"
     limit="$(awk -v u="$user" '$1==u && $3=="maxlogins" {print $4}' "$LIMITS_FILE" 2>/dev/null | tail -n1)"
     [[ -z "$limit" ]] && limit="-"
