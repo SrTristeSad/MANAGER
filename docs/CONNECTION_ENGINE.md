@@ -28,20 +28,20 @@ O estado fica em:
 
 Arquivos de identidade são `0600` e o diretório é acessível somente por root.
 
-## Campos iniciais
+## Campos
 
 - `id`: identificador estável da identidade;
 - `owner`: revendedor/subrevendedor opcional;
 - `enabled`: política administrativa da identidade;
 - `expires_epoch`: expiração global da identidade, `0` para sem expiração;
-- `max_sessions`: limite simultâneo que será aplicado de forma unificada em etapas posteriores;
+- `max_sessions`: limite simultâneo local da identidade e, futuramente, limite global do plano na Colmeia;
 - `protocols`: protocolos autorizados pela política;
 - `ssh_user`: usuário Linux vinculado;
 - `wireguard_client`: peer/config WireGuard vinculado;
 - `openvpn_client`: cliente/certificado OpenVPN vinculado;
 - `created_epoch` e `updated_epoch`.
 
-Protocolos reconhecidos nesta primeira versão:
+Protocolos reconhecidos:
 
 ```text
 ssh
@@ -57,13 +57,100 @@ A identidade pode aparecer como:
 - `disabled`: desabilitada administrativamente;
 - `expired`: validade global encerrada.
 
-Nesta primeira etapa, esse estado é o **estado de política do Connection Engine**. O enforcement automático nos protocolos vinculados será adicionado nas próximas iterações 0.6.x.
+A partir da 0.6.1 esse estado deixa de ser somente informativo e passa a ser aplicado pelo `policy_engine.sh`.
+
+## Enforcement local
+
+### SSH
+
+O MANAGER gera somente o drop-in:
+
+```text
+/etc/ssh/sshd_config.d/65-manager-identity-policy.conf
+```
+
+Identidades inativas são adicionadas a `DenyUsers`, bloqueando autenticação por senha e chave sem substituir o `sshd_config` principal. A configuração é validada com `sshd -t` antes do reload.
+
+O limite de logins calculado pelo Connection Engine fica separado em:
+
+```text
+/etc/security/limits.d/98-manager-identity.conf
+```
+
+O valor disponível para SSH desconta sessões observadas nos outros protocolos da identidade.
+
+### WireGuard
+
+Desativar/expirar uma identidade não apaga chaves nem configuração do cliente. O peer é removido somente do runtime da interface `wg0`. Quando a identidade volta a ficar elegível, o peer é reconstruído no runtime usando o estado já existente.
+
+Uma sessão WireGuard é considerada ativa quando o peer teve handshake recente. Nesta etapa local, o Connection Engine trata cada peer vinculado como no máximo uma sessão observada.
+
+### OpenVPN
+
+O servidor MANAGER recebe um `client-connect` gerenciado que consulta a política antes de aceitar um cliente vinculado. Clientes que não pertencem a nenhuma identidade continuam sendo tratados como recursos não gerenciados pelo Connection Engine.
+
+Quando uma identidade OpenVPN é desativada enquanto está conectada, o MANAGER aplica bloqueio de tráfego específico ao IP virtual observado. O certificado não é revogado, permitindo reativação posterior sem gerar credenciais novas.
+
+Se o hook ainda precisa ser ativado mas existem clientes conectados, o MANAGER adia o restart do OpenVPN e tenta novamente quando não houver clientes, evitando interromper sessões válidas apenas para instalar o hook.
+
+## Sessões consolidadas
+
+Consulta geral:
+
+```bash
+manager --identity-sessions
+```
+
+Uma identidade específica:
+
+```bash
+manager --identity-sessions maria
+```
+
+A saída reúne:
+
+```text
+SSH + WireGuard + OpenVPN = total observado
+```
+
+junto ao `max_sessions` da identidade.
+
+## Como `max_sessions` funciona na 0.6.1
+
+A aplicação local é conservadora:
+
+- SSH recebe um `maxlogins` calculado conforme as vagas restantes;
+- OpenVPN recusa nova conexão vinculada quando o total local já atingiu o limite;
+- WireGuard não é restaurado para iniciar uma nova sessão quando outras sessões já ocupam todas as vagas;
+- sessões já estabelecidas não são arbitrariamente derrubadas apenas por uma corrida de limite, exceto quando a identidade fica `disabled`/`expired`.
+
+Ainda existe uma pequena janela de corrida entre protocolos porque SSH, WireGuard e OpenVPN são daemons independentes. A solução definitiva para múltiplos servidores será o **lease atômico da Colmeia**, não polling local.
+
+## Reconciliação
+
+O enforcement usa:
+
+```text
+manager-policy-reconcile.path
+manager-policy-reconcile.timer
+manager-policy-reconcile.service
+```
+
+O path reage a mudanças de estado e o timer de 30 segundos cobre expiração, handshakes e mudanças de sessão que não alteram arquivos de identidade.
+
+Reconciliação manual:
+
+```bash
+/opt/manager/modules/policy_engine.sh --reconcile
+```
 
 ## CLI pública
 
 ```bash
 manager --identities
 manager --identity maria
+manager --identity-sessions
+manager --identity-sessions maria
 ```
 
 ## Contratos internos
@@ -102,24 +189,28 @@ Ativar/desativar:
 /opt/manager/modules/connection_engine.sh --enable maria
 ```
 
+Autorização interna de um recurso:
+
+```bash
+/opt/manager/modules/policy_engine.sh --authorize openvpn maria
+```
+
 Esses contratos são intencionalmente simples para poderem ser reutilizados mais tarde pela Automation v2/`managerd`, sem fazer a integração remota manipular arquivos diretamente.
 
 ## Compatibilidade com revenda
 
 Quando um usuário SSH é vinculado a uma identidade que possui `owner`, o Connection Engine reutiliza o módulo de revendedores para validar e registrar a propriedade desse usuário.
 
-A estrutura de cotas da série 0.5 ainda conta usuários SSH. Isso será migrado para um modelo de produto/identidade antes da Colmeia, porque uma identidade WireGuard-only ou OpenVPN-only também precisará consumir cota corretamente.
+A estrutura de cotas da série 0.5/0.6 ainda conta principalmente usuários SSH. Isso será migrado para um modelo de produto/identidade antes da Colmeia, porque uma identidade WireGuard-only ou OpenVPN-only também precisará consumir cota corretamente.
 
 ## Próximas etapas 0.6.x
 
-1. Enforcement de `enabled` e `expires_epoch` nos protocolos vinculados.
-2. Sessões consolidadas por identidade.
-3. Aplicação real de `max_sessions` no nível da identidade.
-4. Registro comum de tráfego/estado.
-5. Políticas/ACL independentes do protocolo.
-6. Provisionamento e revogação dos recursos de SSH/WireGuard/OpenVPN pelo próprio Connection Engine.
-7. Cotas de revenda baseadas em identidades/produtos, não apenas usuários Linux.
-8. IPv6 e metadados necessários para Colmeia.
+1. Registro comum de sessão/lease local com IDs estáveis.
+2. Registro comum de tráfego/estado.
+3. Políticas/ACL independentes do protocolo.
+4. Provisionamento e revogação dos recursos de SSH/WireGuard/OpenVPN pelo próprio Connection Engine.
+5. Cotas de revenda baseadas em identidades/produtos, não apenas usuários Linux.
+6. IPv6 e metadados necessários para Colmeia.
 
 ## Relação com Automation e Colmeia
 
