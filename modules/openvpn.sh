@@ -144,7 +144,7 @@ EOF
 net.ipv4.ip_forward = 1
 EOF
   chmod 0644 "$SYSCTL_FILE"
-  sysctl -p "$SYSCTL_FILE" >/dev/null
+  enable_ipv4_forwarding
 
   cat > "$OVERRIDE_FILE" <<EOF
 [Service]
