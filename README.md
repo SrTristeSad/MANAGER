@@ -4,7 +4,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 > O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva as capacidades úteis, reimplementa o que envelheceu com código auditável e prepara uma arquitetura nova para Automation v2, Telegram e Modo Colmeia.
 
-Versão atual: **0.5.2**.
+Versão atual: **0.6.0**.
 
 ## Princípios
 
@@ -46,7 +46,33 @@ Versão atual: **0.5.2**.
 - detector de estruturas conhecidas do SSHPlus antigo;
 - monitor moderno de sessões SSH com encerramento seletivo por TTY.
 
-Essa camada já prepara o modelo de propriedade/cota que será usado posteriormente por Automation v2, Telegram e Colmeia.
+### Connection Engine
+
+A partir da 0.6, o MANAGER possui uma identidade própria independente do usuário Linux.
+
+Uma identidade pode ter:
+
+- ID estável;
+- proprietário/revendedor opcional;
+- estado habilitado/desabilitado;
+- expiração global;
+- limite planejado de sessões simultâneas;
+- protocolos permitidos;
+- vínculo com usuário SSH;
+- vínculo com cliente WireGuard;
+- vínculo com cliente OpenVPN.
+
+O estado fica em:
+
+```text
+/etc/manager/connection/identities/
+```
+
+Os recursos técnicos continuam sendo administrados por seus módulos atuais; o Connection Engine os referencia por vínculo, sem duplicar senhas, chaves privadas ou certificados.
+
+A documentação detalhada está em [`docs/CONNECTION_ENGINE.md`](docs/CONNECTION_ENGINE.md).
+
+> Nesta primeira etapa da 0.6, `enabled`, expiração e `max_sessions` já fazem parte da política da identidade, mas o enforcement unificado nos três protocolos entra nas próximas iterações 0.6.x.
 
 ### Segurança
 
@@ -57,7 +83,8 @@ Essa camada já prepara o modelo de propriedade/cota que será usado posteriorme
 - TLS/Let's Encrypt via Certbot isolado;
 - chaves públicas SSH com fingerprints e correção de permissões;
 - Squid do MANAGER não usa `http_access allow all` e não nasce aceitando origem pública irrestrita;
-- túneis TCP/WebSocket/TLS encaminham somente para serviços locais em `127.0.0.1`.
+- túneis TCP/WebSocket/TLS encaminham somente para serviços locais em `127.0.0.1`;
+- identidades do Connection Engine ficam em estado root-only e não guardam credenciais dos protocolos vinculados.
 
 ### Monitoramento e manutenção
 
@@ -105,6 +132,34 @@ Um revendedor pode possuir contas diretamente e também subrevendedores. A cota 
 A opção **Criar conta vinculada a revendedor** valida a disponibilidade antes de criar o usuário e repete a atribuição sob lock. Se outra operação consumir a última vaga durante a criação, o usuário recém-criado é removido para não ficar órfão ou ultrapassar a cota.
 
 A estrutura também oferece operações internas não interativas de consulta de uso, teste de cota e associação de propriedade para que a futura Automation v2 não precise manipular os arquivos diretamente.
+
+Na primeira versão do Connection Engine, a cota ainda é contabilizada pelo modelo SSH existente. A migração para cota baseada em identidade/produto está planejada ainda na série 0.6.
+
+## Connection Engine
+
+Listar identidades:
+
+```bash
+manager --identities
+```
+
+Consultar uma identidade:
+
+```bash
+manager --identity maria
+```
+
+Também é possível criar uma identidade e vincular recursos já existentes pelo menu **Connection Engine / identidades**.
+
+Uma importação por nome procura automaticamente:
+
+```text
+usuário Linux com o mesmo nome
+cliente WireGuard com o mesmo nome
+cliente OpenVPN com o mesmo nome
+```
+
+e cria os vínculos encontrados sem regenerar credenciais.
 
 ## Hosts de proxy
 
@@ -282,6 +337,8 @@ manager --expired       lista contas SSH expiradas
 manager --ssh-sessions  mostra as sessões SSH atuais
 manager --proxy-status  mostra proxies/túneis gerenciados
 manager --proxy-hosts   lista hosts permitidos no proxy
+manager --identities    lista identidades do Connection Engine
+manager --identity ID   mostra uma identidade específica
 manager --diagnostics   diagnóstico
 manager --version       versão
 manager --help          ajuda
@@ -312,6 +369,7 @@ CONTAS E REVENDA
 23) Backup / migração de usuários
 24) Revendedores, subrevendedores e cotas
 27) Criar conta vinculada a revendedor
+28) Connection Engine / identidades
 
 MONITORAMENTO E MANUTENÇÃO
 10) Tráfego e conexões
@@ -337,7 +395,7 @@ Backups ficam em:
 /var/backups/manager/
 ```
 
-Eles têm permissão restrita e podem conter chaves privadas de VPN/TLS e dados de revenda. O backup de configuração inclui o estado do banner, contas teste, `/etc/manager/access` e `/etc/manager/proxy`.
+Eles têm permissão restrita e podem conter chaves privadas de VPN/TLS e dados de revenda. O backup de configuração inclui o estado do banner, contas teste, `/etc/manager/access`, `/etc/manager/proxy` e `/etc/manager/connection`.
 
 A restauração valida escopo e SHA-256 antes de extrair o arquivo e cria um snapshot adicional do estado atual. Quando há estado de proxies, o MANAGER tenta regenerar as unidades systemd usando os módulos instalados; dependências opcionais ausentes continuam precisando ser instaladas antes do serviço voltar a operar.
 
@@ -381,7 +439,7 @@ Resumo:
 
 ```text
 0.5.x  paridade SSHPlus útil
-0.6.0  Connection Engine
+0.6.x  Connection Engine e enforcement comum
 0.7.0  Legacy v1 + Automation v2
 0.8.0  Modo Colmeia
 0.9.0  Telegram Bot + Mini App
@@ -389,7 +447,7 @@ Resumo:
 1.0.0  release de produção
 ```
 
-A maior parte da paridade operacional 0.5.x já está implementada. Os pontos restantes ficam concentrados em conversão assistida do legado e pequenos ajustes de compatibilidade. O próximo salto estrutural é o **Connection Engine 0.6**, que vai transformar “usuário SSH” em identidade MANAGER com protocolos e políticas associados.
+A fundação do **Connection Engine 0.6** já existe. As próximas iterações vão aplicar a política da identidade aos protocolos, consolidar sessões e tráfego e fazer `max_sessions` deixar de ser apenas metadado para se tornar enforcement real.
 
 ### Legacy
 
@@ -411,7 +469,7 @@ A administração remota futura será baseada em **Telegram Bot + Telegram Mini 
 
 O CI executa:
 
-- `bash -n`;
+- `bash -n` em todos os scripts e bibliotecas;
 - ShellCheck;
 - regressões contra padrões destrutivos conhecidos;
 - regressão contra configuração de Squid aberto;
@@ -419,7 +477,8 @@ O CI executa:
 - instalação/update/rollback/uninstall em smoke test;
 - checks não interativos do MANAGER;
 - presença dos módulos de revenda, migração, proxy e monitor de sessões;
-- inicialização e CRUD básico da lista de hosts do proxy.
+- inicialização e CRUD básico da lista de hosts do proxy;
+- inicialização, criação, consulta e enable/disable de identidade do Connection Engine.
 
 O roteiro para VPS real está em:
 
