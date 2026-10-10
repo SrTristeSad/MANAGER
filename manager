@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+MANAGER_HOME="${MANAGER_HOME:-/opt/manager}"
+MANAGER_ETC="${MANAGER_ETC:-/etc/manager}"
+
+if [[ -f "$MANAGER_HOME/lib/common.sh" ]]; then
+  # shellcheck source=/dev/null
+  source "$MANAGER_HOME/lib/common.sh"
+else
+  echo "MANAGER não está instalado corretamente em $MANAGER_HOME" >&2
+  exit 1
+fi
+
+require_root
+
+VERSION="unknown"
+[[ -f "$MANAGER_HOME/VERSION" ]] && VERSION="$(tr -d '[:space:]' < "$MANAGER_HOME/VERSION")"
+
+run_module() {
+  local file="$1"
+  shift || true
+  if [[ -x "$MANAGER_HOME/modules/$file" ]]; then
+    "$MANAGER_HOME/modules/$file" "$@"
+  else
+    err "Módulo ausente: $file"
+    pause
+  fi
+}
+
+self_update() {
+  header
+  say "${C_WHITE}Atualização do MANAGER${C_RESET}\n"
+  if confirm "Baixar e reinstalar a versão atual do repositório?"; then
+    curl -fsSL https://raw.githubusercontent.com/SrTristeSad/MANAGER/main/install.sh | bash -s -- --update
+    pause
+  fi
+}
+
+while true; do
+  header
+  say "Versão: ${C_GREEN}${VERSION}${C_RESET}"
+  say ""
+  say " ${C_CYAN}1${C_RESET}) Informações do sistema"
+  say " ${C_CYAN}2${C_RESET}) Usuários SSH"
+  say " ${C_CYAN}3${C_RESET}) Bloqueio de anúncios DNS"
+  say " ${C_CYAN}4${C_RESET}) Status de serviços"
+  say " ${C_CYAN}8${C_RESET}) Atualizar MANAGER"
+  say " ${C_CYAN}0${C_RESET}) Sair"
+  say ""
+  read -r -p "Opção: " opt
+
+  case "$opt" in
+    1) run_module system.sh info ;;
+    2) run_module ssh_users.sh ;;
+    3) run_module adblock.sh ;;
+    4) run_module system.sh services ;;
+    8) self_update ;;
+    0) clear 2>/dev/null || true; exit 0 ;;
+    *) warn "Opção inválida"; sleep 1 ;;
+  esac
+done
