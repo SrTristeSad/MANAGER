@@ -55,6 +55,8 @@ trap 'rm -rf "$TMP"' EXIT
 
 FILES=(
   "manager"
+  "rollback.sh"
+  "uninstall.sh"
   "VERSION"
   "lib/common.sh"
   "modules/system.sh"
@@ -78,7 +80,7 @@ for file in "${FILES[@]}"; do
 done
 
 # Validate every shell file before touching the active installation.
-for script in manager lib/common.sh modules/*.sh; do
+for script in manager rollback.sh uninstall.sh lib/common.sh modules/*.sh; do
   [[ -f "$TMP/$script" ]] || continue
   bash -n "$TMP/$script"
 done
@@ -94,6 +96,8 @@ mkdir -p "$STAGE/lib" "$STAGE/modules" "$ETC_DIR"
 install -m 0644 "$TMP/VERSION" "$STAGE/VERSION"
 install -m 0644 "$TMP/lib/common.sh" "$STAGE/lib/common.sh"
 install -m 0755 "$TMP/manager" "$STAGE/manager"
+install -m 0755 "$TMP/rollback.sh" "$STAGE/rollback.sh"
+install -m 0755 "$TMP/uninstall.sh" "$STAGE/uninstall.sh"
 for script in "$TMP"/modules/*.sh; do
   install -m 0755 "$script" "$STAGE/modules/$(basename "$script")"
 done
@@ -110,6 +114,8 @@ find "$INSTALL_DIR/modules" -maxdepth 1 -type f -name '*.sh' -delete 2>/dev/null
 install -m 0644 "$STAGE/VERSION" "$INSTALL_DIR/VERSION"
 install -m 0644 "$STAGE/lib/common.sh" "$INSTALL_DIR/lib/common.sh"
 install -m 0755 "$STAGE/manager" "$INSTALL_DIR/manager"
+install -m 0755 "$STAGE/rollback.sh" "$INSTALL_DIR/rollback.sh"
+install -m 0755 "$STAGE/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
 for script in "$STAGE"/modules/*.sh; do
   install -m 0755 "$script" "$INSTALL_DIR/modules/$(basename "$script")"
 done
@@ -117,6 +123,8 @@ done
 ln -sfn "$INSTALL_DIR/manager" "$BIN"
 ln -sfn "$BIN" /usr/local/bin/manager
 ln -sfn "$BIN" /usr/local/bin/menu
+ln -sfn "$INSTALL_DIR/rollback.sh" /usr/local/sbin/manager-rollback
+ln -sfn "$INSTALL_DIR/uninstall.sh" /usr/local/sbin/manager-uninstall
 
 printf '%s\n' "$NEW_VERSION" > "$ETC_DIR/installed-version"
 chmod 0644 "$ETC_DIR/installed-version"
@@ -127,6 +135,8 @@ echo " MANAGER $NEW_VERSION instalado com sucesso"
 echo "=================================================="
 echo ""
 echo "Comandos: manager | menu"
+echo "Rollback: manager-rollback"
+echo "Remover:  manager-uninstall"
 [[ -d "$ROLLBACK_DIR" ]] && echo "Código anterior preservado em: $ROLLBACK_DIR"
 echo ""
 if [[ "${1:-}" != "--update" ]]; then
