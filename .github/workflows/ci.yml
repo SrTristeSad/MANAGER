@@ -5,19 +5,43 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   shell:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
+
       - name: Bash syntax
+        shell: bash
         run: |
-          bash -n install.sh
-          bash -n manager
-          bash -n lib/common.sh
-          for file in modules/*.sh; do bash -n "$file"; done
+          set -euo pipefail
+          bash -n manager lib/common.sh install.sh rollback.sh uninstall.sh modules/*.sh
+
       - name: ShellCheck
+        shell: bash
         run: |
-          shellcheck -x install.sh manager lib/common.sh modules/*.sh
+          set -euo pipefail
+          shellcheck -x manager lib/common.sh install.sh rollback.sh uninstall.sh modules/*.sh
+
+      - name: Safety regression checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -REn 'iptables[[:space:]]+-F|ip6tables[[:space:]]+-F|nft[[:space:]]+flush[[:space:]]+ruleset|chmod[[:space:]]+777' \
+            manager install.sh rollback.sh uninstall.sh lib modules; then
+            echo 'Unsafe legacy firewall/permission pattern detected.' >&2
+            exit 1
+          fi
+
+      - name: Version format
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9._-]+)?$ ]]
