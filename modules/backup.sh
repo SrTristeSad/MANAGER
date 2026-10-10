@@ -27,6 +27,8 @@ collect_paths() {
     /etc/manager/network \
     /etc/manager/performance \
     /etc/manager/tls \
+    /etc/manager/banner \
+    /etc/manager/ssh-tests \
     /etc/wireguard/wg0.conf \
     /etc/wireguard/server.key \
     /etc/wireguard/server.pub \
@@ -43,9 +45,12 @@ collect_paths() {
     /etc/systemd/system/manager-adblock-update.service \
     /etc/systemd/system/manager-certbot-renew.timer \
     /etc/systemd/system/manager-certbot-renew.service \
+    /etc/systemd/system/manager-test-users.timer \
+    /etc/systemd/system/manager-test-users.service \
     /etc/security/limits.d/99-manager-ssh.conf \
     /etc/fail2ban/jail.d/99-manager-sshd.local \
     /etc/ssh/sshd_config.d/99-manager.conf \
+    /etc/ssh/sshd_config.d/70-manager-banner.conf \
     /etc/apt/apt.conf.d/20auto-upgrades \
     /etc/sysctl.d/99-manager-wireguard.conf \
     /etc/sysctl.d/99-manager-openvpn.conf \
@@ -79,6 +84,8 @@ entry_is_managed() {
   [[ "$entry" == "etc/manager/network" || "$entry" == etc/manager/network/* ]] && return 0
   [[ "$entry" == "etc/manager/performance" || "$entry" == etc/manager/performance/* ]] && return 0
   [[ "$entry" == "etc/manager/tls" || "$entry" == etc/manager/tls/* ]] && return 0
+  [[ "$entry" == "etc/manager/banner" || "$entry" == etc/manager/banner/* ]] && return 0
+  [[ "$entry" == "etc/manager/ssh-tests" || "$entry" == etc/manager/ssh-tests/* ]] && return 0
   [[ "$entry" == "etc/systemd/system/openvpn-server@manager.service.d" || "$entry" == etc/systemd/system/openvpn-server@manager.service.d/* ]] && return 0
 
   [[ "$entry" == "etc/wireguard/wg0.conf" ]] && return 0
@@ -96,9 +103,12 @@ entry_is_managed() {
   [[ "$entry" == "etc/systemd/system/manager-adblock-update.service" ]] && return 0
   [[ "$entry" == "etc/systemd/system/manager-certbot-renew.timer" ]] && return 0
   [[ "$entry" == "etc/systemd/system/manager-certbot-renew.service" ]] && return 0
+  [[ "$entry" == "etc/systemd/system/manager-test-users.timer" ]] && return 0
+  [[ "$entry" == "etc/systemd/system/manager-test-users.service" ]] && return 0
   [[ "$entry" == "etc/security/limits.d/99-manager-ssh.conf" ]] && return 0
   [[ "$entry" == "etc/fail2ban/jail.d/99-manager-sshd.local" ]] && return 0
   [[ "$entry" == "etc/ssh/sshd_config.d/99-manager.conf" ]] && return 0
+  [[ "$entry" == "etc/ssh/sshd_config.d/70-manager-banner.conf" ]] && return 0
   [[ "$entry" == "etc/apt/apt.conf.d/20auto-upgrades" ]] && return 0
   [[ "$entry" == "etc/sysctl.d/99-manager-wireguard.conf" ]] && return 0
   [[ "$entry" == "etc/sysctl.d/99-manager-openvpn.conf" ]] && return 0
@@ -234,6 +244,7 @@ restore_backup() {
   if [[ -f /etc/wireguard/wg0.conf ]]; then systemctl restart wg-quick@wg0 2>/dev/null || true; fi
   if [[ -f /etc/openvpn/server/manager.conf ]]; then systemctl restart openvpn-server@manager 2>/dev/null || true; fi
   if [[ -f /etc/systemd/system/manager-certbot-renew.timer ]]; then systemctl enable --now manager-certbot-renew.timer >/dev/null 2>&1 || true; fi
+  if [[ -f /etc/systemd/system/manager-test-users.timer ]]; then systemctl enable --now manager-test-users.timer >/dev/null 2>&1 || true; fi
   if command -v sshd >/dev/null 2>&1 && sshd -t; then
     systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
   fi
