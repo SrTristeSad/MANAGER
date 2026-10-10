@@ -42,6 +42,15 @@ collect_paths() {
   done
 }
 
+resolve_backup_file() {
+  local input="$1" base
+  base="$(basename -- "$input")"
+  case "$base" in
+    manager-*.tar.gz|pre-restore-*.tar.gz) printf '%s/%s\n' "$BACKUP_DIR" "$base" ;;
+    *) return 1 ;;
+  esac
+}
+
 create_backup() {
   header
   say "${C_WHITE}CRIAR BACKUP${C_RESET}\n"
@@ -92,13 +101,13 @@ list_backups() {
 
 verify_backup() {
   header
-  local file
-  read -r -p "Arquivo .tar.gz em $BACKUP_DIR: " file
-  [[ "$file" = /* ]] || file="$BACKUP_DIR/$file"
+  local input file
+  read -r -p "Nome do arquivo .tar.gz em $BACKUP_DIR: " input
+  file="$(resolve_backup_file "$input")" || { err "Nome de backup inválido"; pause; return; }
   [[ -f "$file" ]] || { err "Arquivo não encontrado"; pause; return; }
   tar -tzf "$file" >/dev/null || { err "Arquivo corrompido"; pause; return; }
   if [[ -f "$file.sha256" ]]; then
-    (cd "$(dirname "$file")" && sha256sum -c "$(basename "$file").sha256") || { err "SHA-256 inválido"; pause; return; }
+    (cd "$BACKUP_DIR" && sha256sum -c "$(basename "$file").sha256") || { err "SHA-256 inválido"; pause; return; }
   fi
   ok "Backup íntegro"
   pause
@@ -107,11 +116,12 @@ verify_backup() {
 restore_backup() {
   header
   say "${C_WHITE}RESTAURAR BACKUP${C_RESET}\n"
-  local file safety
-  read -r -p "Arquivo .tar.gz em $BACKUP_DIR: " file
-  [[ "$file" = /* ]] || file="$BACKUP_DIR/$file"
+  local input file safety
+  read -r -p "Nome do arquivo .tar.gz em $BACKUP_DIR: " input
+  file="$(resolve_backup_file "$input")" || { err "Nome de backup inválido"; pause; return; }
   [[ -f "$file" ]] || { err "Arquivo não encontrado"; pause; return; }
   tar -tzf "$file" >/dev/null || { err "Backup inválido"; pause; return; }
+  warn "Por segurança, somente arquivos dentro de $BACKUP_DIR podem ser restaurados."
   warn "A restauração substitui apenas arquivos listados como gerenciados pelo MANAGER."
   confirm "Restaurar este backup?" || return
 
@@ -126,7 +136,7 @@ restore_backup() {
   fi
   rm -f "$current"
 
-  tar -C / -xzf "$file" --no-same-owner
+  tar -C / -xzf "$file" --no-same-owner --no-same-permissions
   systemctl daemon-reload || true
   if [[ -f /etc/dnsmasq.d/90-manager-adblock.conf ]]; then
     systemctl restart dnsmasq 2>/dev/null || true
