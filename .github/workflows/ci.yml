@@ -79,6 +79,7 @@ jobs:
           test -x /opt/manager/manager
           test -f /opt/manager/lib/identity.sh
           test -x /opt/manager/modules/connection_engine.sh
+          test -x /opt/manager/modules/policy_engine.sh
           test -x /opt/manager/modules/wireguard.sh
           test -x /opt/manager/modules/openvpn.sh
           test -x /opt/manager/modules/adblock.sh
@@ -93,6 +94,9 @@ jobs:
           test -x /opt/manager/modules/proxies.sh
           test -x /opt/manager/modules/banner.sh
           test -x /opt/manager/modules/speedtest.sh
+          test -f /etc/systemd/system/manager-policy-reconcile.service
+          test -f /etc/systemd/system/manager-policy-reconcile.timer
+          test -f /etc/systemd/system/manager-policy-reconcile.path
           test "$(cat /opt/manager/VERSION)" = "$(tr -d '[:space:]' < VERSION)"
           test "$(readlink -f /usr/local/bin/manager)" = "/opt/manager/manager"
           test "$(readlink -f /usr/local/bin/menu)" = "/opt/manager/manager"
@@ -105,6 +109,7 @@ jobs:
           grep -q -- '--proxy-status' /tmp/manager-help.log
           grep -q -- '--proxy-hosts' /tmp/manager-help.log
           grep -q -- '--identities' /tmp/manager-help.log
+          grep -q -- '--identity-sessions' /tmp/manager-help.log
           sudo /opt/manager/manager --status >/tmp/manager-status.log
           grep -q 'STATUS DE SERVIÇOS' /tmp/manager-status.log
           sudo /opt/manager/manager --expired >/tmp/manager-expired.log
@@ -122,6 +127,30 @@ jobs:
           grep -q '^ci-user' /tmp/manager-identities.log
           sudo /opt/manager/manager --identity ci-user > /tmp/manager-identity.log
           grep -q '^state=active$' /tmp/manager-identity.log
+          sudo /opt/manager/manager --identity-sessions ci-user > /tmp/manager-identity-sessions.log
+          grep -q '^ci-user' /tmp/manager-identity-sessions.log
+          grep -q 'total=0' /tmp/manager-identity-sessions.log
+
+          sudo useradd -m -s /bin/bash managerci
+          sudo /opt/manager/modules/connection_engine.sh --create ci-bound '' 0 1 ssh
+          sudo /opt/manager/modules/connection_engine.sh --bind ci-bound ssh managerci
+          sudo /opt/manager/modules/policy_engine.sh --reconcile
+          sudo /opt/manager/modules/policy_engine.sh --authorize ssh managerci
+          sudo /opt/manager/modules/connection_engine.sh --disable ci-bound
+          sudo /opt/manager/modules/policy_engine.sh --reconcile
+          grep -Eq '^DenyUsers .*managerci' /etc/ssh/sshd_config.d/65-manager-identity-policy.conf
+          if sudo /opt/manager/modules/policy_engine.sh --authorize ssh managerci; then
+            echo 'Disabled identity was authorized.' >&2
+            exit 1
+          fi
+          sudo /opt/manager/modules/connection_engine.sh --enable ci-bound
+          sudo /opt/manager/modules/policy_engine.sh --reconcile
+          if grep -Eq '^DenyUsers .*managerci' /etc/ssh/sshd_config.d/65-manager-identity-policy.conf; then
+            echo 'Re-enabled identity remained denied in SSH policy.' >&2
+            exit 1
+          fi
+          sudo /opt/manager/modules/policy_engine.sh --authorize ssh managerci
+
           sudo /opt/manager/modules/connection_engine.sh --disable ci-user
           sudo /opt/manager/manager --identity ci-user > /tmp/manager-identity.log
           grep -q '^state=disabled$' /tmp/manager-identity.log
@@ -156,3 +185,6 @@ jobs:
           test ! -e /opt/manager
           test ! -e /usr/local/bin/manager
           test -d /etc/manager
+          test ! -e /etc/systemd/system/manager-policy-reconcile.timer
+          test ! -e /etc/systemd/system/manager-policy-reconcile.path
+          test ! -e /etc/ssh/sshd_config.d/65-manager-identity-policy.conf
