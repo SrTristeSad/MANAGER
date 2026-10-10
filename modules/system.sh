@@ -47,19 +47,20 @@ show_info() {
 show_services() {
   header
   say "${C_WHITE}STATUS DE SERVIÇOS${C_RESET}\n"
-  printf '%-28s %b\n' "OpenSSH" "$(service_state ssh)"
-  printf '%-28s %b\n' "dnsmasq" "$(service_state dnsmasq)"
-  printf '%-28s %b\n' "WireGuard wg0" "$(service_state wg-quick@wg0)"
-  printf '%-28s %b\n' "Fail2ban" "$(service_state fail2ban)"
-  printf '%-28s %b\n' "vnStat" "$(service_state vnstat)"
-  printf '%-28s %b\n' "OpenVPN" "$(service_state openvpn)"
-  printf '%-28s %b\n' "Adblock updater" "$(service_state manager-adblock-update.timer)"
-  printf '%-28s %b\n' "APT security timer" "$(service_state apt-daily-upgrade.timer)"
+  printf '%-30s %b\n' "OpenSSH" "$(service_state ssh)"
+  printf '%-30s %b\n' "dnsmasq" "$(service_state dnsmasq)"
+  printf '%-30s %b\n' "WireGuard wg0" "$(service_state wg-quick@wg0)"
+  printf '%-30s %b\n' "OpenVPN MANAGER" "$(service_state openvpn-server@manager)"
+  printf '%-30s %b\n' "Fail2ban" "$(service_state fail2ban)"
+  printf '%-30s %b\n' "vnStat" "$(service_state vnstat)"
+  printf '%-30s %b\n' "Adblock updater" "$(service_state manager-adblock-update.timer)"
+  printf '%-30s %b\n' "Certbot renewal" "$(service_state manager-certbot-renew.timer)"
+  printf '%-30s %b\n' "APT security timer" "$(service_state apt-daily-upgrade.timer)"
   say ""
   if command_exists ufw; then
-    printf '%-28s %s\n' "UFW" "$(ufw status 2>/dev/null | head -n1)"
+    printf '%-30s %s\n' "UFW" "$(ufw status 2>/dev/null | head -n1)"
   else
-    printf '%-28s %s\n' "UFW" "não instalado"
+    printf '%-30s %s\n' "UFW" "não instalado"
   fi
   say ""
   pause
