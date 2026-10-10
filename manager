@@ -24,6 +24,7 @@ Uso:
   manager                 abre o menu interativo
   manager --health        executa health check (0=OK, 1=avisos, 2=crítico)
   manager --status        mostra status resumido dos serviços
+  manager --expired       lista contas SSH expiradas
   manager --diagnostics   abre o diagnóstico
   manager --version       mostra a versão
   manager --help          mostra esta ajuda
@@ -119,6 +120,9 @@ case "${1:-}" in
   --status)
     exec "$MANAGER_HOME/modules/system.sh" services
     ;;
+  --expired)
+    exec "$MANAGER_HOME/modules/ssh_users.sh" --list-expired
+    ;;
   --diagnostics)
     exec "$MANAGER_HOME/modules/diagnostics.sh"
     ;;
@@ -139,6 +143,7 @@ while true; do
   say "  ${C_CYAN}3${C_RESET}) WireGuard VPN"
   say "  ${C_CYAN}4${C_RESET}) OpenVPN"
   say "  ${C_CYAN}5${C_RESET}) Bloqueio de anúncios DNS"
+  say " ${C_CYAN}19${C_RESET}) Banner SSH"
   say ""
   say " ${C_WHITE}SEGURANÇA${C_RESET}"
   say "  ${C_CYAN}6${C_RESET}) Segurança / hardening SSH"
@@ -156,7 +161,8 @@ while true; do
   say " ${C_CYAN}15${C_RESET}) Assistente / perfis"
   say " ${C_CYAN}16${C_RESET}) Saúde do servidor"
   say " ${C_CYAN}17${C_RESET}) Manutenção do sistema"
-  say " ${C_CYAN}20${C_RESET}) Status dos serviços"
+  say " ${C_CYAN}20${C_RESET}) Serviços"
+  say " ${C_CYAN}21${C_RESET}) Speedtest / latência"
   say ""
   say " ${C_CYAN}90${C_RESET}) Atualizar MANAGER"
   say "  ${C_CYAN}0${C_RESET}) Sair"
@@ -182,7 +188,9 @@ while true; do
     16) run_module health.sh ;;
     17) run_module maintenance.sh ;;
     18) run_module ssh_keys.sh ;;
-    20) run_module system.sh services ;;
+    19) run_module banner.sh ;;
+    20) run_module system.sh service-menu ;;
+    21) run_module speedtest.sh ;;
     90) self_update ;;
     0) clear 2>/dev/null || true; exit 0 ;;
     *) warn "Opção inválida"; sleep 1 ;;
