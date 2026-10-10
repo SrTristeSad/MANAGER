@@ -94,7 +94,9 @@ enable_banner() {
     ok "Banner habilitado"
   else
     rm -f "$DROPIN_FILE"
-    sshd -t >/dev/null 2>&1 && systemctl reload "$(ssh_unit)" || true
+    if sshd -t >/dev/null 2>&1; then
+      systemctl reload "$(ssh_unit)" || true
+    fi
     err "Alteração revertida"
   fi
   pause
