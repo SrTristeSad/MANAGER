@@ -1,78 +1,148 @@
 # MANAGER
 
-Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Manager**, refeito para Debian/Ubuntu atuais.
+Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Manager**, reconstruído para Debian/Ubuntu atuais.
 
-> O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva a ideia do menu simples e reconstrói as funções com código auditável, systemd e pacotes oficiais da distribuição.
+> O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva as capacidades úteis, reimplementa o que envelheceu com código auditável e prepara uma arquitetura nova para Automation v2, Telegram e Modo Colmeia.
+
+Versão atual: **0.5.0**.
 
 ## Princípios
 
-- Não substituir o `sshd_config` inteiro.
-- Não executar `iptables -F`/`nft flush ruleset`.
-- Não baixar executáveis opacos como root.
-- Validar configurações antes de recarregar serviços.
-- Manter módulos opcionais realmente opcionais.
-- Criar backups/rollback antes de mudanças críticas.
-- Preservar configurações que não pertencem ao MANAGER sempre que possível.
-- Compatibilidade com o legado não significa reproduzir práticas inseguras do legado.
+- não substituir o `sshd_config` inteiro;
+- não executar `iptables -F` ou `nft flush ruleset`;
+- não baixar executáveis opacos como root;
+- validar configurações antes de recarregar serviços;
+- manter módulos opcionais realmente opcionais;
+- criar backups/rollback antes de mudanças críticas;
+- preservar configurações que não pertencem ao MANAGER sempre que possível;
+- compatibilidade com o legado não significa copiar fragilidades do legado.
 
-## Recursos
+## Recursos atuais
 
 ### Servidor, SSH e VPN
 
-- **Informações do sistema**: SO, kernel, uptime, memória, disco, carga, IPs e serviços.
-- **Usuários SSH**: criar/remover contas, senha, expiração, limite simultâneo, sessões online, bloquear/desbloquear e desconectar usuário.
-- **Chaves SSH**: listar, adicionar e remover chaves públicas, fingerprints e correção segura de permissões.
-- **WireGuard**: servidor `wg0`, clientes, revogação, QR Code e NAT específico da VPN.
-- **OpenVPN**: servidor moderno em `/etc/openvpn/server`, PKI Easy-RSA, clientes `.ovpn`, CRL e UDP/TCP.
-- **DNS Ad Block**: dnsmasq, fontes externas, whitelist/blacklist manuais e atualização diária.
-- **DNS multi-VPN**: listeners privados simultâneos para loopback, WireGuard e OpenVPN sem bind na interface pública.
-- **Estatísticas DNS opcionais**: desligadas por padrão por privacidade.
+- informações do sistema: SO, kernel, uptime, memória, disco, carga, IPs e serviços;
+- usuários SSH: criar/remover, alterar senha, expiração, limite simultâneo, sessões online, bloqueio/desbloqueio e desconexão;
+- **usuários teste** com duração em minutos e remoção automática por timer systemd;
+- listagem e limpeza confirmada de usuários expirados;
+- **banner SSH** por drop-in do OpenSSH, validado com `sshd -t`;
+- WireGuard com servidor `wg0`, clientes, revogação, QR Code e NAT específico;
+- OpenVPN moderno com PKI Easy-RSA, clientes `.ovpn`, CRL e UDP/TCP;
+- DNS Ad Block com dnsmasq, whitelist/blacklist e atualização diária.
 
 ### Segurança
 
-- **Hardening OpenSSH** por drop-in em `sshd_config.d`, validado com `sshd -t` antes do reload.
-- **Fail2ban** para proteção contra brute force SSH.
-- **Firewall UFW** com proteção para não bloquear uma porta SSH detectada.
-- **Atualizações automáticas de segurança** com `unattended-upgrades`.
-- **TLS/Let's Encrypt** via Certbot isolado, com emissão standalone/webroot e renovação automática.
-- **Política de download do instalador**: HTTPS em uso normal; `file://` apenas para CI/teste local explicitamente autorizado.
+- hardening OpenSSH por `sshd_config.d`;
+- Fail2ban;
+- firewall UFW com proteção da porta SSH detectada;
+- atualizações automáticas de segurança;
+- TLS/Let's Encrypt via Certbot isolado;
+- chaves públicas SSH com fingerprints e correção de permissões.
 
 ### Monitoramento e manutenção
 
-- **Saúde do servidor**: disco, inodes, memória, carga, systemd, SSH, rota, DNS, atualizações, UFW e Fail2ban.
-- **Health não interativo**: `manager --health` retorna `0` saudável, `1` avisos e `2` crítico.
-- **Diagnóstico** de internet, DNS, SSH, NTP, disco, memória, VPNs, forwarding e serviços.
-- **Tráfego** por interface, conexões ativas e histórico opcional com vnStat.
-- **Logs** centralizados de SSH, Fail2ban, WireGuard, OpenVPN, dnsmasq, Certbot e kernel/rede.
-- **Manutenção**: atualização APT, unattended-upgrades, limpeza segura, journal, NTP e reboot explícito.
-- **Backup e rollback** das configurações gerenciadas pelo projeto.
-- **BBR + fq reversível**: guarda congestion control/qdisc anteriores e restaura quando solicitado.
-- **Self-update** com download temporário e validação de sintaxe antes de executar o instalador.
-- **Rollback de código** para a versão anterior instalada.
-- **Desinstalação conservadora**, com `--purge` separado para configurações.
-- **Assistente de perfis**: servidor seguro, WireGuard, OpenVPN, DNS e configuração completa.
+- health check do servidor;
+- diagnóstico de rede, DNS, SSH, NTP, recursos e serviços;
+- tráfego/conexões e suporte opcional a vnStat;
+- logs centralizados;
+- backup e rollback de configurações gerenciadas;
+- BBR + fq reversível;
+- manutenção APT/NTP/journal;
+- gerenciamento central de serviços;
+- **Speedtest e ping**, com histórico local do Speedtest;
+- self-update com validação de sintaxe;
+- rollback da versão anterior do código;
+- desinstalação conservadora e `--purge` separado.
+
+## Usuários teste
+
+A conta teste é uma conta SSH real com expiração em minutos.
+
+O MANAGER:
+
+1. gera ou aceita um nome de usuário;
+2. gera uma senha aleatória;
+3. mostra a senha uma única vez;
+4. não salva essa senha em texto claro;
+5. registra apenas os metadados de expiração em `/etc/manager/ssh-tests`;
+6. usa `manager-test-users.timer` para remover a conta quando o prazo termina;
+7. mantém uma expiração adicional no próprio sistema como proteção de retaguarda.
+
+O timer continua funcionando após reboot.
+
+## Expirados
+
+Pelo menu de usuários é possível listar e remover contas expiradas. A limpeza destrutiva exige confirmação.
+
+Consulta não interativa:
+
+```bash
+manager --expired
+```
+
+## Banner SSH
+
+O MANAGER mantém seu banner em:
+
+```text
+/etc/manager/banner/banner.txt
+```
+
+Quando ativado, cria apenas:
+
+```text
+/etc/ssh/sshd_config.d/70-manager-banner.conf
+```
+
+Antes do reload, a configuração é validada com `sshd -t`. O MANAGER não substitui `/etc/issue.net` nem o `sshd_config` inteiro.
+
+## Serviços
+
+O menu **Serviços** mostra e permite iniciar/reiniciar/parar serviços conhecidos pelo MANAGER, como WireGuard, OpenVPN, dnsmasq e Fail2ban.
+
+Por segurança, o MANAGER não oferece a ação de parar o OpenSSH pelo menu remoto.
+
+O status não interativo continua disponível:
+
+```bash
+manager --status
+```
+
+## Speedtest
+
+O cliente é opcional. O MANAGER pode instalar `speedtest-cli` pelos repositórios APT da distribuição.
+
+Resultados executados pelo menu são registrados em:
+
+```text
+/var/log/manager/speedtest.log
+```
+
+O menu avisa antes do teste porque ele gera tráfego real de download/upload na VPS.
 
 ## Sistemas suportados
 
-- Ubuntu 22.04 ou superior.
-- Debian 12 ou superior.
+- Ubuntu 22.04 ou superior;
+- Debian 12 ou superior;
 - `systemd` e `apt` são obrigatórios nesta implementação.
 
-A matriz de testes será ampliada conforme o roadmap para cobrir as versões modernas suportadas pelo projeto.
+O roadmap inclui ampliação explícita dos testes para as distribuições modernas de 2026.
 
 ## Instalação
 
-Baixe o instalador por HTTPS, valide que ele existe e execute localmente:
+Para evitar executar conteúdo remoto diretamente por pipe, baixe o instalador e execute-o:
 
 ```bash
+sudo -i
 curl -fL --proto '=https' --tlsv1.2 \
   https://raw.githubusercontent.com/SrTristeSad/MANAGER/main/install.sh \
   -o /tmp/manager-install.sh
-sudo bash /tmp/manager-install.sh
+bash -n /tmp/manager-install.sh
+bash /tmp/manager-install.sh
 rm -f /tmp/manager-install.sh
 ```
 
-Depois execute:
+Depois:
 
 ```bash
 manager
@@ -87,35 +157,13 @@ menu
 ## CLI
 
 ```text
-manager                 abre o menu interativo
-manager --health        health check não interativo
-manager --status        status resumido dos serviços
-manager --diagnostics   abre o diagnóstico
-manager --version       mostra a versão
-manager --help          mostra a ajuda
+manager --health        health check (0=OK, 1=aviso, 2=crítico)
+manager --status        status dos serviços sem abrir menu
+manager --expired       lista contas SSH expiradas
+manager --diagnostics   diagnóstico
+manager --version       versão
+manager --help          ajuda
 ```
-
-## Comandos de recuperação
-
-Voltar o **código** para a versão anterior preservada pelo updater:
-
-```bash
-manager-rollback
-```
-
-Remover apenas o código do MANAGER, preservando configurações e serviços:
-
-```bash
-manager-uninstall
-```
-
-Remover também as configurações criadas pelo MANAGER:
-
-```bash
-manager-uninstall --purge
-```
-
-O `--purge` exige confirmação explícita. Pacotes do sistema, certificados Let's Encrypt, backups e regras UFW são preservados para reduzir o risco de perda de acesso ou de serviço.
 
 ## Menu principal
 
@@ -126,6 +174,7 @@ SERVIDOR E VPN
  3) WireGuard VPN
  4) OpenVPN
  5) Bloqueio de anúncios DNS
+19) Banner SSH
 
 SEGURANÇA
  6) Segurança / hardening SSH
@@ -143,158 +192,104 @@ MONITORAMENTO E MANUTENÇÃO
 15) Assistente / perfis
 16) Saúde do servidor
 17) Manutenção do sistema
-20) Status dos serviços
+20) Serviços
+21) Speedtest / latência
 
 90) Atualizar MANAGER
  0) Sair
 ```
 
-## WireGuard
-
-O módulo usa `wireguard`/`wireguard-tools` e `wg-quick@wg0`. A rede padrão criada pelo MANAGER é `10.66.66.0/24`.
-
-As regras de encaminhamento/NAT são específicas para a interface/sub-rede WireGuard, inseridas sem limpar regras existentes e removidas individualmente quando a VPN para. O MANAGER não limpa o firewall da VPS.
-
-Perfis de clientes ficam em:
-
-```text
-/etc/manager/wireguard/clients/
-```
-
-## OpenVPN
-
-O OpenVPN usa uma instância própria chamada `manager` e não sobrescreve uma configuração existente em `/etc/openvpn/server/manager.conf`.
-
-A rede padrão é `10.8.0.0/24`. A PKI fica em `/etc/manager/openvpn/easy-rsa` e os perfis de cliente em:
-
-```text
-/etc/manager/openvpn/clients/
-```
-
-O módulo gera certificados individuais, mantém CRL e permite revogar clientes. Quando o Ad Block estiver escutando em `10.8.0.1`, a VPN pode ser configurada para entregá-lo como DNS aos clientes.
-
-## DNS Ad Block
-
-O bloqueador utiliza `dnsmasq`. Inicialmente ele escuta apenas em `127.0.0.1`.
-
-Depois, o menu de listeners permite adicionar simultaneamente endereços privados/VPN atribuídos ao servidor. Para as VPNs do MANAGER, os endereços padrão são:
-
-```text
-127.0.0.1    loopback obrigatório
-10.66.66.1   WireGuard
-10.8.0.1     OpenVPN
-```
-
-O módulo usa `bind-dynamic` para acompanhar interfaces VPN que podem subir/descer e se recusa a adicionar um IPv4 público como listener. Assim, WireGuard e OpenVPN podem usar o mesmo bloqueador sem transformar a VPS em resolver DNS público.
-
-Arquivos principais:
-
-```text
-/etc/manager/adblock/sources.list
-/etc/manager/adblock/whitelist.txt
-/etc/manager/adblock/blacklist.txt
-/etc/manager/adblock/listen-addresses.txt
-```
-
-O log de consultas usado para estatísticas é opcional. Ao ativá-lo, o MANAGER avisa que nomes consultados pelos clientes passarão a aparecer no journal.
-
-## TLS / Let's Encrypt
-
-O Certbot é instalado em `/opt/certbot` usando um virtualenv isolado. O MANAGER oferece:
-
-- `standalone`, somente quando a porta 80 está livre;
-- `webroot`, quando já existe um servidor HTTP;
-- teste de renovação;
-- renovação manual;
-- timer systemd duas vezes ao dia.
-
-O MANAGER não edita automaticamente configurações de Nginx/Apache.
-
 ## Backup
 
-Backups locais são armazenados em:
+Backups ficam em:
 
 ```text
 /var/backups/manager/
 ```
 
-Eles têm permissão restrita e podem conter chaves privadas das VPNs. A restauração aceita somente arquivos dentro desse diretório e, antes de restaurar, cria um snapshot adicional da configuração atual.
+Eles têm permissão restrita e podem conter chaves privadas de VPN. A versão 0.5 também inclui no backup o estado do banner e os metadados/timers de contas teste.
 
-## Atualização e rollback de código
+A restauração valida escopo e SHA-256 antes de extrair o arquivo e cria um snapshot adicional do estado atual.
+
+## Atualização e rollback
 
 O instalador baixa todos os arquivos para uma área temporária e executa `bash -n` antes de alterar a instalação ativa.
 
-Em uso normal, a origem do instalador deve ser HTTPS. `file://` só é permitido para CI ou quando um teste local ativa explicitamente `MANAGER_ALLOW_FILE_SOURCE=1`.
-
-Durante uma atualização, a versão anterior do código é preservada em:
+A versão anterior do código é preservada em:
 
 ```text
 /opt/manager.rollback
 ```
 
-O estado permanente fica em `/etc/manager` e não é apagado pelo updater.
+Rollback:
 
-## Roadmap
-
-A evolução planejada até 1.0 está documentada em:
-
-```text
-docs/ROADMAP.md
+```bash
+manager-rollback
 ```
 
-O plano inclui paridade útil com SSHPlus, Connection Engine, Automation Legacy desligável, Automation v2, Modo Colmeia com balanceamento e sessões globais, além de Telegram Bot + Mini App.
+Desinstalar código preservando configuração:
 
-## Teste antes de chamar de estável
+```bash
+manager-uninstall
+```
 
-O roteiro de validação em VPS real está em:
+Remover também o estado gerenciado:
+
+```bash
+manager-uninstall --purge
+```
+
+O purge remove timers/drop-ins criados pelo MANAGER e contas **teste** ainda registradas, mas não apaga usuários SSH comuns apenas porque foram administrados pelo MANAGER.
+
+## Próximas etapas
+
+O plano completo está em [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
+Resumo:
+
+```text
+0.5.x  paridade SSHPlus útil
+0.6.0  Connection Engine
+0.7.0  Legacy v1 + Automation v2
+0.8.0  Modo Colmeia
+0.9.0  Telegram Bot + Mini App
+0.9.5  migração e escala
+1.0.0  release de produção
+```
+
+### Legacy
+
+O futuro **Legacy v1** será uma única conexão compatível com o antigo ecossistema `syncpainel`; não haverá uma implementação separada por versão de painel.
+
+Ele será opcional e **desligado por padrão** em instalações novas.
+
+### Modo Colmeia
+
+A Colmeia poderá reunir servidores no mesmo país, cidade/datacenter ou em vários países. O scheduler planejado distribuirá novas sessões conforme capacidade, CPU, RAM, rede, número de sessões, saúde, protocolo e peso do nó.
+
+Também estão planejados sticky sessions, drain para manutenção, failover, sessão global por identidade e comunicação autenticada/criptografada entre os componentes.
+
+### Telegram
+
+A administração remota futura será baseada em **Telegram Bot + Telegram Mini App**, sem painel web administrativo convencional. Identidade e permissões serão verificadas no backend.
+
+## Testes
+
+O CI executa:
+
+- `bash -n`;
+- ShellCheck;
+- regressões contra padrões destrutivos conhecidos;
+- política de fonte segura do instalador;
+- instalação/update/rollback/uninstall em smoke test;
+- checks não interativos do MANAGER.
+
+O roteiro para VPS real está em:
 
 ```text
 docs/TESTING.md
 ```
 
-Ele cobre instalação, SSH, Fail2ban, UFW, WireGuard, OpenVPN, DNS simultâneo, BBR, TLS, backup/restore, rollback e desinstalação.
-
-## Estrutura
-
-```text
-manager                         menu principal
-install.sh                      instalador/updater
-rollback.sh                     rollback da versão do código
-uninstall.sh                    desinstalador
-lib/common.sh                   helpers compartilhados
-modules/system.sh               informações e serviços
-modules/ssh_users.sh            usuários e sessões SSH
-modules/ssh_keys.sh             chaves públicas SSH
-modules/wireguard.sh            WireGuard
-modules/openvpn.sh              OpenVPN / Easy-RSA
-modules/adblock.sh              bloqueio DNS / listas / stats
-modules/security.sh             hardening SSH / updates
-modules/firewall.sh             UFW
-modules/fail2ban.sh             Fail2ban
-modules/tls.sh                  Certbot / Let's Encrypt
-modules/diagnostics.sh          diagnóstico
-modules/health.sh               saúde do servidor
-modules/maintenance.sh          manutenção do sistema
-modules/backup.sh               backup/restore
-modules/traffic.sh              tráfego/vnStat
-modules/performance.sh          BBR/fq reversível
-modules/logs.sh                 logs
-modules/profiles.sh             assistente guiado
-VERSION                         versão atual
-CHANGELOG.md                    histórico de versões
-SECURITY.md                     política de segurança
-docs/TESTING.md                 roteiro de teste real
-docs/ROADMAP.md                 plano de evolução até 1.0
-```
-
-## Segurança operacional
-
-O MANAGER roda como root porque administra serviços do sistema. Cada módulo deve ser pequeno, legível, limitado ao recurso que gerencia e reversível sempre que possível.
-
-Recomenda-se testar versões novas primeiro em uma VPS descartável ou snapshot da VPS. Firewalls de provedores/cloud continuam sendo independentes do firewall local.
-
-O CI verifica sintaxe Bash, ShellCheck, formato da versão, política de origem do instalador e padrões destrutivos conhecidos. Testes estáticos não substituem um teste real de systemd, PAM, netfilter, WireGuard, OpenVPN e ACME.
-
 ## Origem
 
-O SSHPlus Manager original foi desenvolvido por **@crazy_vpn** e deu origem a muitos forks comunitários. Este projeto preserva a ideia de administração simples por terminal, mas substitui implementações obsoletas e práticas arriscadas por uma base moderna.
+O SSHPlus Manager original foi desenvolvido por **@crazy_vpn** e deu origem a vários forks comunitários. Este projeto preserva a ideia de administração simples por terminal enquanto substitui implementações obsoletas e prepara uma arquitetura moderna para automação e operação multi-servidor.
