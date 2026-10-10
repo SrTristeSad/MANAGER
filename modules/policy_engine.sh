@@ -433,7 +433,7 @@ EOF
 Description=MANAGER identity policy change watcher
 
 [Path]
-PathChanged=$IDENTITY_DIR
+PathChanged=$IDENTITY_CHANGED
 Unit=manager-policy-reconcile.service
 
 [Install]
