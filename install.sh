@@ -63,14 +63,17 @@ FILES=(
   "modules/ssh_users.sh"
   "modules/adblock.sh"
   "modules/wireguard.sh"
+  "modules/openvpn.sh"
   "modules/firewall.sh"
   "modules/fail2ban.sh"
   "modules/security.sh"
+  "modules/tls.sh"
   "modules/diagnostics.sh"
   "modules/backup.sh"
   "modules/traffic.sh"
   "modules/performance.sh"
   "modules/logs.sh"
+  "modules/profiles.sh"
 )
 
 for file in "${FILES[@]}"; do
@@ -140,6 +143,6 @@ echo "Remover:  manager-uninstall"
 [[ -d "$ROLLBACK_DIR" ]] && echo "Código anterior preservado em: $ROLLBACK_DIR"
 echo ""
 if [[ "${1:-}" != "--update" ]]; then
-  echo "Os módulos opcionais (WireGuard, Fail2ban, UFW, dnsmasq, vnStat)"
-  echo "só são instalados quando você escolhe a função correspondente."
+  echo "VPNs, DNS, firewall, Fail2ban, TLS, vnStat e demais módulos"
+  echo "só instalam dependências quando você escolhe a função correspondente."
 fi
