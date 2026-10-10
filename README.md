@@ -2,176 +2,201 @@
 
 Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Manager**, reconstruído para Debian/Ubuntu atuais.
 
-> O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva as capacidades úteis, reimplementa o que envelheceu com código auditável e prepara uma arquitetura nova para Automation v2, Telegram e Modo Colmeia.
+> O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva capacidades úteis, substitui implementações inseguras/obsoletas e prepara uma arquitetura própria para Automation v2, Telegram e Modo Colmeia.
 
-Versão atual: **0.6.0**.
+Versão atual: **0.6.1**.
 
 ## Princípios
 
 - não substituir o `sshd_config` inteiro;
-- não executar `iptables -F` ou `nft flush ruleset`;
+- não executar `iptables -F`, `ip6tables -F` ou `nft flush ruleset`;
 - não baixar executáveis opacos como root;
 - validar configurações antes de recarregar serviços;
 - manter módulos opcionais realmente opcionais;
-- criar backups/rollback antes de mudanças críticas;
+- criar backup/rollback antes de mudanças críticas;
 - preservar configurações que não pertencem ao MANAGER sempre que possível;
-- compatibilidade com o legado não significa copiar fragilidades do legado.
+- compatibilidade com o legado não significa copiar fragilidades do legado;
+- integrações futuras devem usar operações estruturadas, nunca shell remoto arbitrário.
 
 ## Recursos atuais
 
 ### Servidor, SSH e VPN
 
 - informações do sistema: SO, kernel, uptime, memória, disco, carga, IPs e serviços;
-- usuários SSH: criar/remover, alterar senha, expiração, limite simultâneo, sessões online, bloquear/desbloquear e desconectar;
-- **usuários teste** com duração em minutos e remoção automática por timer systemd;
-- listagem e limpeza confirmada de usuários expirados;
-- **banner SSH** por drop-in do OpenSSH, validado com `sshd -t`;
+- usuários SSH: criar/remover, senha, validade, limite simultâneo, bloqueio, sessões e desconexão;
+- usuários teste com duração em minutos e remoção automática por `systemd timer`;
+- listagem e limpeza confirmada de expirados;
+- banner SSH por `sshd_config.d`, validado com `sshd -t`;
 - WireGuard com servidor `wg0`, clientes, revogação, QR Code e NAT específico;
-- OpenVPN moderno com PKI Easy-RSA, clientes `.ovpn`, CRL e UDP/TCP;
+- OpenVPN com PKI Easy-RSA, clientes `.ovpn`, CRL e UDP/TCP;
 - DNS Ad Block com dnsmasq, whitelist/blacklist e atualização diária;
-- hosts de proxy gerenciados pelo próprio MANAGER;
-- Squid privado, proxy TCP, túnel WebSocket e túnel TLS opcionais.
+- hosts de proxy gerenciados;
+- Squid privado, proxy TCP, WebSocket e TLS opcionais.
 
 ### Contas e revenda
 
-- **revendedor e subrevendedor** com hierarquia local;
-- cota de contas por revendedor/subrevendedor;
-- bloqueio/reativação do revendedor;
-- propriedade de conta SSH por revendedor;
-- cota do revendedor considera também as contas de seus subrevendedores;
-- criação direta de usuário SSH já vinculada ao proprietário;
-- validação dupla de cota para evitar corrida durante criação;
-- estado protegido em `/etc/manager/access`;
+- revendedor e subrevendedor;
+- hierarquia e bloqueio/reativação;
+- cotas;
+- propriedade de contas SSH;
+- cota do revendedor incluindo contas dos seus subrevendedores;
+- criação de usuário SSH diretamente vinculada ao proprietário;
+- validação de cota antes e durante a criação para evitar corrida;
 - exportação/restauração segura de usuários SSH;
 - detector de estruturas conhecidas do SSHPlus antigo;
 - monitor moderno de sessões SSH com encerramento seletivo por TTY.
 
-### Connection Engine
+O estado de revenda fica em:
 
-A partir da 0.6, o MANAGER possui uma identidade própria independente do usuário Linux.
+```text
+/etc/manager/access/
+```
 
-Uma identidade pode ter:
+## Connection Engine
 
-- ID estável;
-- proprietário/revendedor opcional;
-- estado habilitado/desabilitado;
-- expiração global;
-- limite planejado de sessões simultâneas;
-- protocolos permitidos;
-- vínculo com usuário SSH;
-- vínculo com cliente WireGuard;
-- vínculo com cliente OpenVPN.
+A partir da série 0.6, a identidade lógica deixa de depender do `/etc/passwd`.
 
-O estado fica em:
+Exemplo:
+
+```text
+maria
+├── owner = revenda01
+├── enabled = 1
+├── expires_epoch = 0
+├── max_sessions = 1
+├── protocols = ssh,wireguard,openvpn
+├── ssh_user = maria
+├── wireguard_client = maria
+└── openvpn_client = maria
+```
+
+Uma identidade pode existir sem ser necessariamente um usuário Linux e pode agrupar diferentes recursos de conexão.
+
+Estado:
 
 ```text
 /etc/manager/connection/identities/
 ```
 
-Os recursos técnicos continuam sendo administrados por seus módulos atuais; o Connection Engine os referencia por vínculo, sem duplicar senhas, chaves privadas ou certificados.
+As identidades não duplicam senhas, chaves privadas WireGuard ou certificados OpenVPN. Elas apenas vinculam a política aos recursos técnicos existentes.
 
-A documentação detalhada está em [`docs/CONNECTION_ENGINE.md`](docs/CONNECTION_ENGINE.md).
+Documentação detalhada: [`docs/CONNECTION_ENGINE.md`](docs/CONNECTION_ENGINE.md).
 
-> Nesta primeira etapa da 0.6, `enabled`, expiração e `max_sessions` já fazem parte da política da identidade, mas o enforcement unificado nos três protocolos entra nas próximas iterações 0.6.x.
+## Policy Enforcement — 0.6.1
 
-### Segurança
+A política da identidade agora é aplicada aos protocolos vinculados.
 
-- hardening OpenSSH por `sshd_config.d`;
-- Fail2ban;
-- firewall UFW com proteção da porta SSH detectada;
-- atualizações automáticas de segurança;
-- TLS/Let's Encrypt via Certbot isolado;
-- chaves públicas SSH com fingerprints e correção de permissões;
-- Squid do MANAGER não usa `http_access allow all` e não nasce aceitando origem pública irrestrita;
-- túneis TCP/WebSocket/TLS encaminham somente para serviços locais em `127.0.0.1`;
-- identidades do Connection Engine ficam em estado root-only e não guardam credenciais dos protocolos vinculados.
+### Estado e expiração
 
-### Monitoramento e manutenção
-
-- health check do servidor;
-- diagnóstico de rede, DNS, SSH, NTP, recursos e serviços;
-- tráfego/conexões e suporte opcional a vnStat;
-- monitor dedicado de sessões SSH;
-- logs centralizados;
-- backup e rollback de configurações gerenciadas;
-- BBR + fq reversível;
-- manutenção APT/NTP/journal;
-- gerenciamento central de serviços;
-- **Speedtest e ping**, com histórico local do Speedtest;
-- self-update com validação de sintaxe;
-- rollback da versão anterior do código;
-- desinstalação conservadora e `--purge` separado.
-
-## Usuários teste
-
-A conta teste é uma conta SSH real com expiração em minutos.
-
-O MANAGER:
-
-1. gera ou aceita um nome de usuário;
-2. gera uma senha aleatória;
-3. mostra a senha uma única vez;
-4. não salva essa senha em texto claro;
-5. registra apenas os metadados de expiração em `/etc/manager/ssh-tests`;
-6. usa `manager-test-users.timer` para remover a conta quando o prazo termina;
-7. mantém uma expiração adicional no próprio sistema como proteção de retaguarda.
-
-O timer continua funcionando após reboot.
-
-## Revendedores, subrevendedores e cotas
-
-O estado é separado das contas Linux e fica em:
+O estado efetivo pode ser:
 
 ```text
-/etc/manager/access/resellers/
-/etc/manager/access/owners/
+active
+disabled
+expired
 ```
 
-Um revendedor pode possuir contas diretamente e também subrevendedores. A cota total do revendedor contabiliza as contas válidas pertencentes aos subrevendedores vinculados.
+Uma identidade `disabled` ou `expired` deixa de ter seus recursos vinculados disponíveis conforme o protocolo.
 
-A opção **Criar conta vinculada a revendedor** valida a disponibilidade antes de criar o usuário e repete a atribuição sob lock. Se outra operação consumir a última vaga durante a criação, o usuário recém-criado é removido para não ficar órfão ou ultrapassar a cota.
+### SSH
 
-A estrutura também oferece operações internas não interativas de consulta de uso, teste de cota e associação de propriedade para que a futura Automation v2 não precise manipular os arquivos diretamente.
-
-Na primeira versão do Connection Engine, a cota ainda é contabilizada pelo modelo SSH existente. A migração para cota baseada em identidade/produto está planejada ainda na série 0.6.
-
-## Connection Engine
-
-Listar identidades:
-
-```bash
-manager --identities
-```
-
-Consultar uma identidade:
-
-```bash
-manager --identity maria
-```
-
-Também é possível criar uma identidade e vincular recursos já existentes pelo menu **Connection Engine / identidades**.
-
-Uma importação por nome procura automaticamente:
+O MANAGER gera somente:
 
 ```text
-usuário Linux com o mesmo nome
-cliente WireGuard com o mesmo nome
-cliente OpenVPN com o mesmo nome
+/etc/ssh/sshd_config.d/65-manager-identity-policy.conf
+/etc/security/limits.d/98-manager-identity.conf
 ```
 
-e cria os vínculos encontrados sem regenerar credenciais.
+O primeiro usa `DenyUsers` para identidades inativas, cobrindo autenticação por senha e chave pública. O segundo aplica o limite local disponível para SSH.
+
+Antes de recarregar o OpenSSH, o MANAGER executa `sshd -t` e reverte a alteração se a configuração for recusada.
+
+Sessões SSH existentes de uma identidade que se torna inativa são encerradas seletivamente por TTY. `root` não é alvo dessa política.
+
+### WireGuard
+
+Uma identidade inativa tem o peer removido da interface `wg0` em runtime.
+
+O MANAGER **não apaga**:
+
+```text
+chave privada do cliente
+chave pública
+PSK
+arquivo de configuração
+registro do peer no estado persistente
+```
+
+Ao reativar a identidade, o peer pode ser reconstruído no runtime usando as credenciais existentes.
+
+### OpenVPN
+
+O OpenVPN recebe um `client-connect` gerenciado pelo MANAGER para consultar a política antes de aceitar uma nova conexão de um cliente vinculado.
+
+Uma identidade desativada não tem o certificado revogado apenas por causa do bloqueio temporário. Se já estiver conectada, o MANAGER pode bloquear especificamente o tráfego daquele IP virtual até a política voltar a permitir acesso.
+
+Quando a instalação do hook exigiria reiniciar um OpenVPN com clientes ativos, o restart é adiado para não derrubar sessões válidas somente para instalar a integração.
+
+## Sessões por identidade
+
+Visão consolidada:
+
+```bash
+manager --identity-sessions
+```
+
+Uma identidade:
+
+```bash
+manager --identity-sessions maria
+```
+
+Exemplo conceitual:
+
+```text
+maria  active  ssh=0  wg=1  ovpn=0  total=1  max=1
+```
+
+O Connection Engine observa SSH, WireGuard e OpenVPN sob a mesma identidade.
+
+### `max_sessions`
+
+Na 0.6.1 o limite já começa a valer **localmente**:
+
+- SSH recebe o número de vagas restante via `maxlogins`;
+- OpenVPN consulta o total antes de uma nova conexão;
+- WireGuard não é reativado para uma nova sessão quando as vagas já estão ocupadas por outro protocolo;
+- desativação/expiração continua tendo precedência sobre o limite.
+
+Isso ainda não é o futuro limite global multi-VPS. Protocolos independentes podem ter pequenas janelas de corrida local. A garantia forte entre servidores será feita pela Colmeia com lease atômico/fencing.
+
+## Reconciliação automática
+
+O enforcement é mantido por:
+
+```text
+manager-policy-reconcile.path
+manager-policy-reconcile.timer
+manager-policy-reconcile.service
+```
+
+O watcher reage a mudanças de identidade e o timer periódico cobre expiração, handshakes e mudanças de sessão.
+
+Também é possível reconciliar manualmente pelo menu ou por:
+
+```bash
+/opt/manager/modules/policy_engine.sh --reconcile
+```
 
 ## Hosts de proxy
 
-A lista moderna de destinos fica em:
+Lista moderna:
 
 ```text
 /etc/manager/proxy/hosts.txt
 ```
 
-Ela aceita domínios normalizados como `.example.com`. O módulo permite listar, adicionar, remover e importar domínios válidos de um `payload.txt` antigo do SSHPlus sem copiar a configuração antiga do Squid.
-
-Consulta não interativa:
+O módulo permite listar, adicionar, remover e importar domínios válidos de um `payload.txt` antigo sem copiar cegamente configurações legadas.
 
 ```bash
 manager --proxy-hosts
@@ -179,48 +204,61 @@ manager --proxy-hosts
 
 ## Proxies e túneis
 
-O estado fica em:
+Estado:
 
 ```text
 /etc/manager/proxy/
 ```
 
-Os serviços disponíveis são:
+Disponíveis:
 
-- **Squid privado**: configuração própria do MANAGER, sem substituir `/etc/squid/squid.conf`;
-- **TCP**: `socat` encaminhando uma porta de escuta para `127.0.0.1:<porta>`;
-- **WebSocket**: `websockify` opcional encaminhando para serviço TCP local;
-- **TLS**: `stunnel4` opcional encaminhando para serviço TCP local.
+- Squid privado em configuração própria do MANAGER;
+- TCP por `socat` para backend local;
+- WebSocket por `websockify` para backend local;
+- TLS por `stunnel4` para backend local.
 
-O Squid aceita somente localhost e redes privadas RFC1918 por padrão. É possível ativar também a restrição pela lista de hosts. O MANAGER não configura automaticamente um Squid aberto para toda a internet.
+O Squid do MANAGER não nasce como proxy aberto. TCP/WebSocket/TLS encaminham somente para `127.0.0.1:<porta>` e não liberam UFW automaticamente.
 
-Os módulos TCP/WebSocket/TLS não alteram o UFW automaticamente. Se o firewall estiver ativo, o MANAGER avisa para que a porta seja liberada conscientemente no módulo Firewall.
-
-O túnel TLS inicial gera certificado autoassinado. Para uso público de produção, use certificado confiável quando a integração específica estiver configurada.
-
-As unidades systemd são regeneráveis a partir do estado com:
+Reconciliação:
 
 ```bash
 /opt/manager/modules/proxies.sh --reconcile
 ```
 
-Status não interativo:
+Status:
 
 ```bash
 manager --proxy-status
 ```
 
-## Backup e migração de usuários SSH
+## Backup e migração
 
-A exportação de usuários fica em:
+Backups de configuração ficam em:
+
+```text
+/var/backups/manager/
+```
+
+O backup inclui, quando presentes:
+
+```text
+/etc/manager/access
+/etc/manager/connection
+/etc/manager/proxy
+estado WireGuard/OpenVPN
+DNS/TLS/banner/performance
+configurações próprias do MANAGER
+```
+
+Os arquivos são restritos a root e acompanhados de SHA-256.
+
+A exportação de usuários Linux fica separada em:
 
 ```text
 /var/backups/manager/users/
 ```
 
-O formato atual preserva nome, hash de senha já existente no sistema, expiração, shell, limite simultâneo e proprietário. Os arquivos são restritos a root e acompanhados de SHA-256.
-
-Ao contrário do `userbackup` histórico do SSHPlus, o MANAGER **não** substitui `/etc/passwd`, `/etc/shadow`, `/etc/group` ou `/etc/gshadow` inteiros e não publica o backup automaticamente por servidor HTTP. Na restauração, cada conta é validada e recriada individualmente; usuários já existentes são preservados.
+Ela preserva hash de autenticação existente, validade, shell, limite e proprietário, sem guardar senha em texto claro e sem substituir `/etc/passwd`, `/etc/shadow`, `/etc/group` ou `/etc/gshadow` inteiros durante restauração.
 
 O detector de legado reconhece estruturas como:
 
@@ -230,118 +268,54 @@ O detector de legado reconhece estruturas como:
 /root/backup.vps
 ```
 
-A série 0.5 apenas detecta esses formatos. A importação específica do SSHPlus será feita posteriormente por conversão controlada, sem restaurar cegamente arquivos de sistema antigos.
+A conversão específica do SSHPlus continuará sendo assistida/controlada; o MANAGER não restaura cegamente arquivos de sistema antigos.
 
-## Monitor SSH
+## Segurança
 
-O monitor mostra sessões por usuário, origem, duração, limite configurado, processos e sockets relacionados ao OpenSSH.
+- hardening OpenSSH por `sshd_config.d`;
+- Fail2ban;
+- UFW com proteção da porta SSH detectada;
+- atualizações automáticas de segurança;
+- TLS/Let's Encrypt via Certbot isolado;
+- chaves públicas SSH com fingerprints;
+- Squid sem `http_access allow all`;
+- nada de flush global de firewall;
+- credenciais VPN com permissões restritas;
+- Connection Engine root-only;
+- alterações SSH validadas antes de reload;
+- atualização baixada para arquivo temporário e validada com `bash -n`.
 
-Também permite encerrar **uma sessão específica** informando a TTY, em vez de matar todos os processos do usuário. Sessões de `root` não podem ser encerradas por esse menu.
+## Monitoramento e manutenção
 
-Consulta simples sem abrir o menu:
-
-```bash
-manager --ssh-sessions
-```
-
-## Expirados
-
-Pelo menu de usuários é possível listar e remover contas expiradas. A limpeza destrutiva exige confirmação.
-
-Consulta não interativa:
-
-```bash
-manager --expired
-```
-
-## Banner SSH
-
-O MANAGER mantém seu banner em:
-
-```text
-/etc/manager/banner/banner.txt
-```
-
-Quando ativado, cria apenas:
-
-```text
-/etc/ssh/sshd_config.d/70-manager-banner.conf
-```
-
-Antes do reload, a configuração é validada com `sshd -t`. O MANAGER não substitui `/etc/issue.net` nem o `sshd_config` inteiro.
-
-## Serviços
-
-O menu **Serviços** mostra e permite iniciar/reiniciar/parar serviços conhecidos pelo MANAGER, como WireGuard, OpenVPN, dnsmasq e Fail2ban.
-
-Por segurança, o MANAGER não oferece a ação de parar o OpenSSH pelo menu remoto.
-
-O status não interativo continua disponível:
-
-```bash
-manager --status
-```
-
-## Speedtest
-
-O cliente é opcional. O MANAGER pode instalar `speedtest-cli` pelos repositórios APT da distribuição.
-
-Resultados executados pelo menu são registrados em:
-
-```text
-/var/log/manager/speedtest.log
-```
-
-O menu avisa antes do teste porque ele gera tráfego real de download/upload na VPS.
-
-## Sistemas suportados
-
-- Ubuntu 22.04 ou superior;
-- Debian 12 ou superior;
-- `systemd` e `apt` são obrigatórios nesta implementação.
-
-O roadmap inclui ampliação explícita dos testes para as distribuições modernas de 2026.
-
-## Instalação
-
-Para evitar executar conteúdo remoto diretamente por pipe, baixe o instalador e execute-o:
-
-```bash
-sudo -i
-curl -fL --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/SrTristeSad/MANAGER/main/install.sh \
-  -o /tmp/manager-install.sh
-bash -n /tmp/manager-install.sh
-bash /tmp/manager-install.sh
-rm -f /tmp/manager-install.sh
-```
-
-Depois:
-
-```bash
-manager
-```
-
-O alias clássico também funciona:
-
-```bash
-menu
-```
+- health check;
+- diagnóstico de rede/DNS/SSH/NTP/recursos;
+- tráfego/conexões e vnStat opcional;
+- monitor SSH;
+- logs;
+- backup/restore;
+- BBR + fq reversível;
+- manutenção APT/NTP/journal;
+- serviços;
+- Speedtest/ping com histórico;
+- self-update;
+- rollback;
+- uninstall conservador e `--purge` separado.
 
 ## CLI
 
 ```text
-manager --health        health check (0=OK, 1=aviso, 2=crítico)
-manager --status        status dos serviços sem abrir menu
-manager --expired       lista contas SSH expiradas
-manager --ssh-sessions  mostra as sessões SSH atuais
-manager --proxy-status  mostra proxies/túneis gerenciados
-manager --proxy-hosts   lista hosts permitidos no proxy
-manager --identities    lista identidades do Connection Engine
-manager --identity ID   mostra uma identidade específica
-manager --diagnostics   diagnóstico
-manager --version       versão
-manager --help          ajuda
+manager --health                 health check (0=OK, 1=aviso, 2=crítico)
+manager --status                 status dos serviços
+manager --expired                contas SSH expiradas
+manager --ssh-sessions           sessões SSH
+manager --proxy-status           proxies/túneis
+manager --proxy-hosts            hosts permitidos no proxy
+manager --identities             identidades do Connection Engine
+manager --identity ID            detalhes de uma identidade
+manager --identity-sessions [ID] sessões agregadas por identidade
+manager --diagnostics            diagnóstico
+manager --version                versão
+manager --help                   ajuda
 ```
 
 ## Menu principal
@@ -370,6 +344,7 @@ CONTAS E REVENDA
 24) Revendedores, subrevendedores e cotas
 27) Criar conta vinculada a revendedor
 28) Connection Engine / identidades
+29) Sessões / reconciliar políticas de identidade
 
 MONITORAMENTO E MANUTENÇÃO
 10) Tráfego e conexões
@@ -387,28 +362,48 @@ MONITORAMENTO E MANUTENÇÃO
  0) Sair
 ```
 
-## Backup
+## Sistemas suportados
 
-Backups ficam em:
+Nesta implementação:
 
-```text
-/var/backups/manager/
+- Ubuntu 22.04 ou superior;
+- Debian 12 ou superior;
+- `systemd` e `apt` são necessários.
+
+A matriz de testes será ampliada para as distribuições modernas previstas no roadmap.
+
+## Instalação
+
+Evite executar instalador remoto diretamente por pipe. Baixe, valide e execute:
+
+```bash
+sudo -i
+curl -fL --proto '=https' --tlsv1.2 \
+  https://raw.githubusercontent.com/SrTristeSad/MANAGER/main/install.sh \
+  -o /tmp/manager-install.sh
+bash -n /tmp/manager-install.sh
+bash /tmp/manager-install.sh
+rm -f /tmp/manager-install.sh
 ```
 
-Eles têm permissão restrita e podem conter chaves privadas de VPN/TLS e dados de revenda. O backup de configuração inclui o estado do banner, contas teste, `/etc/manager/access`, `/etc/manager/proxy` e `/etc/manager/connection`.
+Depois:
 
-A restauração valida escopo e SHA-256 antes de extrair o arquivo e cria um snapshot adicional do estado atual. Quando há estado de proxies, o MANAGER tenta regenerar as unidades systemd usando os módulos instalados; dependências opcionais ausentes continuam precisando ser instaladas antes do serviço voltar a operar.
+```bash
+manager
+```
 
-A exportação de **usuários Linux** é intencionalmente separada do backup de configurações e fica em `/var/backups/manager/users/`, porque contém hashes de autenticação e exige tratamento como segredo.
+Alias clássico:
 
-## Atualização e rollback
+```bash
+menu
+```
 
-O instalador baixa todos os arquivos para uma área temporária e executa `bash -n` antes de alterar a instalação ativa.
+## Atualização, rollback e remoção
 
-A versão anterior do código é preservada em:
+Atualização pelo menu:
 
 ```text
-/opt/manager.rollback
+90) Atualizar MANAGER
 ```
 
 Rollback:
@@ -417,29 +412,29 @@ Rollback:
 manager-rollback
 ```
 
-Desinstalar código preservando configuração e serviços:
+Desinstalar o código preservando estado/configuração:
 
 ```bash
 manager-uninstall
 ```
 
-Remover também o estado e as unidades próprias do MANAGER:
+O enforcement de identidades é desanexado antes de remover o código, evitando deixar hooks dependentes de `/opt/manager` quebrados. O estado em `/etc/manager` é preservado e pode voltar a ser aplicado em uma reinstalação.
+
+Remover também o estado próprio do MANAGER:
 
 ```bash
 manager-uninstall --purge
 ```
 
-O purge remove timers/drop-ins e unidades de proxy criadas pelo MANAGER e contas **teste** ainda registradas, mas não apaga usuários SSH comuns, pacotes do sistema, certificados Let's Encrypt, backups ou regras UFW.
+O purge continua preservando pacotes do sistema, certificados Let's Encrypt, backups e regras UFW que não devem ser apagados implicitamente.
 
-## Próximas etapas
+## Roadmap
 
-O plano completo está em [`docs/ROADMAP.md`](docs/ROADMAP.md).
-
-Resumo:
+Plano detalhado: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ```text
 0.5.x  paridade SSHPlus útil
-0.6.x  Connection Engine e enforcement comum
+0.6.x  Connection Engine, políticas, sessões e produtos
 0.7.0  Legacy v1 + Automation v2
 0.8.0  Modo Colmeia
 0.9.0  Telegram Bot + Mini App
@@ -447,40 +442,57 @@ Resumo:
 1.0.0  release de produção
 ```
 
-A fundação do **Connection Engine 0.6** já existe. As próximas iterações vão aplicar a política da identidade aos protocolos, consolidar sessões e tráfego e fazer `max_sessions` deixar de ser apenas metadado para se tornar enforcement real.
+### Legacy v1
 
-### Legacy
+Será **uma única conexão de compatibilidade** com o ecossistema `syncpainel`, não um adaptador diferente para cada versão de painel.
 
-O futuro **Legacy v1** será uma única conexão compatível com o antigo ecossistema `syncpainel`; não haverá uma implementação separada por versão de painel.
+Em instalação nova ficará desligado por padrão e poderá ser ativado/desativado completamente.
 
-Ele será opcional e **desligado por padrão** em instalações novas.
+### Automation v2
 
-### Modo Colmeia
+Será o protocolo novo, com ações estruturadas, RBAC, auditoria, idempotência, autenticação criptográfica, anti-replay e interface privilegiada controlada. Integrações não receberão shell arbitrário.
 
-A Colmeia poderá reunir servidores no mesmo país, cidade/datacenter ou em vários países. O scheduler planejado distribuirá novas sessões conforme capacidade, CPU, RAM, rede, número de sessões, saúde, protocolo e peso do nó.
+### Colmeia
 
-Também estão planejados sticky sessions, drain para manutenção, failover, sessão global por identidade e comunicação autenticada/criptografada entre os componentes.
+A Colmeia poderá reunir VPS no mesmo datacenter, mesma cidade, mesmo país ou em vários países.
+
+Planejado:
+
+- identidade criptográfica por nó;
+- regiões/pools;
+- weighted load balancing;
+- capacidade por nó;
+- sticky sessions;
+- drain;
+- health/heartbeat;
+- failover;
+- sessão global por identidade/plano;
+- lease atômico e fencing;
+- comunicação autenticada/criptografada.
+
+Assim uma identidade poderá, por exemplo, ter acesso a dez servidores mas continuar com `max_sessions_global=1`.
 
 ### Telegram
 
-A administração remota futura será baseada em **Telegram Bot + Telegram Mini App**, sem painel web administrativo convencional. Identidade e permissões serão verificadas no backend.
+Administração remota futura por Telegram Bot + Telegram Mini App, sem painel web administrativo convencional. Identidade e autorização serão verificadas no backend.
 
 ## Testes
 
 O CI executa:
 
-- `bash -n` em todos os scripts e bibliotecas;
+- `bash -n`;
 - ShellCheck;
-- regressões contra padrões destrutivos conhecidos;
-- regressão contra configuração de Squid aberto;
-- política de fonte segura do instalador;
-- instalação/update/rollback/uninstall em smoke test;
-- checks não interativos do MANAGER;
-- presença dos módulos de revenda, migração, proxy e monitor de sessões;
-- inicialização e CRUD básico da lista de hosts do proxy;
-- inicialização, criação, consulta e enable/disable de identidade do Connection Engine.
+- regressões contra padrões destrutivos;
+- regressão contra Squid aberto;
+- política segura de fontes do instalador;
+- instalação/update/rollback/uninstall;
+- smoke tests das CLIs;
+- Connection Engine CRUD básico;
+- sessões agregadas por identidade;
+- bloqueio e reativação de identidade SSH vinculada;
+- instalação e remoção das unidades de enforcement.
 
-O roteiro para VPS real está em:
+Roteiro adicional para VPS real:
 
 ```text
 docs/TESTING.md
@@ -488,4 +500,4 @@ docs/TESTING.md
 
 ## Origem
 
-O SSHPlus Manager original foi desenvolvido por **@crazy_vpn** e deu origem a vários forks comunitários. Este projeto preserva a ideia de administração simples por terminal enquanto substitui implementações obsoletas e prepara uma arquitetura moderna para automação e operação multi-servidor.
+O SSHPlus Manager original foi desenvolvido por **@crazy_vpn** e deu origem a vários forks comunitários. O MANAGER preserva a ideia de administração simples por terminal, mas evolui para uma arquitetura própria de identidade, automação e operação multi-servidor.
