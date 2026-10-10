@@ -9,6 +9,17 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   exit 1
 fi
 
+# Leases ativas são runtime e não sobrevivem sem o código do MANAGER.
+# Os epochs persistentes ficam em /etc/manager quando não há --purge.
+if [[ -x /opt/manager/modules/session_engine.sh ]]; then
+  /opt/manager/modules/session_engine.sh --detach >/dev/null 2>&1 || true
+else
+  systemctl disable --now manager-session-cleanup.timer >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-session-cleanup.timer \
+    /etc/systemd/system/manager-session-cleanup.service
+  rm -rf /run/manager/session-leases
+fi
+
 # O enforcement depende do código instalado. Antes de remover /opt/manager,
 # retire hooks/runtime de forma controlada; o estado das identidades permanece
 # em /etc/manager quando não há --purge e volta a ser aplicado numa reinstalação.
@@ -50,7 +61,6 @@ if $PURGE; then
     previous_forward="$(tr -d '[:space:]' < /etc/manager/network/previous-ip-forward)"
   fi
 
-  # Contas teste são explicitamente criadas/geridas pelo MANAGER e podem ser removidas no purge.
   if [[ -d /etc/manager/ssh-tests ]]; then
     for meta in /etc/manager/ssh-tests/*; do
       [[ -f "$meta" ]] || continue
@@ -85,7 +95,6 @@ if $PURGE; then
     rm -rf /etc/systemd/system/openvpn-server@manager.service.d
   fi
 
-  # Proxies/túneis possuem unidades próprias regeneráveis a partir de /etc/manager/proxy.
   systemctl disable --now manager-squid.service >/dev/null 2>&1 || true
   rm -f /etc/systemd/system/manager-squid.service
   for unit_file in \
@@ -128,8 +137,11 @@ if $PURGE; then
   rm -rf /var/log/manager
   systemctl daemon-reload || true
 
-  if command -v sshd >/dev/null 2>&1 && sshd -t; then
-    systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+  if command -v sshd >/dev/null 2>&1; then
+    [[ -d /run/sshd ]] || install -d -m 0755 /run/sshd
+    if sshd -t; then
+      systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+    fi
   fi
   if command -v fail2ban-client >/dev/null 2>&1; then
     systemctl restart fail2ban 2>/dev/null || true
@@ -150,6 +162,7 @@ rm -rf /opt/manager /opt/manager.rollback
 echo "[OK] Código do MANAGER removido."
 if ! $PURGE; then
   echo "As configurações em /etc/manager e serviços configurados foram preservados."
+  echo "Leases runtime foram descartadas; session_epoch e identidades persistem para reinstalação."
   echo "O enforcement de identidades foi desanexado junto com o código e volta a ser aplicado numa reinstalação."
   echo "Execute manager-uninstall --purge somente se quiser remover também as configurações do MANAGER."
 else
