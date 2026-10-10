@@ -19,9 +19,9 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 ### Servidor
 
 - **Informações do sistema**: SO, kernel, uptime, memória, disco, carga, IPs e serviços.
-- **Usuários SSH**: criar/remover contas, senha, expiração e limite de logins simultâneos.
+- **Usuários SSH**: criar/remover contas, senha, expiração, limite de logins simultâneos, sessões online, bloquear/desbloquear e desconectar usuário.
 - **WireGuard**: instala `wg0`, cria/revoga clientes, gera configuração e QR Code.
-- **DNS Ad Block**: dnsmasq + listas de bloqueio, whitelist via fontes personalizadas e atualização diária.
+- **DNS Ad Block**: dnsmasq + listas de bloqueio, fontes personalizadas e atualização diária.
 
 ### Segurança
 
@@ -36,8 +36,10 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 - **Tráfego** por interface, conexões ativas e histórico opcional com vnStat.
 - **Logs** centralizados de SSH, Fail2ban, WireGuard, dnsmasq e kernel/rede.
 - **Backup e rollback** das configurações gerenciadas pelo projeto.
-- **BBR + fq** como tuning de rede conservador, somente quando o kernel suportar.
+- **BBR + fq** com armazenamento e restauração dos valores anteriores.
 - **Self-update** com validação de sintaxe antes de substituir o código instalado.
+- **Rollback de código** para a versão anterior instalada.
+- **Desinstalação conservadora**, com `--purge` separado para configurações.
 
 ## Sistemas suportados
 
@@ -63,6 +65,28 @@ O alias clássico também funciona:
 ```bash
 menu
 ```
+
+## Comandos de recuperação
+
+Voltar o **código** para a versão anterior preservada pelo updater:
+
+```bash
+manager-rollback
+```
+
+Remover apenas o código do MANAGER, preservando configurações e serviços:
+
+```bash
+manager-uninstall
+```
+
+Remover também as configurações criadas pelo MANAGER:
+
+```bash
+manager-uninstall --purge
+```
+
+O modo `--purge` exige uma confirmação explícita e mantém pacotes do sistema instalados para não quebrar serviços compartilhados.
 
 ## Menu principal
 
@@ -106,7 +130,7 @@ Esses arquivos contêm chaves privadas e têm permissão `0600`.
 
 O bloqueador utiliza `dnsmasq`. Inicialmente ele escuta apenas em `127.0.0.1`; depois você pode selecionar um IP privado/VPN atribuído ao servidor.
 
-O módulo se recusa a configurar um endereço público como listener, reduzindo o risco de criar um resolver DNS aberto.
+O módulo se recusa a configurar um endereço IPv4 público como listener, reduzindo o risco de criar um resolver DNS aberto.
 
 Fontes de bloqueio:
 
@@ -122,7 +146,7 @@ Backups locais são armazenados em:
 /var/backups/manager/
 ```
 
-Eles incluem apenas configurações relacionadas ao MANAGER, como WireGuard, adblock, limites SSH e drop-ins de segurança. Antes de restaurar um backup, um snapshot adicional da configuração atual é criado.
+Eles incluem configurações relacionadas ao MANAGER, como WireGuard, adblock, limites SSH e drop-ins de segurança. Antes de restaurar um backup, um snapshot adicional da configuração atual é criado.
 
 ## Atualização e rollback de código
 
@@ -141,9 +165,11 @@ O estado e as configurações permanentes ficam em `/etc/manager` e não são ap
 ```text
 manager                         menu principal
 install.sh                      instalador/updater
+rollback.sh                     rollback da versão do código
+uninstall.sh                    desinstalador
 lib/common.sh                   helpers compartilhados
 modules/system.sh               informações e serviços
-modules/ssh_users.sh            usuários SSH
+modules/ssh_users.sh            usuários e sessões SSH
 modules/wireguard.sh            WireGuard
 modules/adblock.sh              bloqueio DNS
 modules/security.sh             hardening SSH / updates
@@ -152,9 +178,11 @@ modules/fail2ban.sh             Fail2ban
 modules/diagnostics.sh          diagnóstico
 modules/backup.sh               backup/restore
 modules/traffic.sh              tráfego/vnStat
-modules/performance.sh          BBR/fq
+modules/performance.sh          BBR/fq reversível
 modules/logs.sh                 logs
 VERSION                         versão atual
+CHANGELOG.md                    histórico de versões
+SECURITY.md                     política de segurança
 ```
 
 ## Segurança operacional
@@ -162,6 +190,8 @@ VERSION                         versão atual
 O MANAGER roda como root porque administra serviços do sistema. Por isso, cada módulo deve ser pequeno, legível e limitado ao recurso que gerencia.
 
 Recomenda-se testar versões novas primeiro em uma VPS descartável ou snapshot da VPS. Firewalls de provedores/cloud continuam sendo independentes do firewall local.
+
+O CI verifica sintaxe Bash, ShellCheck, formato de versão e alguns padrões destrutivos conhecidos, mas testes estáticos não substituem um teste real de systemd, PAM, netfilter e WireGuard.
 
 ## Origem
 
