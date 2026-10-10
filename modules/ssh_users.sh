@@ -65,7 +65,11 @@ create_user() {
   fi
   read -r -p "Limite simultâneo [1] (0 = sem limite): " limit
   limit="${limit:-1}"
-  [[ "$limit" =~ ^[0-9]+$ ]] && (( limit <= 50 )) || { err "Limite inválido"; pause; return; }
+  if [[ ! "$limit" =~ ^[0-9]+$ ]] || (( limit > 50 )); then
+    err "Limite inválido"
+    pause
+    return
+  fi
 
   useradd -m -s /bin/bash "$user"
   if ! printf '%s:%s\n' "$user" "$pass" | chpasswd; then
