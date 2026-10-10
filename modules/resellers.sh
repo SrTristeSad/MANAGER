@@ -45,62 +45,67 @@ owner_of_user() {
 }
 
 direct_usage() {
-  local id="$1" file owner count=0 user
+  local reseller_id="$1" file owner count=0 user
   init_state
   for file in "$OWNERS_DIR"/*; do
     [[ -f "$file" ]] || continue
     user="${file##*/}"
     id "$user" >/dev/null 2>&1 || continue
     owner="$(read_field "$file" owner)"
-    [[ "$owner" == "$id" ]] && count=$((count + 1))
+    if [[ "$owner" == "$reseller_id" ]]; then
+      count=$((count + 1))
+    fi
   done
   printf '%s\n' "$count"
 }
 
 children_of() {
-  local id="$1" file child parent
+  local reseller_id="$1" file child parent
   for file in "$RESELLERS_DIR"/*.conf; do
     [[ -f "$file" ]] || continue
     child="${file##*/}"
     child="${child%.conf}"
     parent="$(read_field "$file" parent)"
-    [[ "$parent" == "$id" ]] && printf '%s\n' "$child"
+    if [[ "$parent" == "$reseller_id" ]]; then
+      printf '%s\n' "$child"
+    fi
   done
 }
 
 subtree_usage() {
-  local id="$1" total child
-  total="$(direct_usage "$id")"
+  local reseller_id="$1" total child child_usage
+  total="$(direct_usage "$reseller_id")"
   while IFS= read -r child; do
     [[ -n "$child" ]] || continue
-    total=$((total + $(direct_usage "$child")))
-  done < <(children_of "$id")
+    child_usage="$(direct_usage "$child")"
+    total=$((total + child_usage))
+  done < <(children_of "$reseller_id")
   printf '%s\n' "$total"
 }
 
 usage_for() {
-  local id="$1" role
-  role="$(role_of "$id")"
+  local reseller_id="$1" role
+  role="$(role_of "$reseller_id")"
   if [[ "$role" == reseller ]]; then
-    subtree_usage "$id"
+    subtree_usage "$reseller_id"
   else
-    direct_usage "$id"
+    direct_usage "$reseller_id"
   fi
 }
 
 quota_allows_one_more() {
-  local id="$1" quota used parent pquota pused
-  reseller_exists "$id" || return 1
-  [[ "$(enabled_of "$id")" == 1 ]] || return 1
+  local reseller_id="$1" quota used parent pquota pused
+  reseller_exists "$reseller_id" || return 1
+  [[ "$(enabled_of "$reseller_id")" == 1 ]] || return 1
 
-  quota="$(quota_of "$id")"
+  quota="$(quota_of "$reseller_id")"
   [[ "$quota" =~ ^[0-9]+$ ]] || return 1
-  used="$(usage_for "$id")"
+  used="$(usage_for "$reseller_id")"
   if (( quota > 0 && used >= quota )); then
     return 1
   fi
 
-  parent="$(parent_of "$id")"
+  parent="$(parent_of "$reseller_id")"
   if [[ -n "$parent" ]]; then
     reseller_exists "$parent" || return 1
     [[ "$(enabled_of "$parent")" == 1 ]] || return 1
@@ -115,7 +120,7 @@ quota_allows_one_more() {
 }
 
 write_reseller() {
-  local id="$1" role="$2" parent="$3" quota="$4" enabled="$5" created="$6" tmp
+  local reseller_id="$1" role="$2" parent="$3" quota="$4" enabled="$5" created="$6" tmp
   tmp="$(mktemp)"
   {
     printf 'role=%s\n' "$role"
@@ -124,7 +129,7 @@ write_reseller() {
     printf 'enabled=%s\n' "$enabled"
     printf 'created_epoch=%s\n' "$created"
   } > "$tmp"
-  install -m 0600 "$tmp" "$(record_file "$id")"
+  install -m 0600 "$tmp" "$(record_file "$reseller_id")"
   rm -f "$tmp"
 }
 
@@ -134,17 +139,25 @@ list_resellers() {
   init_state
   printf '%-20s %-14s %-20s %-8s %-8s %-10s\n' "ID" "PAPEL" "PAI" "USO" "COTA" "ESTADO"
   printf '%-20s %-14s %-20s %-8s %-8s %-10s\n' "--------------------" "--------------" "--------------------" "--------" "--------" "----------"
-  local file id role parent quota enabled used found=0
+  local file reseller_id role parent quota enabled used found=0
   for file in "$RESELLERS_DIR"/*.conf; do
     [[ -f "$file" ]] || continue
     found=1
-    id="${file##*/}"; id="${id%.conf}"
+    reseller_id="${file##*/}"
+    reseller_id="${reseller_id%.conf}"
     role="$(read_field "$file" role)"
-    parent="$(read_field "$file" parent)"; [[ -n "$parent" ]] || parent="-"
-    quota="$(read_field "$file" quota)"; [[ "$quota" != 0 ]] || quota="∞"
-    enabled="$(read_field "$file" enabled)"; [[ "$enabled" == 1 ]] && enabled="ativo" || enabled="bloqueado"
-    used="$(usage_for "$id")"
-    printf '%-20s %-14s %-20s %-8s %-8s %-10s\n' "$id" "$role" "$parent" "$used" "$quota" "$enabled"
+    parent="$(read_field "$file" parent)"
+    [[ -n "$parent" ]] || parent="-"
+    quota="$(read_field "$file" quota)"
+    [[ "$quota" != 0 ]] || quota="∞"
+    enabled="$(read_field "$file" enabled)"
+    if [[ "$enabled" == 1 ]]; then
+      enabled="ativo"
+    else
+      enabled="bloqueado"
+    fi
+    used="$(usage_for "$reseller_id")"
+    printf '%-20s %-14s %-20s %-8s %-8s %-10s\n' "$reseller_id" "$role" "$parent" "$used" "$quota" "$enabled"
   done
   (( found == 1 )) || info "Nenhum revendedor cadastrado"
   pause
@@ -154,10 +167,10 @@ create_reseller() {
   header
   say "${C_WHITE}CRIAR REVENDEDOR${C_RESET}\n"
   init_state
-  local id role parent="" quota created
-  read -r -p "ID: " id
-  valid_id "$id" || { err "ID inválido"; pause; return; }
-  reseller_exists "$id" && { err "ID já existe"; pause; return; }
+  local reseller_id role parent="" quota created
+  read -r -p "ID: " reseller_id
+  valid_id "$reseller_id" || { err "ID inválido"; pause; return; }
+  reseller_exists "$reseller_id" && { err "ID já existe"; pause; return; }
   read -r -p "Tipo [revendedor/subrevendedor]: " role
   case "${role,,}" in
     revendedor|reseller) role="reseller" ;;
@@ -178,19 +191,19 @@ create_reseller() {
 
   (
     flock -x 9
-    write_reseller "$id" "$role" "$parent" "$quota" 1 "$created"
+    write_reseller "$reseller_id" "$role" "$parent" "$quota" 1 "$created"
   ) 9>"$LOCK_FILE"
-  ok "$id criado"
+  ok "$reseller_id criado"
   pause
 }
 
 change_quota() {
   header
-  local id quota used role current parent pquota
-  read -r -p "ID: " id
-  reseller_exists "$id" || { err "ID não existe"; pause; return; }
-  used="$(usage_for "$id")"
-  current="$(quota_of "$id")"
+  local reseller_id quota used role current parent pquota
+  read -r -p "ID: " reseller_id
+  reseller_exists "$reseller_id" || { err "ID não existe"; pause; return; }
+  used="$(usage_for "$reseller_id")"
+  current="$(quota_of "$reseller_id")"
   read -r -p "Nova cota (0 = ilimitada) [atual $current / uso $used]: " quota
   [[ "$quota" =~ ^[0-9]+$ ]] || { err "Cota inválida"; pause; return; }
   if (( quota > 0 && quota < used )); then
@@ -198,8 +211,8 @@ change_quota() {
     pause
     return
   fi
-  role="$(role_of "$id")"
-  parent="$(parent_of "$id")"
+  role="$(role_of "$reseller_id")"
+  parent="$(parent_of "$reseller_id")"
   if [[ "$role" == subreseller && -n "$parent" ]]; then
     pquota="$(quota_of "$parent")"
     if [[ "$pquota" =~ ^[0-9]+$ ]] && (( pquota > 0 && quota > pquota )); then
@@ -208,7 +221,7 @@ change_quota() {
   fi
   (
     flock -x 9
-    write_reseller "$id" "$role" "$parent" "$quota" "$(enabled_of "$id")" "$(read_field "$(record_file "$id")" created_epoch)"
+    write_reseller "$reseller_id" "$role" "$parent" "$quota" "$(enabled_of "$reseller_id")" "$(read_field "$(record_file "$reseller_id")" created_epoch)"
   ) 9>"$LOCK_FILE"
   ok "Cota atualizada"
   pause
@@ -216,17 +229,28 @@ change_quota() {
 
 toggle_reseller() {
   header
-  local id role parent quota enabled created
-  read -r -p "ID: " id
-  reseller_exists "$id" || { err "ID não existe"; pause; return; }
-  role="$(role_of "$id")"; parent="$(parent_of "$id")"; quota="$(quota_of "$id")"
-  enabled="$(enabled_of "$id")"; created="$(read_field "$(record_file "$id")" created_epoch)"
-  if [[ "$enabled" == 1 ]]; then enabled=0; else enabled=1; fi
+  local reseller_id role parent quota enabled created
+  read -r -p "ID: " reseller_id
+  reseller_exists "$reseller_id" || { err "ID não existe"; pause; return; }
+  role="$(role_of "$reseller_id")"
+  parent="$(parent_of "$reseller_id")"
+  quota="$(quota_of "$reseller_id")"
+  enabled="$(enabled_of "$reseller_id")"
+  created="$(read_field "$(record_file "$reseller_id")" created_epoch)"
+  if [[ "$enabled" == 1 ]]; then
+    enabled=0
+  else
+    enabled=1
+  fi
   (
     flock -x 9
-    write_reseller "$id" "$role" "$parent" "$quota" "$enabled" "$created"
+    write_reseller "$reseller_id" "$role" "$parent" "$quota" "$enabled" "$created"
   ) 9>"$LOCK_FILE"
-  [[ "$enabled" == 1 ]] && ok "$id ativado" || ok "$id bloqueado"
+  if [[ "$enabled" == 1 ]]; then
+    ok "$reseller_id ativado"
+  else
+    ok "$reseller_id bloqueado"
+  fi
   pause
 }
 
@@ -287,7 +311,11 @@ list_owners() {
     found=1
     user="${file##*/}"
     owner="$(read_field "$file" owner)"
-    if id "$user" >/dev/null 2>&1; then exists="sim"; else exists="não"; fi
+    if id "$user" >/dev/null 2>&1; then
+      exists="sim"
+    else
+      exists="não"
+    fi
     printf '%-24s %-24s %-10s\n' "$user" "$owner" "$exists"
   done
   (( found == 1 )) || info "Nenhuma conta possui proprietário registrado"
@@ -311,16 +339,16 @@ reconcile_owners() {
 }
 
 machine_usage() {
-  local id="${1:-}"
-  valid_id "$id" || exit 64
-  reseller_exists "$id" || exit 66
-  usage_for "$id"
+  local reseller_id="${1:-}"
+  valid_id "$reseller_id" || exit 64
+  reseller_exists "$reseller_id" || exit 66
+  usage_for "$reseller_id"
 }
 
 machine_can_create() {
-  local id="${1:-}"
-  valid_id "$id" || exit 64
-  quota_allows_one_more "$id"
+  local reseller_id="${1:-}"
+  valid_id "$reseller_id" || exit 64
+  quota_allows_one_more "$reseller_id"
 }
 
 machine_assign() {
