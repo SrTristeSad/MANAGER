@@ -79,6 +79,9 @@ jobs:
           test -x /opt/manager/modules/health.sh
           test -x /opt/manager/modules/maintenance.sh
           test -x /opt/manager/modules/ssh_keys.sh
+          test -x /opt/manager/modules/ssh_monitor.sh
+          test -x /opt/manager/modules/user_transfer.sh
+          test -x /opt/manager/modules/resellers.sh
           test -x /opt/manager/modules/banner.sh
           test -x /opt/manager/modules/speedtest.sh
           test "$(cat /opt/manager/VERSION)" = "$(tr -d '[:space:]' < VERSION)"
@@ -88,9 +91,14 @@ jobs:
           test "$(sudo /opt/manager/manager --version)" = "$(tr -d '[:space:]' < VERSION)"
           sudo /opt/manager/manager --help | grep -q -- '--health'
           sudo /opt/manager/manager --help | grep -q -- '--expired'
+          sudo /opt/manager/manager --help | grep -q -- '--ssh-sessions'
           sudo /opt/manager/manager --status >/tmp/manager-status.log
           grep -q 'STATUS DE SERVIÇOS' /tmp/manager-status.log
           sudo /opt/manager/manager --expired >/tmp/manager-expired.log
+          sudo /opt/manager/manager --ssh-sessions >/tmp/manager-ssh-sessions.log
+          sudo /opt/manager/modules/resellers.sh --owner nobody >/tmp/manager-owner.log
+          test -d /etc/manager/access/resellers
+          test -d /etc/manager/access/owners
 
           health_rc=0
           sudo /opt/manager/manager --health >/tmp/manager-health.log 2>&1 || health_rc=$?
