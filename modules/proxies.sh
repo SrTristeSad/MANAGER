@@ -268,13 +268,31 @@ reload_squid() {
 
 setup_squid() {
   header
-  local port answer restrict=0
+  local port answer restrict=0 installed_by_manager=0
   read -r -p "Porta do Squid privado [3128]: " port
   port="${port:-3128}"
   ensure_free_port "$port" "$SQUID_STATE" || { pause; return; }
   read -r -p "Restringir também aos hosts cadastrados? [s/N]: " answer
   [[ "$answer" =~ ^([sS]|[yY])$ ]] && restrict=1
-  command_exists squid || install_pkg squid
+
+  if ! command_exists squid; then
+    install_pkg squid
+    installed_by_manager=1
+  fi
+
+  # A instalação do pacote pode iniciar squid.service automaticamente na 3128.
+  # Só desativamos essa unidade quando o pacote acabou de ser instalado aqui;
+  # instalações Squid preexistentes nunca são alteradas pelo MANAGER.
+  if (( installed_by_manager == 1 )); then
+    systemctl disable --now squid.service >/dev/null 2>&1 || true
+  fi
+
+  if port_listening "$port"; then
+    err "A porta $port ficou ocupada após a instalação do Squid. Escolha outra porta ou revise o serviço que está usando-a."
+    pause
+    return
+  fi
+
   write_state "$SQUID_STATE" "port=$port" "restrict_hosts=$restrict"
   write_squid_conf
   if ! squid -k parse -f "$SQUID_CONF" >/dev/null 2>&1; then
