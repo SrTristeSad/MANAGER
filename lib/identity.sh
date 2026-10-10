@@ -12,8 +12,8 @@ identity_init() {
   chmod 0600 "$IDENTITY_LOCK"
   if [[ ! -e "$IDENTITY_CHANGED" ]]; then
     touch "$IDENTITY_CHANGED"
+    chmod 0600 "$IDENTITY_CHANGED"
   fi
-  chmod 0600 "$IDENTITY_CHANGED"
 }
 
 identity_signal_change() {
