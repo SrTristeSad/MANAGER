@@ -3,12 +3,22 @@
 IDENTITY_ROOT="${IDENTITY_ROOT:-${MANAGER_ETC:-/etc/manager}/connection}"
 IDENTITY_DIR="$IDENTITY_ROOT/identities"
 IDENTITY_LOCK="$IDENTITY_ROOT/.lock"
+IDENTITY_CHANGED="$IDENTITY_ROOT/.changed"
 
 identity_init() {
   mkdir -p "$IDENTITY_DIR"
   chmod 0700 "$IDENTITY_ROOT" "$IDENTITY_DIR"
   touch "$IDENTITY_LOCK"
   chmod 0600 "$IDENTITY_LOCK"
+  if [[ ! -e "$IDENTITY_CHANGED" ]]; then
+    touch "$IDENTITY_CHANGED"
+  fi
+  chmod 0600 "$IDENTITY_CHANGED"
+}
+
+identity_signal_change() {
+  identity_init
+  touch "$IDENTITY_CHANGED"
 }
 
 identity_valid_id() {
@@ -71,6 +81,7 @@ identity_write() {
   } > "$tmp"
   install -m 0600 "$tmp" "$file"
   rm -f "$tmp"
+  identity_signal_change
 }
 
 identity_is_expired() {
