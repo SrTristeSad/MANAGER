@@ -108,11 +108,16 @@ print_services() {
 
 show_services() {
   local interactive="${1:-yes}"
-  [[ "$interactive" == yes ]] && header
+  if [[ "$interactive" == yes ]]; then
+    header
+  fi
   say "${C_WHITE}STATUS DE SERVIÇOS${C_RESET}\n"
   print_services
   say ""
-  [[ "$interactive" == yes ]] && pause
+  if [[ "$interactive" == yes ]]; then
+    pause
+  fi
+  return 0
 }
 
 service_action() {
