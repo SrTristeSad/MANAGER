@@ -147,12 +147,19 @@ disconnect_ssh_user() {
   done < <(who 2>/dev/null | awk -v u="$user" '$1==u {print $2}')
 }
 
+sshd_config_valid() {
+  command_exists sshd || return 0
+  if [[ ! -d /run/sshd ]]; then
+    install -d -m 0755 /run/sshd
+  fi
+  sshd -t
+}
+
 write_ssh_policy() {
   local tmp backup had_old=0 file id state user counts ssh_n wg_n ovpn_n total max other available
   local deny=() limits=()
   tmp="$(mktemp)"
   backup="$(mktemp)"
-  trap 'rm -f "$tmp" "$backup"' RETURN
 
   for file in "$IDENTITY_DIR"/*.conf; do
     [[ -f "$file" ]] || continue
@@ -201,8 +208,13 @@ write_ssh_policy() {
     :
   else
     install -m 0644 "$tmp" "$SSH_POLICY_FILE"
-    if command_exists sshd && ! sshd -t; then
-      if (( had_old == 1 )); then install -m 0644 "$backup" "$SSH_POLICY_FILE"; else rm -f "$SSH_POLICY_FILE"; fi
+    if ! sshd_config_valid; then
+      if (( had_old == 1 )); then
+        install -m 0644 "$backup" "$SSH_POLICY_FILE"
+      else
+        rm -f "$SSH_POLICY_FILE"
+      fi
+      rm -f "$tmp" "$backup"
       err "Política SSH recusada por sshd -t; alteração revertida"
       return 1
     fi
@@ -219,6 +231,7 @@ write_ssh_policy() {
     } > "$tmp"
     install -m 0644 "$tmp" "$SSH_LIMITS_FILE"
   fi
+  rm -f "$tmp" "$backup"
 }
 
 wg_peer_present() {
@@ -475,7 +488,7 @@ detach_policy() {
   remove_openvpn_hook_block
   rm -f "$OVPN_HOOK" "$OVPN_PENDING"
   systemctl daemon-reload || true
-  if command_exists sshd && sshd -t; then
+  if sshd_config_valid; then
     systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
   fi
   if systemctl is-active --quiet openvpn-server@manager 2>/dev/null; then
@@ -486,7 +499,7 @@ detach_policy() {
 init_policy_state
 case "${1:-}" in
   --install) ( flock -x 9; install_units ) 9>"$POLICY_LOCK" ;;
-  --reconcile) ( flock -n 9; reconcile_all ) 9>"$POLICY_LOCK" || exit 0 ;;
+  --reconcile) ( flock -x 9; reconcile_all ) 9>"$POLICY_LOCK" ;;
   --detach) ( flock -x 9; detach_policy ) 9>"$POLICY_LOCK" ;;
   --sessions) show_sessions_machine "${2:-}" ;;
   --authorize)
