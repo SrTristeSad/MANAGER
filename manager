@@ -145,6 +145,7 @@ while true; do
   say "  ${C_CYAN}7${C_RESET}) Firewall"
   say "  ${C_CYAN}8${C_RESET}) Fail2ban"
   say "  ${C_CYAN}9${C_RESET}) TLS / Let's Encrypt"
+  say " ${C_CYAN}18${C_RESET}) Chaves públicas SSH"
   say ""
   say " ${C_WHITE}MONITORAMENTO E MANUTENÇÃO${C_RESET}"
   say " ${C_CYAN}10${C_RESET}) Tráfego e conexões"
@@ -180,6 +181,7 @@ while true; do
     15) run_module profiles.sh ;;
     16) run_module health.sh ;;
     17) run_module maintenance.sh ;;
+    18) run_module ssh_keys.sh ;;
     20) run_module system.sh services ;;
     90) self_update ;;
     0) clear 2>/dev/null || true; exit 0 ;;
