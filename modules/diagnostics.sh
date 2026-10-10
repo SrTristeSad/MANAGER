@@ -24,7 +24,11 @@ run_checks() {
   if getent ahostsv4 debian.org >/dev/null 2>&1; then pass "Resolução DNS"; else fail "DNS não está resolvendo nomes"; fi
 
   if systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd 2>/dev/null; then pass "OpenSSH ativo"; else fail "OpenSSH inativo"; fi
-  command_exists sshd && sshd -t >/dev/null 2>&1 && pass "Configuração SSH válida" || notice "Não foi possível validar sshd -t"
+  if command_exists sshd && sshd -t >/dev/null 2>&1; then
+    pass "Configuração SSH válida"
+  else
+    notice "Não foi possível validar sshd -t"
+  fi
 
   if timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -qx yes; then pass "Relógio sincronizado por NTP"; else notice "NTP não aparece como sincronizado"; fi
 
