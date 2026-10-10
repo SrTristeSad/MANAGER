@@ -16,15 +16,23 @@ O projeto usa versionamento semântico (`MAJOR.MINOR.PATCH`) enquanto a API/estr
 - Timer systemd próprio para verificação de renovação de certificados.
 - Whitelist e blacklist manuais no bloqueador DNS.
 - Estatísticas DNS opcionais, desligadas por padrão por privacidade.
+- Múltiplos listeners privados simultâneos no DNS para WireGuard e OpenVPN.
 - Assistente de perfis guiados: servidor seguro, WireGuard, OpenVPN, DNS e completo.
 - Diagnóstico, logs, backup e desinstalador expandidos para OpenVPN/TLS.
 - Backup mais preciso: evita copiar configurações WireGuard alheias ao MANAGER.
+- Roteiro de smoke test real em `docs/TESTING.md`.
+- Dependabot para manter GitHub Actions atualizadas.
 
 ### Melhorado
 
 - BBR/fq agora guarda e restaura imediatamente o congestion control e qdisc anteriores.
 - Gestão de usuários SSH ganhou sessões online, bloqueio/desbloqueio e desconexão de usuário.
 - OpenVPN diferencia corretamente `tcp-server` e `tcp-client` quando TCP é escolhido.
+- WireGuard valida conflito de porta e insere apenas suas regras específicas no topo de `FORWARD`.
+- O estado original de `net.ipv4.ip_forward` é salvo uma vez e restaurado pelo purge.
+- Restauração de backup aceita somente arquivos do diretório protegido `/var/backups/manager`.
+- DNS usa `bind-dynamic` e pode atender `127.0.0.1`, `10.66.66.1` e `10.8.0.1` simultaneamente sem bind público.
+- Alterações dos listeners DNS possuem rollback se o dnsmasq rejeitar a nova configuração.
 - Purge preserva certificados Let's Encrypt, regras UFW, backups e pacotes do sistema para reduzir risco de perda de serviço.
 
 ## [0.2.0] - 2026-10-10
