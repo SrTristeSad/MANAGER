@@ -30,6 +30,7 @@ collect_paths() {
     /etc/manager/banner \
     /etc/manager/ssh-tests \
     /etc/manager/access \
+    /etc/manager/proxy \
     /etc/wireguard/wg0.conf \
     /etc/wireguard/server.key \
     /etc/wireguard/server.pub \
@@ -88,6 +89,7 @@ entry_is_managed() {
   [[ "$entry" == "etc/manager/banner" || "$entry" == etc/manager/banner/* ]] && return 0
   [[ "$entry" == "etc/manager/ssh-tests" || "$entry" == etc/manager/ssh-tests/* ]] && return 0
   [[ "$entry" == "etc/manager/access" || "$entry" == etc/manager/access/* ]] && return 0
+  [[ "$entry" == "etc/manager/proxy" || "$entry" == etc/manager/proxy/* ]] && return 0
   [[ "$entry" == "etc/systemd/system/openvpn-server@manager.service.d" || "$entry" == etc/systemd/system/openvpn-server@manager.service.d/* ]] && return 0
 
   [[ "$entry" == "etc/wireguard/wg0.conf" ]] && return 0
@@ -173,7 +175,7 @@ create_backup() {
   cp "$manifest" "$archive.manifest"
   chmod 0600 "$archive.manifest"
   ok "Backup criado: $archive"
-  warn "O backup pode conter chaves privadas de VPN e dados de revenda. Trate o arquivo como segredo."
+  warn "O backup pode conter chaves privadas de VPN/TLS e dados de revenda. Trate o arquivo como segredo."
   pause
 }
 
@@ -240,6 +242,9 @@ restore_backup() {
 
   tar -C / -xzf "$file" --no-same-owner
   rebuild_easyrsa_runtime
+  if [[ -x "$MANAGER_HOME/modules/proxies.sh" && -d "$MANAGER_ETC/proxy" ]]; then
+    "$MANAGER_HOME/modules/proxies.sh" --reconcile >/dev/null 2>&1 || warn "Estado de proxies restaurado, mas algumas unidades não puderam ser regeneradas."
+  fi
   systemctl daemon-reload || true
   if [[ -f /etc/dnsmasq.d/90-manager-adblock.conf ]]; then systemctl restart dnsmasq 2>/dev/null || true; fi
   if [[ -f /etc/fail2ban/jail.d/99-manager-sshd.local ]]; then systemctl restart fail2ban 2>/dev/null || true; fi
