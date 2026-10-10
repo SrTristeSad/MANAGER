@@ -1,8 +1,8 @@
 # MANAGER
 
-Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Manager**, refeito para sistemas Debian/Ubuntu atuais.
+Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Manager**, refeito para Debian/Ubuntu atuais.
 
-> O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER reaproveita a ideia do menu simples e reconstrói as funções com código auditável, systemd e pacotes oficiais da distribuição.
+> O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva a ideia do menu simples e reconstrói as funções com código auditável, systemd e pacotes oficiais da distribuição.
 
 ## Princípios
 
@@ -16,12 +16,14 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 ## Recursos
 
-### Servidor
+### Servidor, SSH e VPN
 
 - **Informações do sistema**: SO, kernel, uptime, memória, disco, carga, IPs e serviços.
-- **Usuários SSH**: criar/remover contas, senha, expiração, limite de logins simultâneos, sessões online, bloquear/desbloquear e desconectar usuário.
-- **WireGuard**: instala `wg0`, cria/revoga clientes, gera configuração e QR Code.
-- **DNS Ad Block**: dnsmasq + listas de bloqueio, fontes personalizadas e atualização diária.
+- **Usuários SSH**: criar/remover contas, senha, expiração, limite simultâneo, sessões online, bloquear/desbloquear e desconectar usuário.
+- **WireGuard**: servidor `wg0`, clientes, revogação, QR Code e NAT específico da VPN.
+- **OpenVPN**: servidor moderno em `/etc/openvpn/server`, PKI Easy-RSA, clientes `.ovpn`, CRL e UDP/TCP.
+- **DNS Ad Block**: dnsmasq, fontes externas, whitelist/blacklist manuais e atualização diária.
+- **Estatísticas DNS opcionais**: desligadas por padrão por privacidade.
 
 ### Segurança
 
@@ -29,17 +31,19 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 - **Fail2ban** para proteção contra brute force SSH.
 - **Firewall UFW** com proteção para não bloquear uma porta SSH detectada.
 - **Atualizações automáticas de segurança** com `unattended-upgrades`.
+- **TLS/Let's Encrypt** via Certbot isolado, com emissão standalone/webroot e renovação automática.
 
 ### Monitoramento e manutenção
 
-- **Diagnóstico** de internet, DNS, SSH, NTP, disco, memória, forwarding e serviços.
+- **Diagnóstico** de internet, DNS, SSH, NTP, disco, memória, VPNs, forwarding e serviços.
 - **Tráfego** por interface, conexões ativas e histórico opcional com vnStat.
-- **Logs** centralizados de SSH, Fail2ban, WireGuard, dnsmasq e kernel/rede.
+- **Logs** centralizados de SSH, Fail2ban, WireGuard, OpenVPN, dnsmasq, Certbot e kernel/rede.
 - **Backup e rollback** das configurações gerenciadas pelo projeto.
-- **BBR + fq** com armazenamento e restauração dos valores anteriores.
+- **BBR + fq reversível**: guarda congestion control/qdisc anteriores e restaura quando solicitado.
 - **Self-update** com validação de sintaxe antes de substituir o código instalado.
 - **Rollback de código** para a versão anterior instalada.
 - **Desinstalação conservadora**, com `--purge` separado para configurações.
+- **Assistente de perfis**: servidor seguro, WireGuard, OpenVPN, DNS e configuração completa.
 
 ## Sistemas suportados
 
@@ -86,45 +90,58 @@ Remover também as configurações criadas pelo MANAGER:
 manager-uninstall --purge
 ```
 
-O modo `--purge` exige uma confirmação explícita e mantém pacotes do sistema instalados para não quebrar serviços compartilhados.
+O `--purge` exige confirmação explícita. Pacotes do sistema, certificados Let's Encrypt, backups e regras UFW são preservados para reduzir o risco de perda de acesso ou de serviço.
 
 ## Menu principal
 
 ```text
-SERVIDOR
+SERVIDOR E VPN
  1) Informações do sistema
  2) Usuários SSH
  3) WireGuard VPN
- 4) Bloqueio de anúncios DNS
+ 4) OpenVPN
+ 5) Bloqueio de anúncios DNS
 
 SEGURANÇA
- 5) Segurança / hardening SSH
- 6) Firewall
- 7) Fail2ban
+ 6) Segurança / hardening SSH
+ 7) Firewall
+ 8) Fail2ban
+ 9) TLS / Let's Encrypt
 
 MONITORAMENTO E MANUTENÇÃO
- 8) Tráfego e conexões
- 9) Diagnóstico
-10) Backup e rollback
-11) Desempenho / BBR
-12) Logs
+10) Tráfego e conexões
+11) Diagnóstico
+12) Backup e rollback
+13) Desempenho / BBR
+14) Logs
+15) Assistente / perfis
 20) Status dos serviços
 90) Atualizar MANAGER
 ```
 
 ## WireGuard
 
-O módulo usa pacotes oficiais `wireguard`/`wireguard-tools` e o serviço `wg-quick@wg0`. A rede padrão criada pelo MANAGER é `10.66.66.0/24`.
+O módulo usa `wireguard`/`wireguard-tools` e `wg-quick@wg0`. A rede padrão criada pelo MANAGER é `10.66.66.0/24`.
 
-As regras de encaminhamento/NAT são adicionadas especificamente para a interface WireGuard e removidas individualmente no `PostDown`. O MANAGER não limpa o firewall da VPS.
+As regras de encaminhamento/NAT são específicas para a interface/sub-rede WireGuard e são removidas individualmente quando a VPN para. O MANAGER não limpa o firewall da VPS.
 
-Configurações de clientes ficam em:
+Perfis de clientes ficam em:
 
 ```text
 /etc/manager/wireguard/clients/
 ```
 
-Esses arquivos contêm chaves privadas e têm permissão `0600`.
+## OpenVPN
+
+O OpenVPN usa uma instância própria chamada `manager` e não sobrescreve uma configuração existente em `/etc/openvpn/server/manager.conf`.
+
+A rede padrão é `10.8.0.0/24`. A PKI fica em `/etc/manager/openvpn/easy-rsa` e os perfis de cliente em:
+
+```text
+/etc/manager/openvpn/clients/
+```
+
+O módulo gera certificados individuais, mantém CRL e permite revogar clientes. Quando o Ad Block estiver escutando em `10.8.0.1`, a VPN pode ser configurada para entregá-lo como DNS aos clientes.
 
 ## DNS Ad Block
 
@@ -132,11 +149,27 @@ O bloqueador utiliza `dnsmasq`. Inicialmente ele escuta apenas em `127.0.0.1`; d
 
 O módulo se recusa a configurar um endereço IPv4 público como listener, reduzindo o risco de criar um resolver DNS aberto.
 
-Fontes de bloqueio:
+Arquivos principais:
 
 ```text
 /etc/manager/adblock/sources.list
+/etc/manager/adblock/whitelist.txt
+/etc/manager/adblock/blacklist.txt
 ```
+
+O log de consultas usado para estatísticas é opcional. Ao ativá-lo, o MANAGER avisa que nomes consultados pelos clientes passarão a aparecer no journal.
+
+## TLS / Let's Encrypt
+
+O Certbot é instalado em `/opt/certbot` usando um virtualenv isolado. O MANAGER oferece:
+
+- `standalone`, somente quando a porta 80 está livre;
+- `webroot`, quando já existe um servidor HTTP;
+- teste de renovação;
+- renovação manual;
+- timer systemd duas vezes ao dia.
+
+O MANAGER não edita automaticamente configurações de Nginx/Apache.
 
 ## Backup
 
@@ -146,7 +179,7 @@ Backups locais são armazenados em:
 /var/backups/manager/
 ```
 
-Eles incluem configurações relacionadas ao MANAGER, como WireGuard, adblock, limites SSH e drop-ins de segurança. Antes de restaurar um backup, um snapshot adicional da configuração atual é criado.
+Eles têm permissão restrita e podem conter chaves privadas das VPNs. Antes de restaurar um backup, um snapshot adicional da configuração atual é criado.
 
 ## Atualização e rollback de código
 
@@ -158,7 +191,7 @@ Durante uma atualização, a versão anterior do código é preservada em:
 /opt/manager.rollback
 ```
 
-O estado e as configurações permanentes ficam em `/etc/manager` e não são apagados pelo updater.
+O estado permanente fica em `/etc/manager` e não é apagado pelo updater.
 
 ## Estrutura
 
@@ -171,15 +204,18 @@ lib/common.sh                   helpers compartilhados
 modules/system.sh               informações e serviços
 modules/ssh_users.sh            usuários e sessões SSH
 modules/wireguard.sh            WireGuard
-modules/adblock.sh              bloqueio DNS
+modules/openvpn.sh              OpenVPN / Easy-RSA
+modules/adblock.sh              bloqueio DNS / listas / stats
 modules/security.sh             hardening SSH / updates
 modules/firewall.sh             UFW
 modules/fail2ban.sh             Fail2ban
+modules/tls.sh                  Certbot / Let's Encrypt
 modules/diagnostics.sh          diagnóstico
 modules/backup.sh               backup/restore
 modules/traffic.sh              tráfego/vnStat
 modules/performance.sh          BBR/fq reversível
 modules/logs.sh                 logs
+modules/profiles.sh             assistente guiado
 VERSION                         versão atual
 CHANGELOG.md                    histórico de versões
 SECURITY.md                     política de segurança
@@ -187,12 +223,12 @@ SECURITY.md                     política de segurança
 
 ## Segurança operacional
 
-O MANAGER roda como root porque administra serviços do sistema. Por isso, cada módulo deve ser pequeno, legível e limitado ao recurso que gerencia.
+O MANAGER roda como root porque administra serviços do sistema. Cada módulo deve ser pequeno, legível, limitado ao recurso que gerencia e reversível sempre que possível.
 
 Recomenda-se testar versões novas primeiro em uma VPS descartável ou snapshot da VPS. Firewalls de provedores/cloud continuam sendo independentes do firewall local.
 
-O CI verifica sintaxe Bash, ShellCheck, formato de versão e alguns padrões destrutivos conhecidos, mas testes estáticos não substituem um teste real de systemd, PAM, netfilter e WireGuard.
+O CI verifica sintaxe Bash, ShellCheck, formato da versão e padrões destrutivos conhecidos. Testes estáticos não substituem um teste real de systemd, PAM, netfilter, WireGuard, OpenVPN e ACME.
 
 ## Origem
 
-O SSHPlus Manager original foi desenvolvido por **@crazy_vpn** e deu origem a muitos forks comunitários. Este projeto preserva a ideia de uma administração simples por terminal, mas substitui implementações obsoletas e práticas arriscadas por uma base moderna.
+O SSHPlus Manager original foi desenvolvido por **@crazy_vpn** e deu origem a muitos forks comunitários. Este projeto preserva a ideia de administração simples por terminal, mas substitui implementações obsoletas e práticas arriscadas por uma base moderna.
