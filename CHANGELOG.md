@@ -4,6 +4,25 @@ Todas as mudanças relevantes do MANAGER serão registradas aqui.
 
 O projeto usa versionamento semântico (`MAJOR.MINOR.PATCH`) enquanto a API/estrutura ainda está evoluindo.
 
+## [0.5.0] - 2026-10-10
+
+### Paridade SSHPlus
+
+- Gestão SSH ganhou contas de teste com duração em minutos, senha aleatória exibida apenas uma vez e remoção automática por timer systemd.
+- O MANAGER não armazena a senha das contas teste em texto claro; registra apenas metadados de expiração.
+- Listagem de contas expiradas e limpeza manual confirmada de usuários expirados.
+- Novo modo CLI `manager --expired` para consultar expirados sem abrir o menu.
+- Banner SSH próprio em `/etc/manager/banner/banner.txt`, habilitado por drop-in do OpenSSH e validado com `sshd -t` antes de reload.
+- Speedtest/latência com instalação opcional via APT e histórico local em `/var/log/manager/speedtest.log`.
+- Status de serviços evoluiu para gerenciamento central de start/stop/restart dos serviços conhecidos pelo MANAGER.
+- Por segurança, o gerenciador não permite parar o OpenSSH pelo menu.
+
+### Base para as próximas etapas
+
+- Timer `manager-test-users.timer` remove contas de teste expiradas mesmo após reboot.
+- Contas teste recebem também uma expiração de segurança no sistema, além do temporizador em minutos.
+- A primeira leva de paridade mantém o comportamento útil do SSHPlus sem reproduzir armazenamento de senha em texto claro nem alterações destrutivas de sistema.
+
 ## [0.4.1] - 2026-10-10
 
 ### Corrigido
@@ -74,8 +93,8 @@ O projeto usa versionamento semântico (`MAJOR.MINOR.PATCH`) enquanto a API/estr
 - Menu principal reorganizado por Servidor, Segurança e Manutenção.
 - WireGuard com instalação de servidor, geração/revogação de clientes e QR Code.
 - Bloqueio de anúncios por DNS com dnsmasq, listas personalizadas e atualização automática.
-- Fail2ban para proteção de SSH.
-- Firewall UFW com proteção contra bloqueio acidental da porta SSH detectada.
+- Fail2ban para proteção contra brute force SSH.
+- Firewall UFW com proteção para não bloquear uma porta SSH detectada.
 - Hardening conservador de OpenSSH usando `sshd_config.d`.
 - Atualizações automáticas de segurança com `unattended-upgrades`.
 - Diagnóstico de rede, DNS, SSH, NTP, recursos e serviços.
