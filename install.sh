@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-REPO_RAW="https://raw.githubusercontent.com/SrTristeSad/MANAGER/main"
+REPO_RAW="${MANAGER_REPO_RAW:-https://raw.githubusercontent.com/SrTristeSad/MANAGER/main}"
 INSTALL_DIR="/opt/manager"
 ROLLBACK_DIR="/opt/manager.rollback"
 ETC_DIR="/etc/manager"
