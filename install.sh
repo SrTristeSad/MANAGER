@@ -74,6 +74,7 @@ FILES=(
   "uninstall.sh"
   "VERSION"
   "lib/common.sh"
+  "lib/identity.sh"
   "modules/system.sh"
   "modules/ssh_users.sh"
   "modules/ssh_keys.sh"
@@ -81,6 +82,7 @@ FILES=(
   "modules/user_transfer.sh"
   "modules/resellers.sh"
   "modules/reseller_accounts.sh"
+  "modules/connection_engine.sh"
   "modules/proxy_hosts.sh"
   "modules/proxies.sh"
   "modules/banner.sh"
@@ -129,7 +131,7 @@ for file in "${FILES[@]}"; do
   [[ -s "$TMP/$file" ]] || { echo "[ERRO] Arquivo vazio: $file" >&2; exit 1; }
 done
 
-for script in manager rollback.sh uninstall.sh lib/common.sh modules/*.sh; do
+for script in manager rollback.sh uninstall.sh lib/*.sh modules/*.sh; do
   [[ -f "$TMP/$script" ]] || continue
   bash -n "$TMP/$script"
 done
@@ -144,7 +146,7 @@ STAGE="$TMP/stage"
 mkdir -p "$STAGE/lib" "$STAGE/modules" "$ETC_DIR"
 chmod 0755 "$ETC_DIR"
 install -m 0644 "$TMP/VERSION" "$STAGE/VERSION"
-install -m 0644 "$TMP/lib/common.sh" "$STAGE/lib/common.sh"
+for lib in "$TMP"/lib/*.sh; do install -m 0644 "$lib" "$STAGE/lib/$(basename "$lib")"; done
 install -m 0755 "$TMP/manager" "$STAGE/manager"
 install -m 0755 "$TMP/rollback.sh" "$STAGE/rollback.sh"
 install -m 0755 "$TMP/uninstall.sh" "$STAGE/uninstall.sh"
@@ -158,9 +160,10 @@ if [[ -d "$INSTALL_DIR" ]]; then
 fi
 
 mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/modules"
+find "$INSTALL_DIR/lib" -maxdepth 1 -type f -name '*.sh' -delete 2>/dev/null || true
 find "$INSTALL_DIR/modules" -maxdepth 1 -type f -name '*.sh' -delete 2>/dev/null || true
 install -m 0644 "$STAGE/VERSION" "$INSTALL_DIR/VERSION"
-install -m 0644 "$STAGE/lib/common.sh" "$INSTALL_DIR/lib/common.sh"
+for lib in "$STAGE"/lib/*.sh; do install -m 0644 "$lib" "$INSTALL_DIR/lib/$(basename "$lib")"; done
 install -m 0755 "$STAGE/manager" "$INSTALL_DIR/manager"
 install -m 0755 "$STAGE/rollback.sh" "$INSTALL_DIR/rollback.sh"
 install -m 0755 "$STAGE/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
@@ -177,6 +180,7 @@ ln -sfn "$INSTALL_DIR/uninstall.sh" /usr/local/sbin/manager-uninstall
 printf '%s\n' "$NEW_VERSION" > "$ETC_DIR/installed-version"
 chmod 0644 "$ETC_DIR/installed-version"
 
+"$INSTALL_DIR/modules/connection_engine.sh" --init >/dev/null
 if [[ -d "$ETC_DIR/proxy" ]]; then
   "$INSTALL_DIR/modules/proxies.sh" --reconcile >/dev/null 2>&1 || true
 fi
@@ -191,6 +195,7 @@ echo "Saúde:       manager --health"
 echo "Expirados:   manager --expired"
 echo "Sessões SSH: manager --ssh-sessions"
 echo "Proxies:     manager --proxy-status"
+echo "Identidades: manager --identities"
 echo "Rollback:    manager-rollback"
 echo "Remover:     manager-uninstall"
 [[ -d "$ROLLBACK_DIR" ]] && echo "Código anterior preservado em: $ROLLBACK_DIR"
