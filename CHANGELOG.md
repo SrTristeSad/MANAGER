@@ -4,6 +4,32 @@ Todas as mudanças relevantes do MANAGER serão registradas aqui.
 
 O projeto usa versionamento semântico (`MAJOR.MINOR.PATCH`) enquanto a API/estrutura ainda está evoluindo.
 
+## [0.6.0] - 2026-10-10
+
+### Connection Engine
+
+- Introduzida a identidade MANAGER independente do usuário Linux, armazenada em `/etc/manager/connection/identities`.
+- Cada identidade possui ID estável, proprietário opcional, estado habilitado/desabilitado, expiração, limite planejado de sessões e lista de protocolos permitidos.
+- Protocolos iniciais reconhecidos pelo modelo: `ssh`, `wireguard` e `openvpn`.
+- Uma identidade pode ser vinculada a um usuário SSH, cliente WireGuard e/ou cliente OpenVPN já existentes sem duplicar as credenciais desses protocolos.
+- Importação por nome detecta recursos existentes com o mesmo nome e cria/vincula a identidade correspondente.
+- Vínculo SSH com proprietário de revenda reutiliza a validação de cota existente antes de registrar a propriedade.
+- Estado efetivo diferencia `active`, `disabled` e `expired`.
+
+### CLI e integração
+
+- Novo menu `Connection Engine / identidades`.
+- Novos comandos `manager --identities` e `manager --identity ID`.
+- O módulo oferece contratos não interativos para inicialização, criação, consulta, bind, importação por nome e enable/disable, preparando a futura Automation v2.
+- Instalador passou a instalar bibliotecas compartilhadas adicionais em `lib/*.sh` e inicializa o estado do Connection Engine.
+- Backup principal passou a incluir `/etc/manager/connection`.
+
+### Limites desta primeira etapa
+
+- O `max_sessions` já faz parte da política da identidade, mas o enforcement unificado entre SSH/WireGuard/OpenVPN ainda será implementado nas próximas iterações 0.6.x.
+- Desabilitar/expirar uma identidade ainda não revoga automaticamente todos os recursos de protocolo vinculados; esta versão cria o modelo comum e os vínculos sem quebrar os módulos existentes.
+- A cota de revenda continua baseada nas contas SSH atuais; a migração para cotas baseadas em identidades/produtos será feita antes da Automation v2/Colmeia.
+
 ## [0.5.2] - 2026-10-10
 
 ### Hosts, proxies e túneis
