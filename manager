@@ -28,6 +28,8 @@ Uso:
   manager --ssh-sessions  mostra sessões SSH atuais
   manager --proxy-status  mostra proxies/túneis gerenciados
   manager --proxy-hosts   lista hosts cadastrados para o Squid
+  manager --identities    lista identidades do Connection Engine
+  manager --identity ID   mostra uma identidade do Connection Engine
   manager --diagnostics   abre o diagnóstico
   manager --version       mostra a versão
   manager --help          mostra esta ajuda
@@ -135,6 +137,13 @@ case "${1:-}" in
   --proxy-hosts)
     exec "$MANAGER_HOME/modules/proxy_hosts.sh" --list
     ;;
+  --identities)
+    exec "$MANAGER_HOME/modules/connection_engine.sh" --list
+    ;;
+  --identity)
+    [[ -n "${2:-}" ]] || { err "Informe o ID da identidade"; exit 64; }
+    exec "$MANAGER_HOME/modules/connection_engine.sh" --show "$2"
+    ;;
   --diagnostics)
     exec "$MANAGER_HOME/modules/diagnostics.sh"
     ;;
@@ -171,6 +180,7 @@ while true; do
   say " ${C_CYAN}23${C_RESET}) Backup / migração de usuários"
   say " ${C_CYAN}24${C_RESET}) Revendedores, subrevendedores e cotas"
   say " ${C_CYAN}27${C_RESET}) Criar conta vinculada a revendedor"
+  say " ${C_CYAN}28${C_RESET}) Connection Engine / identidades"
   say ""
   say " ${C_WHITE}MONITORAMENTO E MANUTENÇÃO${C_RESET}"
   say " ${C_CYAN}10${C_RESET}) Tráfego e conexões"
@@ -217,6 +227,7 @@ while true; do
     25) run_module proxy_hosts.sh ;;
     26) run_module proxies.sh ;;
     27) run_module reseller_accounts.sh ;;
+    28) run_module connection_engine.sh ;;
     90) self_update ;;
     0) clear 2>/dev/null || true; exit 0 ;;
     *) warn "Opção inválida"; sleep 1 ;;
