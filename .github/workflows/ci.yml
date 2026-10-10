@@ -98,12 +98,13 @@ jobs:
           test "$(readlink -f /usr/local/bin/menu)" = "/opt/manager/manager"
 
           test "$(sudo /opt/manager/manager --version)" = "$(tr -d '[:space:]' < VERSION)"
-          sudo /opt/manager/manager --help | grep -q -- '--health'
-          sudo /opt/manager/manager --help | grep -q -- '--expired'
-          sudo /opt/manager/manager --help | grep -q -- '--ssh-sessions'
-          sudo /opt/manager/manager --help | grep -q -- '--proxy-status'
-          sudo /opt/manager/manager --help | grep -q -- '--proxy-hosts'
-          sudo /opt/manager/manager --help | grep -q -- '--identities'
+          sudo /opt/manager/manager --help > /tmp/manager-help.log
+          grep -q -- '--health' /tmp/manager-help.log
+          grep -q -- '--expired' /tmp/manager-help.log
+          grep -q -- '--ssh-sessions' /tmp/manager-help.log
+          grep -q -- '--proxy-status' /tmp/manager-help.log
+          grep -q -- '--proxy-hosts' /tmp/manager-help.log
+          grep -q -- '--identities' /tmp/manager-help.log
           sudo /opt/manager/manager --status >/tmp/manager-status.log
           grep -q 'STATUS DE SERVIÇOS' /tmp/manager-status.log
           sudo /opt/manager/manager --expired >/tmp/manager-expired.log
@@ -117,10 +118,13 @@ jobs:
           test "$(sudo /opt/manager/modules/connection_engine.sh --init)" = "/etc/manager/connection"
           sudo test -d /etc/manager/connection/identities
           sudo /opt/manager/modules/connection_engine.sh --create ci-user '' 0 1 ssh
-          sudo /opt/manager/manager --identities | grep -q '^ci-user'
-          sudo /opt/manager/manager --identity ci-user | grep -q '^state=active$'
+          sudo /opt/manager/manager --identities > /tmp/manager-identities.log
+          grep -q '^ci-user' /tmp/manager-identities.log
+          sudo /opt/manager/manager --identity ci-user > /tmp/manager-identity.log
+          grep -q '^state=active$' /tmp/manager-identity.log
           sudo /opt/manager/modules/connection_engine.sh --disable ci-user
-          sudo /opt/manager/manager --identity ci-user | grep -q '^state=disabled$'
+          sudo /opt/manager/manager --identity ci-user > /tmp/manager-identity.log
+          grep -q '^state=disabled$' /tmp/manager-identity.log
           sudo /opt/manager/modules/connection_engine.sh --enable ci-user
 
           sudo /opt/manager/modules/proxies.sh --init
@@ -130,7 +134,8 @@ jobs:
           sudo /opt/manager/manager --proxy-status >/tmp/manager-proxy-status.log
 
           sudo /opt/manager/modules/proxy_hosts.sh --add example.com
-          sudo /opt/manager/manager --proxy-hosts | grep -q '^\.example\.com$'
+          sudo /opt/manager/manager --proxy-hosts > /tmp/manager-proxy-hosts.log
+          grep -q '^\.example\.com$' /tmp/manager-proxy-hosts.log
           sudo /opt/manager/modules/proxy_hosts.sh --remove example.com
           test "$(sudo /opt/manager/modules/proxy_hosts.sh --count | tr -d '[:space:]')" = "0"
 
