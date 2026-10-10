@@ -9,10 +9,10 @@ source "$MANAGER_HOME/lib/common.sh"
 source "$MANAGER_HOME/lib/identity.sh"
 require_root
 
-SESSION_ROOT="$IDENTITY_ROOT/sessions"
-LEASE_DIR="$SESSION_ROOT/active"
-EPOCH_DIR="$SESSION_ROOT/epochs"
-SESSION_LOCK="$SESSION_ROOT/.lock"
+SESSION_RUNTIME="${MANAGER_SESSION_RUNTIME:-/run/manager/session-leases}"
+LEASE_DIR="$SESSION_RUNTIME/active"
+SESSION_LOCK="$SESSION_RUNTIME/.lock"
+EPOCH_DIR="$IDENTITY_ROOT/session-epochs"
 EVENT_LOG="/var/log/manager/session-events.log"
 CLEANUP_SERVICE="/etc/systemd/system/manager-session-cleanup.service"
 CLEANUP_TIMER="/etc/systemd/system/manager-session-cleanup.timer"
@@ -20,7 +20,7 @@ DEFAULT_TTL="${MANAGER_SESSION_TTL:-90}"
 
 session_init() {
   identity_init
-  install -d -m 0700 "$SESSION_ROOT" "$LEASE_DIR" "$EPOCH_DIR"
+  install -d -m 0700 "$SESSION_RUNTIME" "$LEASE_DIR" "$EPOCH_DIR"
   install -d -m 0750 "$(dirname "$EVENT_LOG")"
   touch "$SESSION_LOCK" "$EVENT_LOG"
   chmod 0600 "$SESSION_LOCK" "$EVENT_LOG"
@@ -33,34 +33,18 @@ valid_protocol() {
   esac
 }
 
-valid_resource() {
-  [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,63}$ ]]
-}
+valid_resource() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,63}$ ]]; }
+valid_device() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,95}$ ]]; }
+valid_reason() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$ ]]; }
+valid_ttl() { [[ "${1:-}" =~ ^[0-9]+$ ]] && (( $1 >= 1 && $1 <= 86400 )); }
+valid_session_id() { [[ "${1:-}" =~ ^[a-f0-9]{32}$ ]]; }
 
-valid_device() {
-  [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,95}$ ]]
-}
-
-valid_ttl() {
-  [[ "${1:-}" =~ ^[0-9]+$ ]] && (( $1 >= 1 && $1 <= 86400 ))
-}
-
-valid_session_id() {
-  [[ "${1:-}" =~ ^[a-f0-9]{32}$ ]]
-}
-
-lease_file() {
-  printf '%s/%s.lease\n' "$LEASE_DIR" "$1"
-}
-
-epoch_file() {
-  printf '%s/%s.epoch\n' "$EPOCH_DIR" "$1"
-}
+lease_file() { printf '%s/%s.lease\n' "$LEASE_DIR" "$1"; }
+epoch_file() { printf '%s/%s.epoch\n' "$EPOCH_DIR" "$1"; }
 
 lease_read() {
-  local session_id="$1" key="$2" file
-  file="$(lease_file "$session_id")"
-  awk -F= -v k="$key" '$1==k {sub(/^[^=]*=/,""); print; exit}' "$file" 2>/dev/null || true
+  local session_id="$1" key="$2"
+  awk -F= -v k="$key" '$1==k {sub(/^[^=]*=/,""); print; exit}' "$(lease_file "$session_id")" 2>/dev/null || true
 }
 
 binding_for() {
@@ -107,8 +91,7 @@ bump_epoch_locked() {
 }
 
 write_lease_locked() {
-  local session_id="$1" identity="$2" protocol="$3" resource="$4" device="$5" epoch="$6" created="$7" heartbeat="$8" expires="$9" tmp file
-  file="$(lease_file "$session_id")"
+  local session_id="$1" identity="$2" protocol="$3" resource="$4" device="$5" epoch="$6" created="$7" heartbeat="$8" expires="$9" tmp
   tmp="$(mktemp)"
   {
     printf 'session_id=%s\n' "$session_id"
@@ -121,7 +104,7 @@ write_lease_locked() {
     printf 'heartbeat_epoch=%s\n' "$heartbeat"
     printf 'expires_epoch=%s\n' "$expires"
   } > "$tmp"
-  install -m 0600 "$tmp" "$file"
+  install -m 0600 "$tmp" "$(lease_file "$session_id")"
   rm -f "$tmp"
 }
 
@@ -145,7 +128,7 @@ cleanup_expired_locked() {
 }
 
 revoke_identity_leases_locked() {
-  local identity="$1" reason="${2:-revoked}" file session_id lease_identity epoch protocol resource device
+  local identity="$1" reason="$2" file session_id lease_identity epoch protocol resource device
   for file in "$LEASE_DIR"/*.lease; do
     [[ -f "$file" ]] || continue
     session_id="${file##*/}"; session_id="${session_id%.lease}"
@@ -193,18 +176,16 @@ active_count_locked() {
 }
 
 find_same_lease_locked() {
-  local identity="$1" protocol="$2" resource="$3" device="$4" current_epoch="$5" now file session_id lease_identity lease_epoch expires
+  local identity="$1" protocol="$2" resource="$3" device="$4" current_epoch="$5" now file session_id expires
   now="$(date +%s)"
   for file in "$LEASE_DIR"/*.lease; do
     [[ -f "$file" ]] || continue
     session_id="${file##*/}"; session_id="${session_id%.lease}"
-    lease_identity="$(lease_read "$session_id" identity_id)"
-    [[ "$lease_identity" == "$identity" ]] || continue
+    [[ "$(lease_read "$session_id" identity_id)" == "$identity" ]] || continue
     [[ "$(lease_read "$session_id" protocol)" == "$protocol" ]] || continue
     [[ "$(lease_read "$session_id" resource)" == "$resource" ]] || continue
     [[ "$(lease_read "$session_id" device_id)" == "$device" ]] || continue
-    lease_epoch="$(lease_read "$session_id" session_epoch)"
-    [[ "$lease_epoch" == "$current_epoch" ]] || continue
+    [[ "$(lease_read "$session_id" session_epoch)" == "$current_epoch" ]] || continue
     expires="$(lease_read "$session_id" expires_epoch)"
     [[ "$expires" =~ ^[0-9]+$ ]] || continue
     (( expires > now )) || continue
@@ -214,9 +195,7 @@ find_same_lease_locked() {
   return 1
 }
 
-generate_session_id() {
-  od -An -N16 -tx1 /dev/urandom | tr -d ' \n'
-}
+generate_session_id() { od -An -N16 -tx1 /dev/urandom | tr -d ' \n'; }
 
 print_lease_token() {
   local session_id="$1"
@@ -261,13 +240,12 @@ acquire_locked() {
 }
 
 heartbeat_locked() {
-  local session_id="$1" supplied_epoch="$2" ttl="$3" file identity stored_epoch current_epoch protocol resource device created now expires state
+  local session_id="$1" supplied_epoch="$2" ttl="$3" identity stored_epoch current_epoch protocol resource device created now expires state
   valid_session_id "$session_id" || { err "session_id inválido"; return 64; }
   [[ "$supplied_epoch" =~ ^[1-9][0-9]*$ ]] || { err "session_epoch inválido"; return 64; }
   valid_ttl "$ttl" || { err "TTL inválido; use 1-86400 segundos"; return 64; }
   cleanup_expired_locked
-  file="$(lease_file "$session_id")"
-  [[ -f "$file" ]] || { err "Lease inexistente ou expirada"; return 66; }
+  [[ -f "$(lease_file "$session_id")" ]] || { err "Lease inexistente ou expirada"; return 66; }
   identity="$(lease_read "$session_id" identity_id)"
   stored_epoch="$(lease_read "$session_id" session_epoch)"
   current_epoch="$(current_epoch_locked "$identity")"
@@ -287,11 +265,10 @@ heartbeat_locked() {
 }
 
 release_locked() {
-  local session_id="$1" supplied_epoch="$2" file identity stored_epoch protocol resource device
+  local session_id="$1" supplied_epoch="$2" identity stored_epoch protocol resource device
   valid_session_id "$session_id" || { err "session_id inválido"; return 64; }
   [[ "$supplied_epoch" =~ ^[1-9][0-9]*$ ]] || { err "session_epoch inválido"; return 64; }
-  file="$(lease_file "$session_id")"
-  [[ -f "$file" ]] || return 0
+  [[ -f "$(lease_file "$session_id")" ]] || return 0
   identity="$(lease_read "$session_id" identity_id)"
   stored_epoch="$(lease_read "$session_id" session_epoch)"
   [[ "$stored_epoch" == "$supplied_epoch" ]] || { err "Fence rejeitado: epoch não corresponde à lease"; return 70; }
@@ -299,13 +276,14 @@ release_locked() {
   resource="$(lease_read "$session_id" resource)"
   device="$(lease_read "$session_id" device_id)"
   event_log RELEASE "$identity" "$session_id" "$stored_epoch" "$protocol" "$resource" "$device" client
-  rm -f "$file"
+  rm -f "$(lease_file "$session_id")"
 }
 
 revoke_all_locked() {
-  local identity="$1" reason="${2:-admin}" new_epoch
+  local identity="$1" reason="$2" new_epoch
   identity_valid_id "$identity" || { err "ID de identidade inválido"; return 64; }
   identity_exists "$identity" || { err "Identidade não existe: $identity"; return 66; }
+  valid_reason "$reason" || { err "Motivo inválido"; return 64; }
   cleanup_expired_locked
   new_epoch="$(bump_epoch_locked "$identity")"
   revoke_identity_leases_locked "$identity" "$reason"
@@ -351,7 +329,7 @@ show_epoch_locked() {
   local identity="$1"
   identity_valid_id "$identity" || return 64
   identity_exists "$identity" || return 66
-  printf '%s\n' "$(current_epoch_locked "$identity")"
+  current_epoch_locked "$identity"
 }
 
 install_units() {
@@ -388,6 +366,7 @@ EOF
 detach_units() {
   systemctl disable --now manager-session-cleanup.timer >/dev/null 2>&1 || true
   rm -f "$CLEANUP_SERVICE" "$CLEANUP_TIMER"
+  rm -rf "$SESSION_RUNTIME"
   systemctl daemon-reload || true
 }
 
@@ -404,8 +383,8 @@ interactive_menu() {
     say ""
     read -r -p "Opção: " opt
     case "$opt" in
-      1) header; list_locked; pause ;;
-      2) read -r -p "Identidade: " identity; header; list_locked "$identity"; pause ;;
+      1) header; ( flock -x 9; list_locked ) 9>"$SESSION_LOCK"; pause ;;
+      2) read -r -p "Identidade: " identity; header; ( flock -x 9; list_locked "$identity" ) 9>"$SESSION_LOCK"; pause ;;
       3)
         read -r -p "Identidade: " identity
         if confirm "Revogar todas as leases de $identity e avançar o session_epoch?"; then
@@ -422,42 +401,18 @@ interactive_menu() {
 
 session_init
 case "${1:-}" in
-  --init)
-    printf '%s\n' "$SESSION_ROOT"
-    ;;
-  --install)
-    install_units
-    ;;
-  --detach)
-    detach_units
-    ;;
-  --cleanup)
-    ( flock -x 9; cleanup_expired_locked ) 9>"$SESSION_LOCK"
-    ;;
-  --list)
-    ( flock -x 9; list_locked "${2:-}" ) 9>"$SESSION_LOCK"
-    ;;
-  --epoch)
-    ( flock -x 8; flock -x 9; show_epoch_locked "${2:-}" ) 8>"$IDENTITY_LOCK" 9>"$SESSION_LOCK"
-    ;;
-  --acquire)
-    ( flock -x 8; flock -x 9; acquire_locked "${2:-}" "${3:-}" "${4:-}" "${5:-local}" "${6:-$DEFAULT_TTL}" ) 8>"$IDENTITY_LOCK" 9>"$SESSION_LOCK"
-    ;;
-  --heartbeat)
-    ( flock -x 8; flock -x 9; heartbeat_locked "${2:-}" "${3:-}" "${4:-$DEFAULT_TTL}" ) 8>"$IDENTITY_LOCK" 9>"$SESSION_LOCK"
-    ;;
-  --release)
-    ( flock -x 9; release_locked "${2:-}" "${3:-}" ) 9>"$SESSION_LOCK"
-    ;;
-  --revoke-all)
-    ( flock -x 8; flock -x 9; revoke_all_locked "${2:-}" "${3:-admin}" ) 8>"$IDENTITY_LOCK" 9>"$SESSION_LOCK"
-    ;;
-  --switch)
-    ( flock -x 8; flock -x 9; switch_locked "${2:-}" "${3:-}" "${4:-}" "${5:-local}" "${6:-$DEFAULT_TTL}" ) 8>"$IDENTITY_LOCK" 9>"$SESSION_LOCK"
-    ;;
-  "")
-    interactive_menu
-    ;;
+  --init) printf '%s\n' "$SESSION_RUNTIME" ;;
+  --install) install_units ;;
+  --detach) detach_units ;;
+  --cleanup) ( flock -x 9; cleanup_expired_locked ) 9>"$SESSION_LOCK" ;;
+  --list) ( flock -x 9; list_locked "${2:-}" ) 9>"$SESSION_LOCK" ;;
+  --epoch) ( flock -x 8; flock -x 9; show_epoch_locked "${2:-}" ) 8>"$IDENTITY_LOCK" 9>"$SESSION_LOCK" ;;
+  --acquire) ( flock -x 8; flock -x 9; acquire_locked "${2:-}" "${3:-}" "${4:-}" "${5:-local}" "${6:-$DEFAULT_TTL}" ) 8>"$IDENTITY_LOCK" 9>"$SESSION_LOCK" ;;
+  --heartbeat) ( flock -x 8; flock -x 9; heartbeat_locked "${2:-}" "${3:-}" "${4:-$DEFAULT_TTL}" ) 8>"$IDENTITY_LOCK" 9>"$SESSION_LOCK" ;;
+  --release) ( flock -x 9; release_locked "${2:-}" "${3:-}" ) 9>"$SESSION_LOCK" ;;
+  --revoke-all) ( flock -x 8; flock -x 9; revoke_all_locked "${2:-}" "${3:-admin}" ) 8>"$IDENTITY_LOCK" 9>"$SESSION_LOCK" ;;
+  --switch) ( flock -x 8; flock -x 9; switch_locked "${2:-}" "${3:-}" "${4:-}" "${5:-local}" "${6:-$DEFAULT_TTL}" ) 8>"$IDENTITY_LOCK" 9>"$SESSION_LOCK" ;;
+  "") interactive_menu ;;
   *)
     err "Uso: session_engine.sh --list [ID]|--acquire ID PROTOCOLO RECURSO [DEVICE] [TTL]|--heartbeat SESSION_ID EPOCH [TTL]|--release SESSION_ID EPOCH|--revoke-all ID [MOTIVO]|--switch ID PROTOCOLO RECURSO [DEVICE] [TTL]|--epoch ID|--cleanup"
     exit 64
