@@ -110,7 +110,7 @@ NEW_VERSION="$(tr -d '[:space:]' < "$TMP/VERSION")"
 
 STAGE="$TMP/stage"
 mkdir -p "$STAGE/lib" "$STAGE/modules" "$ETC_DIR"
-chmod 0700 "$ETC_DIR"
+chmod 0755 "$ETC_DIR"
 install -m 0644 "$TMP/VERSION" "$STAGE/VERSION"
 install -m 0644 "$TMP/lib/common.sh" "$STAGE/lib/common.sh"
 install -m 0755 "$TMP/manager" "$STAGE/manager"
