@@ -97,3 +97,18 @@ backup_file() {
   stamp="$(date +%Y%m%d-%H%M%S)"
   cp -a "$file" "$backup_dir/${safe}.${stamp}"
 }
+
+remember_ipv4_forwarding() {
+  local state_dir="$MANAGER_ETC/network" state_file="$MANAGER_ETC/network/previous-ip-forward"
+  mkdir -p "$state_dir"
+  chmod 0700 "$state_dir"
+  if [[ ! -f "$state_file" ]]; then
+    sysctl -n net.ipv4.ip_forward > "$state_file"
+    chmod 0600 "$state_file"
+  fi
+}
+
+enable_ipv4_forwarding() {
+  remember_ipv4_forwarding
+  sysctl -w net.ipv4.ip_forward=1 >/dev/null
+}
