@@ -14,7 +14,19 @@ chmod 0700 "$BACKUP_DIR"
 collect_paths() {
   local p
   for p in \
-    /etc/manager \
+    /etc/manager/installed-version \
+    /etc/manager/adblock \
+    /etc/manager/wireguard \
+    /etc/manager/openvpn/clients \
+    /etc/manager/openvpn/meta \
+    /etc/manager/openvpn/easy-rsa/pki \
+    /etc/manager/openvpn/endpoint \
+    /etc/manager/openvpn/port \
+    /etc/manager/openvpn/transport \
+    /etc/manager/openvpn/egress-interface \
+    /etc/manager/network \
+    /etc/manager/performance \
+    /etc/manager/tls \
     /etc/wireguard/wg0.conf \
     /etc/wireguard/server.key \
     /etc/wireguard/server.pub \
@@ -53,22 +65,45 @@ resolve_backup_file() {
 
 entry_is_managed() {
   local entry="${1%/}"
-  case "$entry" in
-    etc/manager|etc/manager/*|
-    etc/wireguard/wg0.conf|etc/wireguard/server.key|etc/wireguard/server.pub|
-    etc/openvpn/server/manager.conf|etc/openvpn/server/manager-ca.crt|etc/openvpn/server/manager-server.crt|etc/openvpn/server/manager-server.key|etc/openvpn/server/manager-crl.pem|etc/openvpn/server/manager-tls-crypt.key|
-    etc/systemd/system/openvpn-server@manager.service.d|etc/systemd/system/openvpn-server@manager.service.d/*|
-    etc/dnsmasq.d/90-manager-adblock.conf|etc/dnsmasq.d/91-manager-adblock-stats.conf|
-    etc/systemd/system/manager-adblock-update.timer|etc/systemd/system/manager-adblock-update.service|
-    etc/systemd/system/manager-certbot-renew.timer|etc/systemd/system/manager-certbot-renew.service|
-    etc/security/limits.d/99-manager-ssh.conf|
-    etc/fail2ban/jail.d/99-manager-sshd.local|
-    etc/ssh/sshd_config.d/99-manager.conf|
-    etc/apt/apt.conf.d/20auto-upgrades|
-    etc/sysctl.d/99-manager-wireguard.conf|etc/sysctl.d/99-manager-openvpn.conf|etc/sysctl.d/99-manager-performance.conf)
-      return 0 ;;
-    *) return 1 ;;
-  esac
+
+  [[ "$entry" == "etc/manager/installed-version" ]] && return 0
+  [[ "$entry" == "etc/manager/adblock" || "$entry" == etc/manager/adblock/* ]] && return 0
+  [[ "$entry" == "etc/manager/wireguard" || "$entry" == etc/manager/wireguard/* ]] && return 0
+  [[ "$entry" == "etc/manager/openvpn/clients" || "$entry" == etc/manager/openvpn/clients/* ]] && return 0
+  [[ "$entry" == "etc/manager/openvpn/meta" || "$entry" == etc/manager/openvpn/meta/* ]] && return 0
+  [[ "$entry" == "etc/manager/openvpn/easy-rsa/pki" || "$entry" == etc/manager/openvpn/easy-rsa/pki/* ]] && return 0
+  [[ "$entry" == "etc/manager/openvpn/endpoint" ]] && return 0
+  [[ "$entry" == "etc/manager/openvpn/port" ]] && return 0
+  [[ "$entry" == "etc/manager/openvpn/transport" ]] && return 0
+  [[ "$entry" == "etc/manager/openvpn/egress-interface" ]] && return 0
+  [[ "$entry" == "etc/manager/network" || "$entry" == etc/manager/network/* ]] && return 0
+  [[ "$entry" == "etc/manager/performance" || "$entry" == etc/manager/performance/* ]] && return 0
+  [[ "$entry" == "etc/manager/tls" || "$entry" == etc/manager/tls/* ]] && return 0
+  [[ "$entry" == "etc/systemd/system/openvpn-server@manager.service.d" || "$entry" == etc/systemd/system/openvpn-server@manager.service.d/* ]] && return 0
+
+  [[ "$entry" == "etc/wireguard/wg0.conf" ]] && return 0
+  [[ "$entry" == "etc/wireguard/server.key" ]] && return 0
+  [[ "$entry" == "etc/wireguard/server.pub" ]] && return 0
+  [[ "$entry" == "etc/openvpn/server/manager.conf" ]] && return 0
+  [[ "$entry" == "etc/openvpn/server/manager-ca.crt" ]] && return 0
+  [[ "$entry" == "etc/openvpn/server/manager-server.crt" ]] && return 0
+  [[ "$entry" == "etc/openvpn/server/manager-server.key" ]] && return 0
+  [[ "$entry" == "etc/openvpn/server/manager-crl.pem" ]] && return 0
+  [[ "$entry" == "etc/openvpn/server/manager-tls-crypt.key" ]] && return 0
+  [[ "$entry" == "etc/dnsmasq.d/90-manager-adblock.conf" ]] && return 0
+  [[ "$entry" == "etc/dnsmasq.d/91-manager-adblock-stats.conf" ]] && return 0
+  [[ "$entry" == "etc/systemd/system/manager-adblock-update.timer" ]] && return 0
+  [[ "$entry" == "etc/systemd/system/manager-adblock-update.service" ]] && return 0
+  [[ "$entry" == "etc/systemd/system/manager-certbot-renew.timer" ]] && return 0
+  [[ "$entry" == "etc/systemd/system/manager-certbot-renew.service" ]] && return 0
+  [[ "$entry" == "etc/security/limits.d/99-manager-ssh.conf" ]] && return 0
+  [[ "$entry" == "etc/fail2ban/jail.d/99-manager-sshd.local" ]] && return 0
+  [[ "$entry" == "etc/ssh/sshd_config.d/99-manager.conf" ]] && return 0
+  [[ "$entry" == "etc/apt/apt.conf.d/20auto-upgrades" ]] && return 0
+  [[ "$entry" == "etc/sysctl.d/99-manager-wireguard.conf" ]] && return 0
+  [[ "$entry" == "etc/sysctl.d/99-manager-openvpn.conf" ]] && return 0
+  [[ "$entry" == "etc/sysctl.d/99-manager-performance.conf" ]] && return 0
+  return 1
 }
 
 validate_archive_entries() {
@@ -91,7 +126,6 @@ validate_archive_entries() {
       return 1
     fi
   done < <(tar -tzf "$file")
-  return 0
 }
 
 create_backup() {
@@ -149,35 +183,38 @@ verify_backup() {
   file="$(resolve_backup_file "$input")" || { err "Nome de backup inválido"; pause; return; }
   [[ -f "$file" ]] || { err "Arquivo não encontrado"; pause; return; }
   validate_archive_entries "$file" || { err "Backup recusado pela validação de segurança"; pause; return; }
-  if [[ -f "$file.sha256" ]]; then
-    (cd "$BACKUP_DIR" && sha256sum -c "$(basename "$file").sha256") || { err "SHA-256 inválido"; pause; return; }
-  else
-    warn "Este arquivo não possui sidecar SHA-256."
-  fi
-  ok "Estrutura e conteúdo do backup são válidos"
+  [[ -f "$file.sha256" ]] || { err "Sidecar SHA-256 ausente; validação recusada"; pause; return; }
+  (cd "$BACKUP_DIR" && sha256sum -c "$(basename "$file").sha256") || { err "SHA-256 inválido"; pause; return; }
+  ok "Estrutura, escopo e SHA-256 do backup são válidos"
   pause
+}
+
+rebuild_easyrsa_runtime() {
+  local target="$MANAGER_ETC/openvpn/easy-rsa"
+  [[ -d "$target/pki" ]] || return 0
+  [[ -x "$target/easyrsa" ]] && return 0
+  if [[ -d /usr/share/easy-rsa ]]; then
+    cp -a /usr/share/easy-rsa/. "$target/"
+    chmod -R go-rwx "$target"
+  else
+    warn "PKI OpenVPN restaurada, mas o pacote easy-rsa não está instalado; gestão de clientes ficará indisponível até reinstalá-lo."
+  fi
 }
 
 restore_backup() {
   header
   say "${C_WHITE}RESTAURAR BACKUP${C_RESET}\n"
-  local input file safety
+  local input file safety current
   read -r -p "Nome do arquivo .tar.gz em $BACKUP_DIR: " input
   file="$(resolve_backup_file "$input")" || { err "Nome de backup inválido"; pause; return; }
   [[ -f "$file" ]] || { err "Arquivo não encontrado"; pause; return; }
   validate_archive_entries "$file" || { err "Backup recusado pela validação de segurança"; pause; return; }
-  if [[ -f "$file.sha256" ]]; then
-    (cd "$BACKUP_DIR" && sha256sum -c "$(basename "$file").sha256") || { err "SHA-256 inválido"; pause; return; }
-  else
-    warn "O backup não possui SHA-256 gerado pelo MANAGER."
-    confirm "Continuar mesmo assim?" || return
-  fi
-  warn "Por segurança, somente arquivos dentro de $BACKUP_DIR podem ser restaurados."
-  warn "A restauração substitui apenas arquivos listados como gerenciados pelo MANAGER."
+  [[ -f "$file.sha256" ]] || { err "Sidecar SHA-256 ausente; restauração recusada"; pause; return; }
+  (cd "$BACKUP_DIR" && sha256sum -c "$(basename "$file").sha256") || { err "SHA-256 inválido"; pause; return; }
+  warn "A restauração aceita apenas backups íntegros criados pelo MANAGER neste diretório protegido."
   confirm "Restaurar este backup?" || return
 
   safety="$BACKUP_DIR/pre-restore-$(date +%Y%m%d-%H%M%S).tar.gz"
-  local current
   current="$(mktemp)"
   collect_paths > "$current"
   if [[ -s "$current" ]]; then
@@ -189,24 +226,14 @@ restore_backup() {
   fi
   rm -f "$current"
 
-  # Preserve the restrictive permissions stored by MANAGER backups (e.g. private keys).
   tar -C / -xzf "$file" --no-same-owner
+  rebuild_easyrsa_runtime
   systemctl daemon-reload || true
-  if [[ -f /etc/dnsmasq.d/90-manager-adblock.conf ]]; then
-    systemctl restart dnsmasq 2>/dev/null || true
-  fi
-  if [[ -f /etc/fail2ban/jail.d/99-manager-sshd.local ]]; then
-    systemctl restart fail2ban 2>/dev/null || true
-  fi
-  if [[ -f /etc/wireguard/wg0.conf ]]; then
-    systemctl restart wg-quick@wg0 2>/dev/null || true
-  fi
-  if [[ -f /etc/openvpn/server/manager.conf ]]; then
-    systemctl restart openvpn-server@manager 2>/dev/null || true
-  fi
-  if [[ -f /etc/systemd/system/manager-certbot-renew.timer ]]; then
-    systemctl enable --now manager-certbot-renew.timer >/dev/null 2>&1 || true
-  fi
+  if [[ -f /etc/dnsmasq.d/90-manager-adblock.conf ]]; then systemctl restart dnsmasq 2>/dev/null || true; fi
+  if [[ -f /etc/fail2ban/jail.d/99-manager-sshd.local ]]; then systemctl restart fail2ban 2>/dev/null || true; fi
+  if [[ -f /etc/wireguard/wg0.conf ]]; then systemctl restart wg-quick@wg0 2>/dev/null || true; fi
+  if [[ -f /etc/openvpn/server/manager.conf ]]; then systemctl restart openvpn-server@manager 2>/dev/null || true; fi
+  if [[ -f /etc/systemd/system/manager-certbot-renew.timer ]]; then systemctl enable --now manager-certbot-renew.timer >/dev/null 2>&1 || true; fi
   if command -v sshd >/dev/null 2>&1 && sshd -t; then
     systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
   fi
