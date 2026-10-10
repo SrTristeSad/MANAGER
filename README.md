@@ -13,6 +13,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 - Manter módulos opcionais realmente opcionais.
 - Criar backups/rollback antes de mudanças críticas.
 - Preservar configurações que não pertencem ao MANAGER sempre que possível.
+- Compatibilidade com o legado não significa reproduzir práticas inseguras do legado.
 
 ## Recursos
 
@@ -20,6 +21,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 - **Informações do sistema**: SO, kernel, uptime, memória, disco, carga, IPs e serviços.
 - **Usuários SSH**: criar/remover contas, senha, expiração, limite simultâneo, sessões online, bloquear/desbloquear e desconectar usuário.
+- **Chaves SSH**: listar, adicionar e remover chaves públicas, fingerprints e correção segura de permissões.
 - **WireGuard**: servidor `wg0`, clientes, revogação, QR Code e NAT específico da VPN.
 - **OpenVPN**: servidor moderno em `/etc/openvpn/server`, PKI Easy-RSA, clientes `.ovpn`, CRL e UDP/TCP.
 - **DNS Ad Block**: dnsmasq, fontes externas, whitelist/blacklist manuais e atualização diária.
@@ -33,15 +35,19 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 - **Firewall UFW** com proteção para não bloquear uma porta SSH detectada.
 - **Atualizações automáticas de segurança** com `unattended-upgrades`.
 - **TLS/Let's Encrypt** via Certbot isolado, com emissão standalone/webroot e renovação automática.
+- **Política de download do instalador**: HTTPS em uso normal; `file://` apenas para CI/teste local explicitamente autorizado.
 
 ### Monitoramento e manutenção
 
+- **Saúde do servidor**: disco, inodes, memória, carga, systemd, SSH, rota, DNS, atualizações, UFW e Fail2ban.
+- **Health não interativo**: `manager --health` retorna `0` saudável, `1` avisos e `2` crítico.
 - **Diagnóstico** de internet, DNS, SSH, NTP, disco, memória, VPNs, forwarding e serviços.
 - **Tráfego** por interface, conexões ativas e histórico opcional com vnStat.
 - **Logs** centralizados de SSH, Fail2ban, WireGuard, OpenVPN, dnsmasq, Certbot e kernel/rede.
+- **Manutenção**: atualização APT, unattended-upgrades, limpeza segura, journal, NTP e reboot explícito.
 - **Backup e rollback** das configurações gerenciadas pelo projeto.
 - **BBR + fq reversível**: guarda congestion control/qdisc anteriores e restaura quando solicitado.
-- **Self-update** com validação de sintaxe antes de substituir o código instalado.
+- **Self-update** com download temporário e validação de sintaxe antes de executar o instalador.
 - **Rollback de código** para a versão anterior instalada.
 - **Desinstalação conservadora**, com `--purge` separado para configurações.
 - **Assistente de perfis**: servidor seguro, WireGuard, OpenVPN, DNS e configuração completa.
@@ -52,11 +58,18 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 - Debian 12 ou superior.
 - `systemd` e `apt` são obrigatórios nesta implementação.
 
+A matriz de testes será ampliada conforme o roadmap para cobrir as versões modernas suportadas pelo projeto.
+
 ## Instalação
 
+Baixe o instalador por HTTPS, valide que ele existe e execute localmente:
+
 ```bash
-sudo -i
-curl -fsSL https://raw.githubusercontent.com/SrTristeSad/MANAGER/main/install.sh | bash
+curl -fL --proto '=https' --tlsv1.2 \
+  https://raw.githubusercontent.com/SrTristeSad/MANAGER/main/install.sh \
+  -o /tmp/manager-install.sh
+sudo bash /tmp/manager-install.sh
+rm -f /tmp/manager-install.sh
 ```
 
 Depois execute:
@@ -69,6 +82,17 @@ O alias clássico também funciona:
 
 ```bash
 menu
+```
+
+## CLI
+
+```text
+manager                 abre o menu interativo
+manager --health        health check não interativo
+manager --status        status resumido dos serviços
+manager --diagnostics   abre o diagnóstico
+manager --version       mostra a versão
+manager --help          mostra a ajuda
 ```
 
 ## Comandos de recuperação
@@ -108,6 +132,7 @@ SEGURANÇA
  7) Firewall
  8) Fail2ban
  9) TLS / Let's Encrypt
+18) Chaves públicas SSH
 
 MONITORAMENTO E MANUTENÇÃO
 10) Tráfego e conexões
@@ -116,8 +141,12 @@ MONITORAMENTO E MANUTENÇÃO
 13) Desempenho / BBR
 14) Logs
 15) Assistente / perfis
+16) Saúde do servidor
+17) Manutenção do sistema
 20) Status dos serviços
+
 90) Atualizar MANAGER
+ 0) Sair
 ```
 
 ## WireGuard
@@ -195,6 +224,8 @@ Eles têm permissão restrita e podem conter chaves privadas das VPNs. A restaur
 
 O instalador baixa todos os arquivos para uma área temporária e executa `bash -n` antes de alterar a instalação ativa.
 
+Em uso normal, a origem do instalador deve ser HTTPS. `file://` só é permitido para CI ou quando um teste local ativa explicitamente `MANAGER_ALLOW_FILE_SOURCE=1`.
+
 Durante uma atualização, a versão anterior do código é preservada em:
 
 ```text
@@ -202,6 +233,16 @@ Durante uma atualização, a versão anterior do código é preservada em:
 ```
 
 O estado permanente fica em `/etc/manager` e não é apagado pelo updater.
+
+## Roadmap
+
+A evolução planejada até 1.0 está documentada em:
+
+```text
+docs/ROADMAP.md
+```
+
+O plano inclui paridade útil com SSHPlus, Connection Engine, Automation Legacy desligável, Automation v2, Modo Colmeia com balanceamento e sessões globais, além de Telegram Bot + Mini App.
 
 ## Teste antes de chamar de estável
 
@@ -223,6 +264,7 @@ uninstall.sh                    desinstalador
 lib/common.sh                   helpers compartilhados
 modules/system.sh               informações e serviços
 modules/ssh_users.sh            usuários e sessões SSH
+modules/ssh_keys.sh             chaves públicas SSH
 modules/wireguard.sh            WireGuard
 modules/openvpn.sh              OpenVPN / Easy-RSA
 modules/adblock.sh              bloqueio DNS / listas / stats
@@ -231,6 +273,8 @@ modules/firewall.sh             UFW
 modules/fail2ban.sh             Fail2ban
 modules/tls.sh                  Certbot / Let's Encrypt
 modules/diagnostics.sh          diagnóstico
+modules/health.sh               saúde do servidor
+modules/maintenance.sh          manutenção do sistema
 modules/backup.sh               backup/restore
 modules/traffic.sh              tráfego/vnStat
 modules/performance.sh          BBR/fq reversível
@@ -240,6 +284,7 @@ VERSION                         versão atual
 CHANGELOG.md                    histórico de versões
 SECURITY.md                     política de segurança
 docs/TESTING.md                 roteiro de teste real
+docs/ROADMAP.md                 plano de evolução até 1.0
 ```
 
 ## Segurança operacional
@@ -248,7 +293,7 @@ O MANAGER roda como root porque administra serviços do sistema. Cada módulo de
 
 Recomenda-se testar versões novas primeiro em uma VPS descartável ou snapshot da VPS. Firewalls de provedores/cloud continuam sendo independentes do firewall local.
 
-O CI verifica sintaxe Bash, ShellCheck, formato da versão e padrões destrutivos conhecidos. Testes estáticos não substituem um teste real de systemd, PAM, netfilter, WireGuard, OpenVPN e ACME.
+O CI verifica sintaxe Bash, ShellCheck, formato da versão, política de origem do instalador e padrões destrutivos conhecidos. Testes estáticos não substituem um teste real de systemd, PAM, netfilter, WireGuard, OpenVPN e ACME.
 
 ## Origem
 
