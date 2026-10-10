@@ -17,8 +17,6 @@ POLICY_SERVICE="/etc/systemd/system/manager-policy-reconcile.service"
 POLICY_TIMER="/etc/systemd/system/manager-policy-reconcile.timer"
 POLICY_PATH="/etc/systemd/system/manager-policy-reconcile.path"
 WG_CLIENT_DIR="$MANAGER_ETC/wireguard/clients"
-OVPN_META_DIR="$MANAGER_ETC/openvpn/meta"
-OVPN_CLIENT_DIR="$MANAGER_ETC/openvpn/clients"
 OVPN_CONF="/etc/openvpn/server/manager.conf"
 OVPN_STATUS="/run/openvpn/manager-status.log"
 OVPN_HOOK="$IDENTITY_ROOT/openvpn-policy-hook.sh"
@@ -133,7 +131,6 @@ resource_authorized() {
     wireguard) current="$wg_n" ;;
     openvpn) current="$ovpn_n" ;;
   esac
-  # Existing sessions remain valid; a new session is refused after the identity reaches its local limit.
   if (( current == 0 && total >= max )); then return 69; fi
   if [[ "$protocol" == openvpn ]] && (( total >= max )); then return 69; fi
   return 0
