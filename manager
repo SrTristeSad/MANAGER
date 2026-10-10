@@ -21,7 +21,10 @@ run_module() {
   local file="$1"
   shift || true
   if [[ -x "$MANAGER_HOME/modules/$file" ]]; then
-    "$MANAGER_HOME/modules/$file" "$@"
+    if ! "$MANAGER_HOME/modules/$file" "$@"; then
+      warn "O módulo $file terminou com erro. O menu principal continuará ativo."
+      pause
+    fi
   else
     err "Módulo ausente: $file"
     pause
@@ -32,7 +35,12 @@ self_update() {
   header
   say "${C_WHITE}Atualização do MANAGER${C_RESET}\n"
   if confirm "Baixar e reinstalar a versão atual do repositório?"; then
-    curl -fsSL https://raw.githubusercontent.com/SrTristeSad/MANAGER/main/install.sh | bash -s -- --update
+    if curl -fsSL https://raw.githubusercontent.com/SrTristeSad/MANAGER/main/install.sh | bash -s -- --update; then
+      ok "MANAGER atualizado"
+      VERSION="$(tr -d '[:space:]' < "$MANAGER_HOME/VERSION")"
+    else
+      err "A atualização falhou; a instalação atual foi mantida sempre que possível."
+    fi
     pause
   fi
 }
