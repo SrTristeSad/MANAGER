@@ -33,6 +33,11 @@ install_server() {
     pause
     return
   fi
+  if ss -Hlun "sport = :$port" 2>/dev/null | grep -q .; then
+    err "A porta UDP $port já está em uso."
+    pause
+    return
+  fi
   endpoint="$(curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
   read -r -p "IP/domínio público do servidor [$endpoint]: " endpoint_in
   endpoint="${endpoint_in:-$endpoint}"
@@ -59,7 +64,7 @@ Address = $WG_SERVER_IP/24
 ListenPort = $port
 PrivateKey = $private
 SaveConfig = false
-PostUp = iptables -C FORWARD -i %i -j ACCEPT 2>/dev/null || iptables -A FORWARD -i %i -j ACCEPT; iptables -C FORWARD -o %i -j ACCEPT 2>/dev/null || iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -C POSTROUTING -s $WG_NET.0/24 -o $iface -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s $WG_NET.0/24 -o $iface -j MASQUERADE
+PostUp = iptables -C FORWARD -i %i -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -i %i -j ACCEPT; iptables -C FORWARD -o %i -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -o %i -j ACCEPT; iptables -t nat -C POSTROUTING -s $WG_NET.0/24 -o $iface -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s $WG_NET.0/24 -o $iface -j MASQUERADE
 PostDown = iptables -D FORWARD -i %i -j ACCEPT 2>/dev/null || true; iptables -D FORWARD -o %i -j ACCEPT 2>/dev/null || true; iptables -t nat -D POSTROUTING -s $WG_NET.0/24 -o $iface -j MASQUERADE 2>/dev/null || true
 EOF
   chmod 0600 "$WG_CONF"
@@ -68,7 +73,8 @@ EOF
   cat > /etc/sysctl.d/99-manager-wireguard.conf <<'EOF'
 net.ipv4.ip_forward = 1
 EOF
-  sysctl --system >/dev/null
+  chmod 0644 /etc/sysctl.d/99-manager-wireguard.conf
+  enable_ipv4_forwarding
   systemctl enable --now wg-quick@wg0
 
   if command_exists ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then
