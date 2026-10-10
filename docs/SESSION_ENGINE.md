@@ -31,7 +31,7 @@ Maria pode ter direito aos três destinos, mas uma lease válida representa a va
 Ficam somente em runtime:
 
 ```text
-/run/manager/session-leases/active/
+/run/manager-session-leases/active/
 ```
 
 Cada lease é um arquivo `0600` contendo somente metadados de sessão, nunca senha, chave privada ou certificado.
@@ -53,7 +53,8 @@ Ele **não aumenta em cada aquisição normal**, porque identidades com `max_ses
 O epoch aumenta quando é necessário invalidar a geração anterior inteira, por exemplo:
 
 - `--revoke-all`;
-- `--switch`.
+- `--switch`;
+- uma mudança de política invalida leases ainda ativas.
 
 Depois disso, uma operação com token antigo não pode renovar uma lease da geração nova.
 
@@ -93,9 +94,32 @@ Uma lease precisa receber heartbeat antes de `expires_epoch`. O timer:
 manager-session-cleanup.timer
 ```
 
-faz limpeza periódica, e as próprias operações do Session Engine também removem leases vencidas antes de calcular cotas.
+faz reconciliação periódica, inclusive remoção das leases vencidas. As próprias operações do Session Engine também reconciliam o estado antes de calcular cotas.
 
 O TTL curto é deliberado: uma aplicação que morrer sem executar `release` não deve manter uma vaga presa indefinidamente.
+
+## Reconciliação de política
+
+O watcher:
+
+```text
+manager-session-reconcile.path
+```
+
+observa o marcador de mudanças do Connection Engine.
+
+Se uma identidade com lease ativa:
+
+- for desabilitada;
+- expirar;
+- perder o protocolo usado pela lease;
+- trocar ou perder o recurso vinculado;
+
+as leases daquela identidade são revogadas e o `session_epoch` avança uma vez para invalidar a geração anterior.
+
+Uma lease cujo epoch já ficou para trás também é removida como estado obsoleto.
+
+Isso impede que uma sessão antiga volte a ser aceita apenas porque a identidade foi reativada depois.
 
 ## Idempotência local de aquisição
 
@@ -203,6 +227,12 @@ Consultar epoch atual:
 /opt/manager/modules/session_engine.sh --epoch maria
 ```
 
+Reconciliar manualmente:
+
+```bash
+/opt/manager/modules/session_engine.sh --reconcile
+```
+
 ## CLI pública
 
 ```bash
@@ -210,7 +240,7 @@ manager --leases
 manager --leases maria
 ```
 
-O menu principal também possui `Session / Lease Engine` para consulta, limpeza e revogação administrativa.
+O menu principal também possui `Session / Lease Engine` para consulta, reconciliação e revogação administrativa.
 
 ## Eventos
 
