@@ -10,6 +10,7 @@ require_root
 AD_DIR="$MANAGER_ETC/adblock"
 SOURCES="$AD_DIR/sources.list"
 HOSTS="$AD_DIR/hosts"
+OWNERSHIP="$AD_DIR/dnsmasq.owner"
 CONF="/etc/dnsmasq.d/90-manager-adblock.conf"
 TIMER="/etc/systemd/system/manager-adblock-update.timer"
 SERVICE="/etc/systemd/system/manager-adblock-update.service"
@@ -19,6 +20,7 @@ is_private_ipv4() {
   local ip="$1" a b
   is_valid_ipv4 "$ip" || return 1
   IFS=. read -r a b _ _ <<< "$ip"
+  a=$((10#$a)); b=$((10#$b))
   (( a == 10 )) && return 0
   (( a == 127 )) && return 0
   (( a == 192 && b == 168 )) && return 0
@@ -53,6 +55,10 @@ listen-address=$listen
 addn-hosts=$HOSTS
 EOF
   chmod 0644 "$CONF"
+}
+
+blocked_count() {
+  awk '!/^#/ && NF {c++} END {print c+0}' "$HOSTS" 2>/dev/null || printf '0\n'
 }
 
 build_hosts() {
@@ -101,7 +107,7 @@ build_hosts() {
 
   install -m 0644 "$work/hosts" "$HOSTS"
   local total
-  total="$(grep -cv '^#' "$HOSTS" || true)"
+  total="$(blocked_count)"
   rm -rf "$work"
   ok "$total domínios carregados"
 }
@@ -134,6 +140,17 @@ EOF
   systemctl enable --now manager-adblock-update.timer >/dev/null 2>&1
 }
 
+record_dnsmasq_ownership() {
+  mkdir -p "$AD_DIR"
+  [[ -f "$OWNERSHIP" ]] && return 0
+  if dpkg-query -W -f='${Status}' dnsmasq 2>/dev/null | grep -q 'install ok installed'; then
+    echo "preexisting" > "$OWNERSHIP"
+  else
+    echo "manager" > "$OWNERSHIP"
+  fi
+  chmod 0600 "$OWNERSHIP"
+}
+
 install_adblock() {
   header
   say "${C_WHITE}INSTALAR BLOQUEIO DE ANÚNCIOS DNS${C_RESET}\n"
@@ -141,12 +158,13 @@ install_adblock() {
   info "Depois você pode selecionar um IP privado da VPN/rede."
   confirm "Continuar?" || return
 
+  record_dnsmasq_ownership
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
   apt-get install -y dnsmasq curl ca-certificates
   mkdir -p "$AD_DIR"
   write_default_sources
-  : > "$HOSTS"
+  touch "$HOSTS"
   write_dnsmasq_config "127.0.0.1"
   build_hosts
 
@@ -221,7 +239,7 @@ show_status() {
   fi
   local listen total updated
   listen="$(awk -F= '/^listen-address=/ {print $2}' "$CONF")"
-  total="$(grep -cv '^#' "$HOSTS" 2>/dev/null || echo 0)"
+  total="$(blocked_count)"
   updated="$(stat -c '%y' "$HOSTS" 2>/dev/null | cut -d. -f1 || echo '-')"
   printf '%-20s %s\n' "dnsmasq:" "$(systemctl is-active dnsmasq 2>/dev/null || true)"
   printf '%-20s %s\n' "Endereço:" "$listen:53"
@@ -279,12 +297,20 @@ manage_sources() {
 remove_adblock() {
   header
   confirm "Remover a configuração de bloqueio DNS do MANAGER?" || return
+  local owner="manager"
+  [[ -f "$OWNERSHIP" ]] && owner="$(cat "$OWNERSHIP")"
+
   systemctl disable --now manager-adblock-update.timer >/dev/null 2>&1 || true
   rm -f "$TIMER" "$SERVICE" "$CONF"
-  rm -rf "$AD_DIR"
   systemctl daemon-reload
-  if command_exists dnsmasq; then systemctl restart dnsmasq 2>/dev/null || systemctl stop dnsmasq 2>/dev/null || true; fi
-  ok "Configuração removida. O pacote dnsmasq foi mantido para não quebrar outros serviços."
+
+  if [[ "$owner" == "preexisting" ]]; then
+    systemctl restart dnsmasq 2>/dev/null || true
+  else
+    systemctl disable --now dnsmasq >/dev/null 2>&1 || true
+  fi
+  rm -rf "$AD_DIR"
+  ok "Configuração removida. O pacote dnsmasq foi mantido para evitar remoções destrutivas."
   pause
 }
 
