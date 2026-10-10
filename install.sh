@@ -48,7 +48,7 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y curl ca-certificates iproute2 iputils-ping procps passwd login coreutils gawk sed grep tar util-linux dnsutils
+apt-get install -y curl ca-certificates iproute2 iputils-ping procps passwd login coreutils gawk sed grep tar util-linux dnsutils openssh-client
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -61,6 +61,7 @@ FILES=(
   "lib/common.sh"
   "modules/system.sh"
   "modules/ssh_users.sh"
+  "modules/ssh_keys.sh"
   "modules/adblock.sh"
   "modules/wireguard.sh"
   "modules/openvpn.sh"
@@ -69,6 +70,8 @@ FILES=(
   "modules/security.sh"
   "modules/tls.sh"
   "modules/diagnostics.sh"
+  "modules/health.sh"
+  "modules/maintenance.sh"
   "modules/backup.sh"
   "modules/traffic.sh"
   "modules/performance.sh"
@@ -76,10 +79,21 @@ FILES=(
   "modules/profiles.sh"
 )
 
+curl_fetch() {
+  local url="$1" out="$2"
+  if [[ "$url" == https://* ]]; then
+    curl -fL --proto '=https' --tlsv1.2 --retry 3 --retry-delay 1 --connect-timeout 10 --max-time 90 "$url" -o "$out"
+  else
+    # file:// is intentionally supported for CI/offline smoke testing.
+    curl -fL --retry 3 --retry-delay 1 --connect-timeout 10 --max-time 90 "$url" -o "$out"
+  fi
+}
+
 for file in "${FILES[@]}"; do
   mkdir -p "$TMP/$(dirname "$file")"
   echo "[i] Baixando $file"
-  curl -fsSL --retry 3 --retry-delay 1 "$REPO_RAW/$file" -o "$TMP/$file"
+  curl_fetch "$REPO_RAW/$file" "$TMP/$file"
+  [[ -s "$TMP/$file" ]] || { echo "[ERRO] Arquivo vazio: $file" >&2; exit 1; }
 done
 
 # Validate every shell file before touching the active installation.
@@ -96,6 +110,7 @@ NEW_VERSION="$(tr -d '[:space:]' < "$TMP/VERSION")"
 
 STAGE="$TMP/stage"
 mkdir -p "$STAGE/lib" "$STAGE/modules" "$ETC_DIR"
+chmod 0700 "$ETC_DIR"
 install -m 0644 "$TMP/VERSION" "$STAGE/VERSION"
 install -m 0644 "$TMP/lib/common.sh" "$STAGE/lib/common.sh"
 install -m 0755 "$TMP/manager" "$STAGE/manager"
@@ -138,6 +153,7 @@ echo " MANAGER $NEW_VERSION instalado com sucesso"
 echo "=================================================="
 echo ""
 echo "Comandos: manager | menu"
+echo "Saúde:    manager --health"
 echo "Rollback: manager-rollback"
 echo "Remover:  manager-uninstall"
 [[ -d "$ROLLBACK_DIR" ]] && echo "Código anterior preservado em: $ROLLBACK_DIR"
