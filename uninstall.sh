@@ -14,6 +14,11 @@ if $PURGE; then
   read -r -p "Digite PURGAR para continuar: " answer
   [[ "$answer" == PURGAR ]] || exit 1
 
+  dnsmasq_owner=""
+  if [[ -f /etc/manager/adblock/dnsmasq.owner ]]; then
+    dnsmasq_owner="$(cat /etc/manager/adblock/dnsmasq.owner)"
+  fi
+
   systemctl disable --now manager-adblock-update.timer >/dev/null 2>&1 || true
   rm -f /etc/systemd/system/manager-adblock-update.timer /etc/systemd/system/manager-adblock-update.service
   rm -f /etc/dnsmasq.d/90-manager-adblock.conf
@@ -33,17 +38,27 @@ if $PURGE; then
   if command -v sshd >/dev/null 2>&1 && sshd -t; then
     systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
   fi
-  command -v fail2ban-client >/dev/null 2>&1 && systemctl restart fail2ban 2>/dev/null || true
-  command -v dnsmasq >/dev/null 2>&1 && systemctl restart dnsmasq 2>/dev/null || true
+  if command -v fail2ban-client >/dev/null 2>&1; then
+    systemctl restart fail2ban 2>/dev/null || true
+  fi
+  if command -v dnsmasq >/dev/null 2>&1; then
+    if [[ "$dnsmasq_owner" == "preexisting" ]]; then
+      systemctl restart dnsmasq 2>/dev/null || true
+    else
+      systemctl disable --now dnsmasq >/dev/null 2>&1 || true
+    fi
+  fi
+  sysctl --system >/dev/null 2>&1 || true
 fi
 
-rm -f /usr/local/bin/manager /usr/local/bin/menu /usr/local/sbin/manager /usr/local/sbin/manager-rollback
+rm -f /usr/local/bin/manager /usr/local/bin/menu \
+  /usr/local/sbin/manager /usr/local/sbin/manager-rollback /usr/local/sbin/manager-uninstall
 rm -rf /opt/manager /opt/manager.rollback
 
 echo "[OK] Código do MANAGER removido."
 if ! $PURGE; then
   echo "As configurações em /etc/manager e serviços configurados foram preservados."
-  echo "Use uninstall.sh --purge somente se quiser remover também as configurações do MANAGER."
+  echo "Execute manager-uninstall --purge somente se quiser remover também as configurações do MANAGER."
 else
   echo "Configurações do MANAGER removidas. Pacotes do sistema foram preservados para evitar quebrar outros serviços."
 fi
