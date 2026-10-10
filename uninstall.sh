@@ -36,6 +36,21 @@ if $PURGE; then
     previous_forward="$(tr -d '[:space:]' < /etc/manager/network/previous-ip-forward)"
   fi
 
+  # Contas teste são explicitamente criadas/geridas pelo MANAGER e podem ser removidas no purge.
+  if [[ -d /etc/manager/ssh-tests ]]; then
+    for meta in /etc/manager/ssh-tests/*; do
+      [[ -f "$meta" ]] || continue
+      test_user="${meta##*/}"
+      if [[ "$test_user" =~ ^[a-z_][a-z0-9_-]{0,30}$ ]] && id "$test_user" >/dev/null 2>&1; then
+        pkill -KILL -u "$test_user" 2>/dev/null || true
+        userdel -r "$test_user" 2>/dev/null || userdel "$test_user" 2>/dev/null || true
+      fi
+    done
+  fi
+
+  systemctl disable --now manager-test-users.timer >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-test-users.timer /etc/systemd/system/manager-test-users.service
+
   systemctl disable --now manager-adblock-update.timer >/dev/null 2>&1 || true
   rm -f /etc/systemd/system/manager-adblock-update.timer /etc/systemd/system/manager-adblock-update.service
   rm -f /etc/dnsmasq.d/90-manager-adblock.conf /etc/dnsmasq.d/91-manager-adblock-stats.conf
@@ -65,6 +80,7 @@ if $PURGE; then
 
   rm -f /etc/fail2ban/jail.d/99-manager-sshd.local
   rm -f /etc/ssh/sshd_config.d/99-manager.conf
+  rm -f /etc/ssh/sshd_config.d/70-manager-banner.conf
   rm -f /etc/security/limits.d/99-manager-ssh.conf
   rm -f /etc/sysctl.d/99-manager-wireguard.conf \
     /etc/sysctl.d/99-manager-openvpn.conf \
@@ -81,6 +97,7 @@ if $PURGE; then
   fi
 
   rm -rf /etc/manager
+  rm -rf /var/log/manager
   systemctl daemon-reload || true
 
   if command -v sshd >/dev/null 2>&1 && sshd -t; then
