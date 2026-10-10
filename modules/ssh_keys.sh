@@ -9,8 +9,8 @@ require_root
 select_user() {
   local user
   read -r -p "Usuário: " user
-  id "$user" >/dev/null 2>&1 || { err "Usuário não existe"; return 1; }
-  [[ "$user" != root ]] || warn "Você está alterando chaves do root. Revise com cuidado."
+  id "$user" >/dev/null 2>&1 || { err "Usuário não existe" >&2; return 1; }
+  [[ "$user" != root ]] || warn "Você está alterando chaves do root. Revise com cuidado." >&2
   printf '%s' "$user"
 }
 
