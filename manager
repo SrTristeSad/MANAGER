@@ -44,11 +44,13 @@ esac
 require_root
 
 run_module() {
-  local file="$1"
+  local file="$1" rc
   shift || true
   if [[ -x "$MANAGER_HOME/modules/$file" ]]; then
-    if ! "$MANAGER_HOME/modules/$file" "$@"; then
-      local rc=$?
+    if "$MANAGER_HOME/modules/$file" "$@"; then
+      return 0
+    else
+      rc=$?
       warn "O módulo $file terminou com erro (código $rc). O menu principal continuará ativo."
       pause
       return 0
