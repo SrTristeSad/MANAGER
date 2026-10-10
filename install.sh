@@ -104,13 +104,12 @@ if [[ -d "$INSTALL_DIR" ]]; then
   cp -a "$INSTALL_DIR" "$ROLLBACK_DIR"
 fi
 
-mkdir -p "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/modules"
 # Remove stale code files, but never touch /etc/manager state.
 find "$INSTALL_DIR/modules" -maxdepth 1 -type f -name '*.sh' -delete 2>/dev/null || true
 install -m 0644 "$STAGE/VERSION" "$INSTALL_DIR/VERSION"
 install -m 0644 "$STAGE/lib/common.sh" "$INSTALL_DIR/lib/common.sh"
 install -m 0755 "$STAGE/manager" "$INSTALL_DIR/manager"
-mkdir -p "$INSTALL_DIR/modules"
 for script in "$STAGE"/modules/*.sh; do
   install -m 0755 "$script" "$INSTALL_DIR/modules/$(basename "$script")"
 done
