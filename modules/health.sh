@@ -135,7 +135,11 @@ run_health() {
     say "${C_GREEN}Resumo: todos os checks principais estão OK.${C_RESET}"
   fi
 
-  [[ "$INTERACTIVE" == yes ]] && pause
+  if [[ "$INTERACTIVE" == yes ]]; then
+    pause
+    return 0
+  fi
+
   (( CRITICAL == 0 )) || return 2
   (( WARNINGS == 0 )) || return 1
   return 0
