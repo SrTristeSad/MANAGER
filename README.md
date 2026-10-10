@@ -23,6 +23,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 - **WireGuard**: servidor `wg0`, clientes, revogação, QR Code e NAT específico da VPN.
 - **OpenVPN**: servidor moderno em `/etc/openvpn/server`, PKI Easy-RSA, clientes `.ovpn`, CRL e UDP/TCP.
 - **DNS Ad Block**: dnsmasq, fontes externas, whitelist/blacklist manuais e atualização diária.
+- **DNS multi-VPN**: listeners privados simultâneos para loopback, WireGuard e OpenVPN sem bind na interface pública.
 - **Estatísticas DNS opcionais**: desligadas por padrão por privacidade.
 
 ### Segurança
@@ -123,7 +124,7 @@ MONITORAMENTO E MANUTENÇÃO
 
 O módulo usa `wireguard`/`wireguard-tools` e `wg-quick@wg0`. A rede padrão criada pelo MANAGER é `10.66.66.0/24`.
 
-As regras de encaminhamento/NAT são específicas para a interface/sub-rede WireGuard e são removidas individualmente quando a VPN para. O MANAGER não limpa o firewall da VPS.
+As regras de encaminhamento/NAT são específicas para a interface/sub-rede WireGuard, inseridas sem limpar regras existentes e removidas individualmente quando a VPN para. O MANAGER não limpa o firewall da VPS.
 
 Perfis de clientes ficam em:
 
@@ -145,9 +146,17 @@ O módulo gera certificados individuais, mantém CRL e permite revogar clientes.
 
 ## DNS Ad Block
 
-O bloqueador utiliza `dnsmasq`. Inicialmente ele escuta apenas em `127.0.0.1`; depois você pode selecionar um IP privado/VPN atribuído ao servidor.
+O bloqueador utiliza `dnsmasq`. Inicialmente ele escuta apenas em `127.0.0.1`.
 
-O módulo se recusa a configurar um endereço IPv4 público como listener, reduzindo o risco de criar um resolver DNS aberto.
+Depois, o menu de listeners permite adicionar simultaneamente endereços privados/VPN atribuídos ao servidor. Para as VPNs do MANAGER, os endereços padrão são:
+
+```text
+127.0.0.1    loopback obrigatório
+10.66.66.1   WireGuard
+10.8.0.1     OpenVPN
+```
+
+O módulo usa `bind-dynamic` para acompanhar interfaces VPN que podem subir/descer e se recusa a adicionar um IPv4 público como listener. Assim, WireGuard e OpenVPN podem usar o mesmo bloqueador sem transformar a VPS em resolver DNS público.
 
 Arquivos principais:
 
@@ -155,6 +164,7 @@ Arquivos principais:
 /etc/manager/adblock/sources.list
 /etc/manager/adblock/whitelist.txt
 /etc/manager/adblock/blacklist.txt
+/etc/manager/adblock/listen-addresses.txt
 ```
 
 O log de consultas usado para estatísticas é opcional. Ao ativá-lo, o MANAGER avisa que nomes consultados pelos clientes passarão a aparecer no journal.
@@ -179,7 +189,7 @@ Backups locais são armazenados em:
 /var/backups/manager/
 ```
 
-Eles têm permissão restrita e podem conter chaves privadas das VPNs. Antes de restaurar um backup, um snapshot adicional da configuração atual é criado.
+Eles têm permissão restrita e podem conter chaves privadas das VPNs. A restauração aceita somente arquivos dentro desse diretório e, antes de restaurar, cria um snapshot adicional da configuração atual.
 
 ## Atualização e rollback de código
 
@@ -192,6 +202,16 @@ Durante uma atualização, a versão anterior do código é preservada em:
 ```
 
 O estado permanente fica em `/etc/manager` e não é apagado pelo updater.
+
+## Teste antes de chamar de estável
+
+O roteiro de validação em VPS real está em:
+
+```text
+docs/TESTING.md
+```
+
+Ele cobre instalação, SSH, Fail2ban, UFW, WireGuard, OpenVPN, DNS simultâneo, BBR, TLS, backup/restore, rollback e desinstalação.
 
 ## Estrutura
 
@@ -219,6 +239,7 @@ modules/profiles.sh             assistente guiado
 VERSION                         versão atual
 CHANGELOG.md                    histórico de versões
 SECURITY.md                     política de segurança
+docs/TESTING.md                 roteiro de teste real
 ```
 
 ## Segurança operacional
