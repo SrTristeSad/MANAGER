@@ -96,9 +96,10 @@ jobs:
           grep -q 'STATUS DE SERVIÇOS' /tmp/manager-status.log
           sudo /opt/manager/manager --expired >/tmp/manager-expired.log
           sudo /opt/manager/manager --ssh-sessions >/tmp/manager-ssh-sessions.log
-          sudo /opt/manager/modules/resellers.sh --owner nobody >/tmp/manager-owner.log
-          test -d /etc/manager/access/resellers
-          test -d /etc/manager/access/owners
+          test "$(sudo /opt/manager/modules/resellers.sh --init)" = "/etc/manager/access"
+          sudo test -d /etc/manager/access/resellers
+          sudo test -d /etc/manager/access/owners
+          sudo test -f /etc/manager/access/.lock
 
           health_rc=0
           sudo /opt/manager/manager --health >/tmp/manager-health.log 2>&1 || health_rc=$?
