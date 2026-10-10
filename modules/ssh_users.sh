@@ -30,15 +30,12 @@ remove_limit_entry() {
 safe_delete_user() {
   local user="$1"
   [[ "$user" != root ]] || return 1
-  id "$user" >/dev/null 2>&1 || {
-    rm -f "$TEST_DIR/$user" 2>/dev/null || true
-    remove_limit_entry "$user"
-    return 0
-  }
-  pkill -TERM -u "$user" 2>/dev/null || true
-  sleep 0.2
-  pkill -KILL -u "$user" 2>/dev/null || true
-  userdel -r "$user" 2>/dev/null || userdel "$user"
+  if id "$user" >/dev/null 2>&1; then
+    pkill -TERM -u "$user" 2>/dev/null || true
+    sleep 0.2
+    pkill -KILL -u "$user" 2>/dev/null || true
+    userdel -r "$user" 2>/dev/null || userdel "$user"
+  fi
   remove_limit_entry "$user"
   rm -f "$TEST_DIR/$user" 2>/dev/null || true
 }
@@ -78,7 +75,7 @@ EOF
 }
 
 cleanup_test_users() {
-  local now meta user expiry removed=0
+  local now meta user expiry
   now="$(date +%s)"
   mkdir -p "$TEST_DIR"
   chmod 0700 "$TEST_DIR"
@@ -91,12 +88,9 @@ cleanup_test_users() {
     [[ "$expiry" =~ ^[0-9]+$ ]] || continue
     if (( now >= expiry )); then
       safe_delete_user "$user" || true
-      removed=$((removed + 1))
       printf '[MANAGER] Conta teste expirada removida: %s\n' "$user"
     fi
   done
-
-  return 0
 }
 
 account_expiry_days() {
@@ -115,7 +109,9 @@ list_expired_usernames() {
   local user uid shell
   while IFS=: read -r user _ uid _ _ _ shell; do
     is_regular_login_user "$uid" "$shell" || continue
-    is_account_expired "$user" && printf '%s\n' "$user"
+    if is_account_expired "$user"; then
+      printf '%s\n' "$user"
+    fi
   done < /etc/passwd
 }
 
@@ -125,17 +121,22 @@ list_users() {
   printf '%-18s %-12s %-10s %-8s %-8s\n' "USUÁRIO" "EXPIRA" "ESTADO" "LOGINS" "LIMITE"
   printf '%-18s %-12s %-10s %-8s %-8s\n' "------------------" "------------" "----------" "--------" "--------"
 
+  local user uid shell expiry logins limit state
   while IFS=: read -r user _ uid _ _ _ shell; do
     is_regular_login_user "$uid" "$shell" || continue
-    local expiry logins limit state
     expiry="$(LANG=C chage -l "$user" 2>/dev/null | awk -F': ' '/Account expires/ {print $2}')"
     [[ "$expiry" == "never" ]] && expiry="nunca"
-    [[ -z "$expiry" ]] && expiry="-"
+    [[ -n "$expiry" ]] || expiry="-"
     logins="$(who | awk -v u="$user" '$1==u {c++} END{print c+0}')"
     limit="$(awk -v u="$user" '$1==u && $3=="maxlogins" {print $4}' "$LIMITS_FILE" 2>/dev/null | tail -n1)"
-    [[ -z "$limit" ]] && limit="-"
+    [[ -n "$limit" ]] || limit="-"
     state="$(passwd -S "$user" 2>/dev/null | awk '{print $2}')"
-    case "$state" in L|LK) state="bloqueado" ;; P|PS) state="ativo" ;; NP) state="sem-senha" ;; *) state="-" ;; esac
+    case "$state" in
+      L|LK) state="bloqueado" ;;
+      P|PS) state="ativo" ;;
+      NP) state="sem-senha" ;;
+      *) state="-" ;;
+    esac
     printf '%-18s %-12s %-10s %-8s %-8s\n' "$user" "$expiry" "$state" "$logins" "$limit"
   done < /etc/passwd
   say ""
@@ -145,9 +146,7 @@ list_users() {
 online_sessions() {
   header
   say "${C_WHITE}SESSÕES ONLINE${C_RESET}\n"
-  if ! who -u | sed -n '1,100p'; then
-    warn "Não foi possível consultar sessões"
-  fi
+  who -u | sed -n '1,100p' || warn "Não foi possível consultar sessões"
   say "\nConexões SSH estabelecidas:"
   ss -Htnp state established '( sport = :ssh or dport = :ssh )' 2>/dev/null | sed -n '1,100p' || true
   pause
@@ -158,22 +157,22 @@ create_user() {
   say "${C_WHITE}CRIAR USUÁRIO SSH${C_RESET}\n"
   local user pass expiry limit
   read -r -p "Usuário: " user
-  if ! is_valid_username "$user"; then err "Nome de usuário inválido"; pause; return; fi
-  if id "$user" >/dev/null 2>&1; then err "Usuário já existe"; pause; return; fi
+  is_valid_username "$user" || { err "Nome de usuário inválido"; pause; return; }
+  id "$user" >/dev/null 2>&1 && { err "Usuário já existe"; pause; return; }
 
   read -r -s -p "Senha: " pass; echo
   [[ -n "$pass" ]] || { err "Senha vazia"; pause; return; }
-  if (( ${#pass} < 8 )); then warn "Senha curta; prefira 8+ caracteres."; fi
+  (( ${#pass} >= 8 )) || warn "Senha curta; prefira 8+ caracteres."
+
   read -r -p "Data de expiração YYYY-MM-DD (vazio = sem expiração): " expiry
   if [[ -n "$expiry" ]] && ! date -d "$expiry" '+%F' >/dev/null 2>&1; then
     err "Data inválida"; pause; return
   fi
+
   read -r -p "Limite simultâneo [1] (0 = sem limite): " limit
   limit="${limit:-1}"
   if [[ ! "$limit" =~ ^[0-9]+$ ]] || (( limit > 50 )); then
-    err "Limite inválido"
-    pause
-    return
+    err "Limite inválido"; pause; return
   fi
 
   mkdir -p "$TEST_DIR"
@@ -185,7 +184,7 @@ create_user() {
     pause
     return
   fi
-  if [[ -n "$expiry" ]]; then chage -E "$expiry" "$user"; fi
+  [[ -z "$expiry" ]] || chage -E "$expiry" "$user"
   if (( limit > 0 )); then
     mkdir -p "$(dirname "$LIMITS_FILE")"
     printf '%s hard maxlogins %s\n' "$user" "$limit" >> "$LIMITS_FILE"
@@ -199,13 +198,14 @@ create_test_user() {
   header
   say "${C_WHITE}CRIAR USUÁRIO TESTE${C_RESET}\n"
   local user minutes limit pass now expires_epoch backstop stamp
+
   read -r -p "Duração em minutos [60]: " minutes
   minutes="${minutes:-60}"
-  [[ "$minutes" =~ ^[0-9]+$ ]] && (( minutes >= 1 && minutes <= 10080 )) || {
+  if [[ ! "$minutes" =~ ^[0-9]+$ ]] || (( minutes < 1 || minutes > 10080 )); then
     err "Use de 1 a 10080 minutos (até 7 dias)."
     pause
     return
-  }
+  fi
 
   read -r -p "Usuário (vazio = gerar automaticamente): " user
   if [[ -z "$user" ]]; then
@@ -217,11 +217,11 @@ create_test_user() {
 
   read -r -p "Limite simultâneo [1]: " limit
   limit="${limit:-1}"
-  [[ "$limit" =~ ^[1-9][0-9]*$ ]] && (( limit <= 50 )) || {
+  if [[ ! "$limit" =~ ^[1-9][0-9]*$ ]] || (( limit > 50 )); then
     err "Limite inválido (1-50)."
     pause
     return
-  }
+  fi
 
   pass="$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"
   now="$(date +%s)"
@@ -281,7 +281,7 @@ delete_user() {
   local user
   read -r -p "Usuário para remover: " user
   id "$user" >/dev/null 2>&1 || { err "Usuário não existe"; pause; return; }
-  if [[ "$user" == "root" ]]; then err "root não pode ser removido"; pause; return; fi
+  [[ "$user" != root ]] || { err "root não pode ser removido"; pause; return; }
   if confirm "Remover $user e o diretório pessoal?"; then
     safe_delete_user "$user"
     ok "Usuário removido"
@@ -306,9 +306,7 @@ change_expiry() {
   local user expiry
   read -r -p "Usuário: " user
   id "$user" >/dev/null 2>&1 || { err "Usuário não existe"; pause; return; }
-  if [[ -f "$TEST_DIR/$user" ]]; then
-    warn "$user é uma conta teste. O temporizador em minutos continuará valendo."
-  fi
+  [[ ! -f "$TEST_DIR/$user" ]] || warn "$user é uma conta teste; o temporizador em minutos continuará valendo."
   read -r -p "Nova expiração YYYY-MM-DD (vazio = nunca): " expiry
   if [[ -z "$expiry" ]]; then
     chage -E -1 "$user"
@@ -334,13 +332,11 @@ set_login_limit() {
   touch "$LIMITS_FILE"
   tmp="$(mktemp)"
   awk -v u="$user" '$1 != u {print}' "$LIMITS_FILE" > "$tmp"
-  if (( limit > 0 )); then
-    printf '%s hard maxlogins %s\n' "$user" "$limit" >> "$tmp"
-  fi
+  (( limit == 0 )) || printf '%s hard maxlogins %s\n' "$user" "$limit" >> "$tmp"
   install -m 0644 "$tmp" "$LIMITS_FILE"
   rm -f "$tmp"
   if ! grep -Rqs '^[[:space:]]*session.*pam_limits\.so' /etc/pam.d/sshd /etc/pam.d/common-session 2>/dev/null; then
-    warn "Não detectei pam_limits.so no stack SSH. O limite foi salvo, mas a sua distro pode não aplicá-lo."
+    warn "Não detectei pam_limits.so no stack SSH. O limite foi salvo, mas a distro pode não aplicá-lo."
   fi
   ok "Limite atualizado"
   pause
@@ -416,19 +412,10 @@ cleanup_expired_users_interactive() {
 }
 
 case "${1:-}" in
-  --cleanup-tests)
-    cleanup_test_users
-    exit 0
-    ;;
-  --list-expired)
-    list_expired_usernames
-    exit 0
-    ;;
+  --cleanup-tests) cleanup_test_users; exit 0 ;;
+  --list-expired) list_expired_usernames; exit 0 ;;
   "") ;;
-  *)
-    err "Ação inválida: $1"
-    exit 2
-    ;;
+  *) err "Ação inválida: $1"; exit 2 ;;
 esac
 
 while true; do
