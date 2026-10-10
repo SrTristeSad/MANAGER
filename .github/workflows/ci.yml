@@ -38,6 +38,10 @@ jobs:
             echo 'Unsafe legacy firewall/permission pattern detected.' >&2
             exit 1
           fi
+          if grep -REn 'http_access[[:space:]]+allow[[:space:]]+all|src[[:space:]]+0\.0\.0\.0/0' modules/proxies.sh; then
+            echo 'Open Squid proxy pattern detected.' >&2
+            exit 1
+          fi
 
       - name: Version format
         shell: bash
@@ -82,6 +86,9 @@ jobs:
           test -x /opt/manager/modules/ssh_monitor.sh
           test -x /opt/manager/modules/user_transfer.sh
           test -x /opt/manager/modules/resellers.sh
+          test -x /opt/manager/modules/reseller_accounts.sh
+          test -x /opt/manager/modules/proxy_hosts.sh
+          test -x /opt/manager/modules/proxies.sh
           test -x /opt/manager/modules/banner.sh
           test -x /opt/manager/modules/speedtest.sh
           test "$(cat /opt/manager/VERSION)" = "$(tr -d '[:space:]' < VERSION)"
@@ -92,14 +99,28 @@ jobs:
           sudo /opt/manager/manager --help | grep -q -- '--health'
           sudo /opt/manager/manager --help | grep -q -- '--expired'
           sudo /opt/manager/manager --help | grep -q -- '--ssh-sessions'
+          sudo /opt/manager/manager --help | grep -q -- '--proxy-status'
+          sudo /opt/manager/manager --help | grep -q -- '--proxy-hosts'
           sudo /opt/manager/manager --status >/tmp/manager-status.log
           grep -q 'STATUS DE SERVIÇOS' /tmp/manager-status.log
           sudo /opt/manager/manager --expired >/tmp/manager-expired.log
           sudo /opt/manager/manager --ssh-sessions >/tmp/manager-ssh-sessions.log
+
           test "$(sudo /opt/manager/modules/resellers.sh --init)" = "/etc/manager/access"
           sudo test -d /etc/manager/access/resellers
           sudo test -d /etc/manager/access/owners
           sudo test -f /etc/manager/access/.lock
+
+          sudo /opt/manager/modules/proxies.sh --init
+          sudo test -d /etc/manager/proxy/tcp
+          sudo test -d /etc/manager/proxy/websocket
+          sudo test -d /etc/manager/proxy/tls
+          sudo /opt/manager/manager --proxy-status >/tmp/manager-proxy-status.log
+
+          sudo /opt/manager/modules/proxy_hosts.sh --add example.com
+          sudo /opt/manager/manager --proxy-hosts | grep -q '^\.example\.com$'
+          sudo /opt/manager/modules/proxy_hosts.sh --remove example.com
+          test "$(sudo /opt/manager/modules/proxy_hosts.sh --count | tr -d '[:space:]')" = "0"
 
           health_rc=0
           sudo /opt/manager/manager --health >/tmp/manager-health.log 2>&1 || health_rc=$?
