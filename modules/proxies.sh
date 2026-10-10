@@ -16,7 +16,7 @@ WS_DIR="$PROXY_DIR/websocket"
 TLS_DIR="$PROXY_DIR/tls"
 SYSTEMD_DIR="/etc/systemd/system"
 
-init_proxy_state() {
+init_state() {
   mkdir -p "$PROXY_DIR" "$TCP_DIR" "$WS_DIR" "$TLS_DIR"
   chmod 0700 "$PROXY_DIR" "$TCP_DIR" "$WS_DIR" "$TLS_DIR"
   touch "$HOSTS_FILE"
@@ -28,46 +28,35 @@ read_field() {
   awk -F= -v k="$key" '$1==k {sub(/^[^=]*=/,""); print; exit}' "$file" 2>/dev/null || true
 }
 
-write_kv_file() {
+write_state() {
   local file="$1"
   shift
   local tmp pair
   tmp="$(mktemp)"
-  for pair in "$@"; do
-    printf '%s\n' "$pair" >> "$tmp"
-  done
+  for pair in "$@"; do printf '%s\n' "$pair" >> "$tmp"; done
   install -m 0600 "$tmp" "$file"
   rm -f "$tmp"
 }
 
-port_is_listening() {
+port_listening() {
   local port="$1"
   ss -Hlnpt "sport = :$port" 2>/dev/null | grep -q .
 }
 
-validate_local_target() {
+validate_target() {
   local port="$1"
   is_valid_port "$port" || return 1
-  if ! port_is_listening "$port"; then
-    warn "A porta local $port não está em escuta agora. O túnel será criado, mas só funcionará quando o serviço de destino estiver ativo."
+  if ! port_listening "$port"; then
+    warn "A porta local $port não está em escuta agora; o túnel só funcionará quando o destino estiver ativo."
   fi
 }
 
-warn_firewall() {
-  local port="$1"
-  if command_exists ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then
-    warn "UFW está ativo. Se este serviço precisar acesso externo, libere conscientemente TCP/$port no módulo Firewall."
-  fi
-}
-
-ensure_new_listen_port() {
-  local port="$1" state_file="$2"
+ensure_free_port() {
+  local port="$1" state="$2"
   is_valid_port "$port" || { err "Porta inválida"; return 1; }
-  [[ ! -e "$state_file" ]] || { err "Já existe um serviço MANAGER registrado na porta $port"; return 1; }
-  if port_is_listening "$port"; then
-    err "A porta TCP $port já está em uso"
-    return 1
-  fi
+  [[ ! -e "$state" ]] || { err "Já existe serviço MANAGER registrado na porta $port"; return 1; }
+  port_listening "$port" && { err "A porta TCP $port já está em uso"; return 1; }
+  return 0
 }
 
 install_pkg() {
@@ -77,28 +66,20 @@ install_pkg() {
   apt-get install -y "$pkg"
 }
 
-unit_hardening() {
-  cat <<'EOF'
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictSUIDSGID=true
-LockPersonality=true
-RestrictNamespaces=true
-EOF
+warn_firewall() {
+  local port="$1"
+  if command_exists ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then
+    warn "UFW ativo: libere TCP/$port pelo módulo Firewall somente se este serviço precisar acesso externo."
+  fi
 }
 
 write_tcp_unit() {
-  local listen="$1" target="$2" unit="$SYSTEMD_DIR/manager-tcp-proxy-$listen.service"
+  local listen="$1" target="$2" unit
+  unit="$SYSTEMD_DIR/manager-tcp-proxy-$listen.service"
   cat > "$unit" <<EOF
 [Unit]
 Description=MANAGER TCP proxy $listen -> 127.0.0.1:$target
 After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=simple
@@ -109,7 +90,16 @@ Restart=on-failure
 RestartSec=2
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-$(unit_hardening)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictNamespaces=true
 
 [Install]
 WantedBy=multi-user.target
@@ -126,7 +116,6 @@ write_ws_unit() {
 [Unit]
 Description=MANAGER WebSocket tunnel $listen -> 127.0.0.1:$target
 After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=simple
@@ -137,12 +126,33 @@ Restart=on-failure
 RestartSec=2
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-$(unit_hardening)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictNamespaces=true
 
 [Install]
 WantedBy=multi-user.target
 EOF
   chmod 0644 "$unit"
+}
+
+generate_pem() {
+  local pem="$1" key cert cn
+  command_exists openssl || install_pkg openssl
+  key="$(mktemp)"; cert="$(mktemp)"
+  cn="$(hostname -f 2>/dev/null || hostname)"
+  openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 825 \
+    -subj "/CN=$cn" -keyout "$key" -out "$cert" >/dev/null 2>&1
+  cat "$key" "$cert" > "$pem"
+  chmod 0600 "$pem"
+  rm -f "$key" "$cert"
 }
 
 write_tls_unit() {
@@ -158,7 +168,6 @@ setuid = nobody
 setgid = nogroup
 socket = l:TCP_NODELAY=1
 socket = r:TCP_NODELAY=1
-
 [manager]
 accept = 0.0.0.0:$listen
 connect = 127.0.0.1:$target
@@ -169,7 +178,6 @@ EOF
 [Unit]
 Description=MANAGER TLS tunnel $listen -> 127.0.0.1:$target
 After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=simple
@@ -186,7 +194,7 @@ RestrictSUIDSGID=true
 LockPersonality=true
 RestrictNamespaces=true
 AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE SETUID SETGID
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID
 
 [Install]
 WantedBy=multi-user.target
@@ -194,48 +202,23 @@ EOF
   chmod 0644 "$unit"
 }
 
-generate_tls_pem() {
-  local pem="$1" key cert cn
-  command_exists openssl || install_pkg openssl
-  key="$(mktemp)"
-  cert="$(mktemp)"
-  cn="$(hostname -f 2>/dev/null || hostname)"
-  openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 825 \
-    -subj "/CN=$cn" -keyout "$key" -out "$cert" >/dev/null 2>&1
-  cat "$key" "$cert" > "$pem"
-  chmod 0600 "$pem"
-  rm -f "$key" "$cert"
-}
-
-squid_restrict_value() {
-  local value
-  value="$(read_field "$SQUID_STATE" restrict_hosts)"
-  [[ "$value" == 1 ]] && printf '1\n' || printf '0\n'
-}
-
-write_squid_config() {
+write_squid_conf() {
   local port restrict
   [[ -f "$SQUID_STATE" ]] || return 1
   port="$(read_field "$SQUID_STATE" port)"
-  restrict="$(squid_restrict_value)"
+  restrict="$(read_field "$SQUID_STATE" restrict_hosts)"
   is_valid_port "$port" || return 1
-  init_proxy_state
-
+  [[ "$restrict" == 1 ]] || restrict=0
   {
     printf 'http_port %s\n' "$port"
     printf 'pid_filename /run/manager-squid.pid\n'
-    printf 'visible_hostname MANAGER\n'
-    printf 'via off\n'
-    printf 'forwarded_for delete\n'
-    printf 'cache deny all\n'
-    printf 'access_log none\n'
-    printf 'cache_log /dev/null\n'
+    printf 'visible_hostname MANAGER\nvia off\nforwarded_for delete\n'
+    printf 'cache deny all\naccess_log none\ncache_log /dev/null\n'
     printf 'acl manager_clients src 127.0.0.1/32\n'
     printf 'acl manager_clients src 10.0.0.0/8\n'
     printf 'acl manager_clients src 172.16.0.0/12\n'
     printf 'acl manager_clients src 192.168.0.0/16\n'
-    printf 'acl manager_safe_ports port 80\n'
-    printf 'acl manager_safe_ports port 443\n'
+    printf 'acl manager_safe_ports port 80\nacl manager_safe_ports port 443\n'
     printf 'http_access deny !manager_safe_ports\n'
     if [[ "$restrict" == 1 ]]; then
       printf 'acl manager_hosts dstdomain "%s"\n' "$HOSTS_FILE"
@@ -249,14 +232,14 @@ write_squid_config() {
 }
 
 write_squid_unit() {
-  local bin unit="$SYSTEMD_DIR/manager-squid.service"
+  local bin unit
   bin="$(command -v squid || true)"
   [[ -n "$bin" ]] || return 1
+  unit="$SYSTEMD_DIR/manager-squid.service"
   cat > "$unit" <<EOF
 [Unit]
 Description=MANAGER private Squid proxy
 After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=simple
@@ -271,16 +254,11 @@ EOF
   chmod 0644 "$unit"
 }
 
-validate_squid_config() {
-  command_exists squid || return 1
-  squid -k parse -f "$SQUID_CONF" >/dev/null 2>&1
-}
-
-reload_squid_machine() {
+reload_squid() {
   [[ -f "$SQUID_STATE" ]] || return 0
   command_exists squid || return 0
-  write_squid_config || return 1
-  validate_squid_config || return 1
+  write_squid_conf || return 1
+  squid -k parse -f "$SQUID_CONF" >/dev/null 2>&1 || return 1
   write_squid_unit || return 1
   systemctl daemon-reload
   if systemctl is-active --quiet manager-squid.service; then
@@ -290,231 +268,192 @@ reload_squid_machine() {
 
 setup_squid() {
   header
-  say "${C_WHITE}SQUID PRIVADO DO MANAGER${C_RESET}\n"
-  init_proxy_state
-  local port restrict answer
-  read -r -p "Porta TCP [3128]: " port
+  local port answer restrict=0
+  read -r -p "Porta do Squid privado [3128]: " port
   port="${port:-3128}"
-  ensure_new_listen_port "$port" "$SQUID_STATE" || { pause; return; }
+  ensure_free_port "$port" "$SQUID_STATE" || { pause; return; }
   read -r -p "Restringir também aos hosts cadastrados? [s/N]: " answer
-  if [[ "$answer" =~ ^([sS]|[yY])$ ]]; then restrict=1; else restrict=0; fi
-
+  [[ "$answer" =~ ^([sS]|[yY])$ ]] && restrict=1
   command_exists squid || install_pkg squid
-  write_kv_file "$SQUID_STATE" "port=$port" "restrict_hosts=$restrict"
-  write_squid_config
-  if ! validate_squid_config; then
+  write_state "$SQUID_STATE" "port=$port" "restrict_hosts=$restrict"
+  write_squid_conf
+  if ! squid -k parse -f "$SQUID_CONF" >/dev/null 2>&1; then
     rm -f "$SQUID_STATE" "$SQUID_CONF"
-    err "O Squid recusou a configuração; nada foi ativado."
+    err "Configuração Squid recusada; ativação revertida"
     pause
     return
   fi
   write_squid_unit
   systemctl daemon-reload
   systemctl enable --now manager-squid.service
-  ok "Squid privado ativo na porta $port"
-  info "Por padrão somente localhost e redes privadas RFC1918 podem usar este proxy."
-  [[ "$restrict" == 1 ]] && info "A lista de hosts também está sendo aplicada."
+  ok "Squid ativo na porta $port"
+  info "Acesso permitido somente de localhost e redes privadas RFC1918."
+  [[ "$restrict" == 1 ]] && info "Restrição adicional por hosts ativada."
   warn_firewall "$port"
   pause
 }
 
-setup_tcp() {
+setup_stream() {
+  local kind="$1" label="$2" dir="$3" package="$4"
   header
-  say "${C_WHITE}PROXY TCP${C_RESET}\n"
-  init_proxy_state
-  local listen target state
+  local listen target state pem=""
   read -r -p "Porta pública de escuta: " listen
-  state="$TCP_DIR/$listen.conf"
-  ensure_new_listen_port "$listen" "$state" || { pause; return; }
-  read -r -p "Porta local de destino (ex.: 22): " target
-  validate_local_target "$target" || { err "Porta de destino inválida"; pause; return; }
-  command_exists socat || install_pkg socat
-  write_kv_file "$state" "listen_port=$listen" "target_port=$target"
-  write_tcp_unit "$listen" "$target"
+  state="$dir/$listen.conf"
+  [[ "$kind" == tls ]] && state="$dir/$listen.state"
+  ensure_free_port "$listen" "$state" || { pause; return; }
+  read -r -p "Porta TCP local de destino (127.0.0.1): " target
+  validate_target "$target" || { err "Destino inválido"; pause; return; }
+
+  case "$kind" in
+    tcp)
+      command_exists socat || install_pkg "$package"
+      write_state "$state" "listen_port=$listen" "target_port=$target"
+      write_tcp_unit "$listen" "$target"
+      ;;
+    ws)
+      if ! command_exists websockify; then
+        apt-cache show "$package" >/dev/null 2>&1 || { err "Pacote $package indisponível"; pause; return; }
+        install_pkg "$package"
+      fi
+      write_state "$state" "listen_port=$listen" "target_port=$target"
+      write_ws_unit "$listen" "$target"
+      ;;
+    tls)
+      if ! command_exists stunnel4 && ! command_exists stunnel; then install_pkg "$package"; fi
+      pem="$TLS_DIR/$listen.pem"
+      generate_pem "$pem"
+      write_state "$state" "listen_port=$listen" "target_port=$target" "pem=$pem"
+      write_tls_unit "$listen" "$target" "$pem"
+      ;;
+  esac
+
   systemctl daemon-reload
-  systemctl enable --now "manager-tcp-proxy-$listen.service"
-  ok "TCP $listen -> 127.0.0.1:$target ativo"
+  systemctl enable --now "manager-$kind-proxy-$listen.service"
+  ok "$label $listen -> 127.0.0.1:$target ativo"
+  [[ "$kind" == tls ]] && warn "Certificado autoassinado gerado; produção pública deve usar certificado confiável."
   warn_firewall "$listen"
   pause
 }
 
-setup_websocket() {
-  header
-  say "${C_WHITE}TÚNEL WEBSOCKET${C_RESET}\n"
-  init_proxy_state
-  local listen target state
-  read -r -p "Porta pública WebSocket: " listen
-  state="$WS_DIR/$listen.conf"
-  ensure_new_listen_port "$listen" "$state" || { pause; return; }
-  read -r -p "Porta TCP local de destino: " target
-  validate_local_target "$target" || { err "Porta de destino inválida"; pause; return; }
-  if ! command_exists websockify; then
-    if ! apt-cache show websockify >/dev/null 2>&1; then
-      err "O pacote websockify não está disponível nos repositórios desta distribuição."
-      pause
-      return
-    fi
-    install_pkg websockify
-  fi
-  write_kv_file "$state" "listen_port=$listen" "target_port=$target"
-  write_ws_unit "$listen" "$target"
-  systemctl daemon-reload
-  systemctl enable --now "manager-ws-proxy-$listen.service"
-  ok "WebSocket $listen -> 127.0.0.1:$target ativo"
-  warn_firewall "$listen"
-  pause
+unit_for() {
+  local kind="$1" port="$2"
+  case "$kind" in
+    tcp) printf 'manager-tcp-proxy-%s.service\n' "$port" ;;
+    ws) printf 'manager-ws-proxy-%s.service\n' "$port" ;;
+    tls) printf 'manager-tls-proxy-%s.service\n' "$port" ;;
+  esac
 }
 
-setup_tls() {
-  header
-  say "${C_WHITE}TÚNEL TLS${C_RESET}\n"
-  init_proxy_state
-  local listen target state pem
-  read -r -p "Porta pública TLS: " listen
-  state="$TLS_DIR/$listen.state"
-  ensure_new_listen_port "$listen" "$state" || { pause; return; }
-  read -r -p "Porta TCP local de destino: " target
-  validate_local_target "$target" || { err "Porta de destino inválida"; pause; return; }
-  if ! command_exists stunnel4 && ! command_exists stunnel; then
-    install_pkg stunnel4
-  fi
-  pem="$TLS_DIR/$listen.pem"
-  generate_tls_pem "$pem"
-  write_kv_file "$state" "listen_port=$listen" "target_port=$target" "pem=$pem"
-  write_tls_unit "$listen" "$target" "$pem"
-  systemctl daemon-reload
-  systemctl enable --now "manager-tls-proxy-$listen.service"
-  ok "TLS $listen -> 127.0.0.1:$target ativo"
-  warn "Foi gerado certificado autoassinado. Para produção pública, substitua por certificado confiável em uma etapa futura/TLS do MANAGER."
-  warn_firewall "$listen"
-  pause
-}
-
-print_state_dir() {
-  local label="$1" dir="$2" file listen target unit state
+print_dir() {
+  local kind="$1" label="$2" dir="$3" file port target unit state
   for file in "$dir"/*.conf "$dir"/*.state; do
     [[ -f "$file" ]] || continue
-    listen="$(read_field "$file" listen_port)"
+    [[ "$file" == *.stunnel.conf ]] && continue
+    port="$(read_field "$file" listen_port)"
     target="$(read_field "$file" target_port)"
-    case "$label" in
-      TCP) unit="manager-tcp-proxy-$listen.service" ;;
-      WS) unit="manager-ws-proxy-$listen.service" ;;
-      TLS) unit="manager-tls-proxy-$listen.service" ;;
-      *) continue ;;
-    esac
-    if systemctl is-active --quiet "$unit" 2>/dev/null; then state="ativo"; else state="inativo"; fi
-    printf '%-8s %-8s %-8s %-10s\n' "$label" "$listen" "$target" "$state"
+    unit="$(unit_for "$kind" "$port")"
+    if systemctl is-active --quiet "$unit" 2>/dev/null; then state=ativo; else state=inativo; fi
+    printf '%-8s %-8s %-12s %-10s\n' "$label" "$port" "127.0.0.1:$target" "$state"
   done
 }
 
-status_machine() {
-  init_proxy_state
+status_output() {
   local port restrict state
   if [[ -f "$SQUID_STATE" ]]; then
     port="$(read_field "$SQUID_STATE" port)"
-    restrict="$(squid_restrict_value)"
-    if systemctl is-active --quiet manager-squid.service 2>/dev/null; then state="ativo"; else state="inativo"; fi
-    printf 'SQUID port=%s restrict_hosts=%s state=%s\n' "$port" "$restrict" "$state"
+    restrict="$(read_field "$SQUID_STATE" restrict_hosts)"
+    if systemctl is-active --quiet manager-squid.service 2>/dev/null; then state=ativo; else state=inativo; fi
+    printf '%-8s %-8s %-12s %-10s\n' SQUID "$port" "hosts:${restrict:-0}" "$state"
   fi
-  while IFS= read -r line; do [[ -n "$line" ]] && printf '%s\n' "$line"; done < <(status_lines)
-}
-
-status_lines() {
-  print_state_dir TCP "$TCP_DIR"
-  print_state_dir WS "$WS_DIR"
-  print_state_dir TLS "$TLS_DIR"
+  print_dir tcp TCP "$TCP_DIR"
+  print_dir ws WS "$WS_DIR"
+  print_dir tls TLS "$TLS_DIR"
 }
 
 show_status() {
   header
-  say "${C_WHITE}PROXIES E TÚNEIS${C_RESET}\n"
-  init_proxy_state
-  local port restrict state
-  printf '%-8s %-8s %-8s %-10s\n' "TIPO" "PORTA" "DESTINO" "ESTADO"
-  printf '%-8s %-8s %-8s %-10s\n' "--------" "--------" "--------" "----------"
-  if [[ -f "$SQUID_STATE" ]]; then
-    port="$(read_field "$SQUID_STATE" port)"
-    restrict="$(squid_restrict_value)"
-    if systemctl is-active --quiet manager-squid.service 2>/dev/null; then state="ativo"; else state="inativo"; fi
-    printf '%-8s %-8s %-8s %-10s\n' "SQUID" "$port" "hosts:$restrict" "$state"
-  fi
-  status_lines
+  printf '%-8s %-8s %-12s %-10s\n' TIPO PORTA DESTINO ESTADO
+  printf '%-8s %-8s %-12s %-10s\n' '--------' '--------' '------------' '----------'
+  status_output
   pause
 }
 
-remove_service() {
+remove_managed() {
   header
-  local kind listen state unit extra
-  read -r -p "Tipo [tcp/ws/tls/squid]: " kind
+  local kind port state unit
+  read -r -p "Tipo [squid/tcp/ws/tls]: " kind
   kind="${kind,,}"
+  if [[ "$kind" == squid ]]; then
+    [[ -f "$SQUID_STATE" ]] || { info "Squid MANAGER não configurado"; pause; return; }
+    confirm "Remover somente a configuração Squid do MANAGER?" || { pause; return; }
+    systemctl disable --now manager-squid.service >/dev/null 2>&1 || true
+    rm -f "$SYSTEMD_DIR/manager-squid.service" "$SQUID_STATE" "$SQUID_CONF"
+    systemctl daemon-reload
+    ok "Configuração removida; pacote Squid preservado"
+    pause
+    return
+  fi
+
+  [[ "$kind" =~ ^(tcp|ws|tls)$ ]] || { err "Tipo inválido"; pause; return; }
+  read -r -p "Porta: " port
+  is_valid_port "$port" || { err "Porta inválida"; pause; return; }
   case "$kind" in
-    squid)
-      [[ -f "$SQUID_STATE" ]] || { info "Squid MANAGER não configurado"; pause; return; }
-      confirm "Desativar e remover somente a configuração Squid do MANAGER?" || { pause; return; }
-      systemctl disable --now manager-squid.service >/dev/null 2>&1 || true
-      rm -f "$SYSTEMD_DIR/manager-squid.service" "$SQUID_STATE" "$SQUID_CONF"
-      systemctl daemon-reload
-      ok "Squid MANAGER removido; o pacote do sistema foi preservado"
-      ;;
-    tcp|ws|tls)
-      read -r -p "Porta de escuta: " listen
-      is_valid_port "$listen" || { err "Porta inválida"; pause; return; }
-      case "$kind" in
-        tcp) state="$TCP_DIR/$listen.conf"; unit="manager-tcp-proxy-$listen.service" ;;
-        ws) state="$WS_DIR/$listen.conf"; unit="manager-ws-proxy-$listen.service" ;;
-        tls) state="$TLS_DIR/$listen.state"; unit="manager-tls-proxy-$listen.service"; extra="$TLS_DIR/$listen.pem $TLS_DIR/$listen.stunnel.conf" ;;
-      esac
-      [[ -f "$state" ]] || { err "Serviço não registrado"; pause; return; }
-      confirm "Remover $kind na porta $listen?" || { pause; return; }
-      systemctl disable --now "$unit" >/dev/null 2>&1 || true
-      rm -f "$SYSTEMD_DIR/$unit" "$state"
-      if [[ -n "${extra:-}" ]]; then
-        rm -f $extra
-      fi
-      systemctl daemon-reload
-      ok "Serviço removido"
-      ;;
-    *) err "Tipo inválido" ;;
+    tcp) state="$TCP_DIR/$port.conf" ;;
+    ws) state="$WS_DIR/$port.conf" ;;
+    tls) state="$TLS_DIR/$port.state" ;;
   esac
+  [[ -f "$state" ]] || { err "Serviço não registrado"; pause; return; }
+  unit="$(unit_for "$kind" "$port")"
+  confirm "Remover $kind na porta $port?" || { pause; return; }
+  systemctl disable --now "$unit" >/dev/null 2>&1 || true
+  rm -f "$SYSTEMD_DIR/$unit" "$state"
+  if [[ "$kind" == tls ]]; then
+    rm -f "$TLS_DIR/$port.pem" "$TLS_DIR/$port.stunnel.conf"
+  fi
+  systemctl daemon-reload
+  ok "Serviço removido"
   pause
 }
 
-reconcile_machine() {
-  init_proxy_state
-  local file listen target pem
+reconcile() {
+  local file port target pem
   if [[ -f "$SQUID_STATE" ]] && command_exists squid; then
-    write_squid_config && validate_squid_config && write_squid_unit || true
+    if write_squid_conf && squid -k parse -f "$SQUID_CONF" >/dev/null 2>&1; then
+      write_squid_unit
+    fi
   fi
   if command_exists socat; then
     for file in "$TCP_DIR"/*.conf; do
       [[ -f "$file" ]] || continue
-      listen="$(read_field "$file" listen_port)"; target="$(read_field "$file" target_port)"
-      is_valid_port "$listen" && is_valid_port "$target" && write_tcp_unit "$listen" "$target"
+      port="$(read_field "$file" listen_port)"; target="$(read_field "$file" target_port)"
+      is_valid_port "$port" && is_valid_port "$target" && write_tcp_unit "$port" "$target"
     done
   fi
   if command_exists websockify; then
     for file in "$WS_DIR"/*.conf; do
       [[ -f "$file" ]] || continue
-      listen="$(read_field "$file" listen_port)"; target="$(read_field "$file" target_port)"
-      is_valid_port "$listen" && is_valid_port "$target" && write_ws_unit "$listen" "$target"
+      port="$(read_field "$file" listen_port)"; target="$(read_field "$file" target_port)"
+      is_valid_port "$port" && is_valid_port "$target" && write_ws_unit "$port" "$target"
     done
   fi
   if command_exists stunnel4 || command_exists stunnel; then
     for file in "$TLS_DIR"/*.state; do
       [[ -f "$file" ]] || continue
-      listen="$(read_field "$file" listen_port)"; target="$(read_field "$file" target_port)"; pem="$(read_field "$file" pem)"
-      is_valid_port "$listen" && is_valid_port "$target" && [[ "$pem" == "$TLS_DIR/"*.pem && -f "$pem" ]] && write_tls_unit "$listen" "$target" "$pem"
+      port="$(read_field "$file" listen_port)"; target="$(read_field "$file" target_port)"; pem="$(read_field "$file" pem)"
+      if is_valid_port "$port" && is_valid_port "$target" && [[ "$pem" == "$TLS_DIR/"*.pem && -f "$pem" ]]; then
+        write_tls_unit "$port" "$target" "$pem"
+      fi
     done
   fi
   systemctl daemon-reload
 }
 
-init_proxy_state
+init_state
 case "${1:-}" in
   --init) exit 0 ;;
-  --status) status_machine; exit 0 ;;
-  --reload-squid) reload_squid_machine; exit $? ;;
-  --reconcile) reconcile_machine; exit 0 ;;
+  --status) status_output; exit 0 ;;
+  --reload-squid) reload_squid; exit $? ;;
+  --reconcile) reconcile; exit 0 ;;
   "") ;;
   *) err "Ação inválida: $1"; exit 64 ;;
 esac
@@ -535,11 +474,11 @@ while true; do
   case "$opt" in
     1) show_status ;;
     2) setup_squid ;;
-    3) setup_tcp ;;
-    4) setup_websocket ;;
-    5) setup_tls ;;
-    6) remove_service ;;
-    7) reconcile_machine; ok "Unidades reconciliadas"; pause ;;
+    3) setup_stream tcp "TCP" "$TCP_DIR" socat ;;
+    4) setup_stream ws "WebSocket" "$WS_DIR" websockify ;;
+    5) setup_stream tls "TLS" "$TLS_DIR" stunnel4 ;;
+    6) remove_managed ;;
+    7) reconcile; ok "Unidades reconciliadas"; pause ;;
     0) exit 0 ;;
     *) warn "Opção inválida"; sleep 1 ;;
   esac
