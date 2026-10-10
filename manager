@@ -62,23 +62,26 @@ menu_summary() {
 while true; do
   header
   menu_summary
-  say " ${C_WHITE}SERVIDOR${C_RESET}"
+  say " ${C_WHITE}SERVIDOR E VPN${C_RESET}"
   say "  ${C_CYAN}1${C_RESET}) Informações do sistema"
   say "  ${C_CYAN}2${C_RESET}) Usuários SSH"
   say "  ${C_CYAN}3${C_RESET}) WireGuard VPN"
-  say "  ${C_CYAN}4${C_RESET}) Bloqueio de anúncios DNS"
+  say "  ${C_CYAN}4${C_RESET}) OpenVPN"
+  say "  ${C_CYAN}5${C_RESET}) Bloqueio de anúncios DNS"
   say ""
   say " ${C_WHITE}SEGURANÇA${C_RESET}"
-  say "  ${C_CYAN}5${C_RESET}) Segurança / hardening SSH"
-  say "  ${C_CYAN}6${C_RESET}) Firewall"
-  say "  ${C_CYAN}7${C_RESET}) Fail2ban"
+  say "  ${C_CYAN}6${C_RESET}) Segurança / hardening SSH"
+  say "  ${C_CYAN}7${C_RESET}) Firewall"
+  say "  ${C_CYAN}8${C_RESET}) Fail2ban"
+  say "  ${C_CYAN}9${C_RESET}) TLS / Let's Encrypt"
   say ""
   say " ${C_WHITE}MONITORAMENTO E MANUTENÇÃO${C_RESET}"
-  say "  ${C_CYAN}8${C_RESET}) Tráfego e conexões"
-  say "  ${C_CYAN}9${C_RESET}) Diagnóstico"
-  say " ${C_CYAN}10${C_RESET}) Backup e rollback"
-  say " ${C_CYAN}11${C_RESET}) Desempenho / BBR"
-  say " ${C_CYAN}12${C_RESET}) Logs"
+  say " ${C_CYAN}10${C_RESET}) Tráfego e conexões"
+  say " ${C_CYAN}11${C_RESET}) Diagnóstico"
+  say " ${C_CYAN}12${C_RESET}) Backup e rollback"
+  say " ${C_CYAN}13${C_RESET}) Desempenho / BBR"
+  say " ${C_CYAN}14${C_RESET}) Logs"
+  say " ${C_CYAN}15${C_RESET}) Assistente / perfis"
   say " ${C_CYAN}20${C_RESET}) Status dos serviços"
   say ""
   say " ${C_CYAN}90${C_RESET}) Atualizar MANAGER"
@@ -90,15 +93,18 @@ while true; do
     1) run_module system.sh info ;;
     2) run_module ssh_users.sh ;;
     3) run_module wireguard.sh ;;
-    4) run_module adblock.sh ;;
-    5) run_module security.sh ;;
-    6) run_module firewall.sh ;;
-    7) run_module fail2ban.sh ;;
-    8) run_module traffic.sh ;;
-    9) run_module diagnostics.sh ;;
-    10) run_module backup.sh ;;
-    11) run_module performance.sh ;;
-    12) run_module logs.sh ;;
+    4) run_module openvpn.sh ;;
+    5) run_module adblock.sh ;;
+    6) run_module security.sh ;;
+    7) run_module firewall.sh ;;
+    8) run_module fail2ban.sh ;;
+    9) run_module tls.sh ;;
+    10) run_module traffic.sh ;;
+    11) run_module diagnostics.sh ;;
+    12) run_module backup.sh ;;
+    13) run_module performance.sh ;;
+    14) run_module logs.sh ;;
+    15) run_module profiles.sh ;;
     20) run_module system.sh services ;;
     90) self_update ;;
     0) clear 2>/dev/null || true; exit 0 ;;
