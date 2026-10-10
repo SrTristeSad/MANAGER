@@ -77,6 +77,9 @@ FILES=(
   "modules/system.sh"
   "modules/ssh_users.sh"
   "modules/ssh_keys.sh"
+  "modules/ssh_monitor.sh"
+  "modules/user_transfer.sh"
+  "modules/resellers.sh"
   "modules/banner.sh"
   "modules/speedtest.sh"
   "modules/adblock.sh"
@@ -123,7 +126,6 @@ for file in "${FILES[@]}"; do
   [[ -s "$TMP/$file" ]] || { echo "[ERRO] Arquivo vazio: $file" >&2; exit 1; }
 done
 
-# Validate every shell file before touching the active installation.
 for script in manager rollback.sh uninstall.sh lib/common.sh modules/*.sh; do
   [[ -f "$TMP/$script" ]] || continue
   bash -n "$TMP/$script"
@@ -147,14 +149,12 @@ for script in "$TMP"/modules/*.sh; do
   install -m 0755 "$script" "$STAGE/modules/$(basename "$script")"
 done
 
-# Keep one complete local rollback copy of the previous code release.
 if [[ -d "$INSTALL_DIR" ]]; then
   rm -rf "$ROLLBACK_DIR"
   cp -a "$INSTALL_DIR" "$ROLLBACK_DIR"
 fi
 
 mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/modules"
-# Remove stale code files, but never touch /etc/manager state.
 find "$INSTALL_DIR/modules" -maxdepth 1 -type f -name '*.sh' -delete 2>/dev/null || true
 install -m 0644 "$STAGE/VERSION" "$INSTALL_DIR/VERSION"
 install -m 0644 "$STAGE/lib/common.sh" "$INSTALL_DIR/lib/common.sh"
@@ -179,11 +179,12 @@ echo "=================================================="
 echo " MANAGER $NEW_VERSION instalado com sucesso"
 echo "=================================================="
 echo ""
-echo "Comandos: manager | menu"
-echo "Saúde:    manager --health"
-echo "Expirados: manager --expired"
-echo "Rollback: manager-rollback"
-echo "Remover:  manager-uninstall"
+echo "Comandos:   manager | menu"
+echo "Saúde:      manager --health"
+echo "Expirados:  manager --expired"
+echo "Sessões SSH: manager --ssh-sessions"
+echo "Rollback:   manager-rollback"
+echo "Remover:    manager-uninstall"
 [[ -d "$ROLLBACK_DIR" ]] && echo "Código anterior preservado em: $ROLLBACK_DIR"
 echo ""
 if [[ "${1:-}" != "--update" ]]; then
