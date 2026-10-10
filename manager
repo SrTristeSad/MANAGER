@@ -30,7 +30,8 @@ Uso:
   manager --proxy-hosts           lista hosts cadastrados para o Squid
   manager --identities            lista identidades do Connection Engine
   manager --identity ID           mostra uma identidade do Connection Engine
-  manager --identity-sessions [ID] mostra sessões agregadas por identidade
+  manager --identity-sessions [ID] mostra sessões observadas por identidade
+  manager --leases [ID]           mostra leases locais ativas
   manager --diagnostics           abre o diagnóstico
   manager --version               mostra a versão
   manager --help                  mostra esta ajuda
@@ -120,37 +121,20 @@ menu_summary() {
 }
 
 case "${1:-}" in
-  --health)
-    exec "$MANAGER_HOME/modules/health.sh" --check
-    ;;
-  --status)
-    exec "$MANAGER_HOME/modules/system.sh" services
-    ;;
-  --expired)
-    exec "$MANAGER_HOME/modules/ssh_users.sh" --list-expired
-    ;;
-  --ssh-sessions)
-    exec "$MANAGER_HOME/modules/ssh_monitor.sh" --summary
-    ;;
-  --proxy-status)
-    exec "$MANAGER_HOME/modules/proxies.sh" --status
-    ;;
-  --proxy-hosts)
-    exec "$MANAGER_HOME/modules/proxy_hosts.sh" --list
-    ;;
-  --identities)
-    exec "$MANAGER_HOME/modules/connection_engine.sh" --list
-    ;;
+  --health) exec "$MANAGER_HOME/modules/health.sh" --check ;;
+  --status) exec "$MANAGER_HOME/modules/system.sh" services ;;
+  --expired) exec "$MANAGER_HOME/modules/ssh_users.sh" --list-expired ;;
+  --ssh-sessions) exec "$MANAGER_HOME/modules/ssh_monitor.sh" --summary ;;
+  --proxy-status) exec "$MANAGER_HOME/modules/proxies.sh" --status ;;
+  --proxy-hosts) exec "$MANAGER_HOME/modules/proxy_hosts.sh" --list ;;
+  --identities) exec "$MANAGER_HOME/modules/connection_engine.sh" --list ;;
   --identity)
     [[ -n "${2:-}" ]] || { err "Informe o ID da identidade"; exit 64; }
     exec "$MANAGER_HOME/modules/connection_engine.sh" --show "$2"
     ;;
-  --identity-sessions)
-    exec "$MANAGER_HOME/modules/policy_engine.sh" --sessions "${2:-}"
-    ;;
-  --diagnostics)
-    exec "$MANAGER_HOME/modules/diagnostics.sh"
-    ;;
+  --identity-sessions) exec "$MANAGER_HOME/modules/policy_engine.sh" --sessions "${2:-}" ;;
+  --leases) exec "$MANAGER_HOME/modules/session_engine.sh" --list "${2:-}" ;;
+  --diagnostics) exec "$MANAGER_HOME/modules/diagnostics.sh" ;;
   "") ;;
   *)
     err "Opção desconhecida: $1"
@@ -185,7 +169,8 @@ while true; do
   say " ${C_CYAN}24${C_RESET}) Revendedores, subrevendedores e cotas"
   say " ${C_CYAN}27${C_RESET}) Criar conta vinculada a revendedor"
   say " ${C_CYAN}28${C_RESET}) Connection Engine / identidades"
-  say " ${C_CYAN}29${C_RESET}) Sessões / reconciliar políticas de identidade"
+  say " ${C_CYAN}29${C_RESET}) Sessões observadas / reconciliar políticas"
+  say " ${C_CYAN}30${C_RESET}) Session / Lease Engine"
   say ""
   say " ${C_WHITE}MONITORAMENTO E MANUTENÇÃO${C_RESET}"
   say " ${C_CYAN}10${C_RESET}) Tráfego e conexões"
@@ -235,7 +220,7 @@ while true; do
     28) run_module connection_engine.sh ;;
     29)
       header
-      say "${C_WHITE}SESSÕES / POLÍTICAS DE IDENTIDADE${C_RESET}\n"
+      say "${C_WHITE}SESSÕES OBSERVADAS / POLÍTICAS${C_RESET}\n"
       "$MANAGER_HOME/modules/policy_engine.sh" --sessions || true
       say ""
       if confirm "Reconciliar políticas agora?"; then
@@ -244,6 +229,7 @@ while true; do
       fi
       pause
       ;;
+    30) run_module session_engine.sh ;;
     90) self_update ;;
     0) clear 2>/dev/null || true; exit 0 ;;
     *) warn "Opção inválida"; sleep 1 ;;
