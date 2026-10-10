@@ -29,6 +29,7 @@ collect_paths() {
     /etc/manager/tls \
     /etc/manager/banner \
     /etc/manager/ssh-tests \
+    /etc/manager/access \
     /etc/wireguard/wg0.conf \
     /etc/wireguard/server.key \
     /etc/wireguard/server.pub \
@@ -86,6 +87,7 @@ entry_is_managed() {
   [[ "$entry" == "etc/manager/tls" || "$entry" == etc/manager/tls/* ]] && return 0
   [[ "$entry" == "etc/manager/banner" || "$entry" == etc/manager/banner/* ]] && return 0
   [[ "$entry" == "etc/manager/ssh-tests" || "$entry" == etc/manager/ssh-tests/* ]] && return 0
+  [[ "$entry" == "etc/manager/access" || "$entry" == etc/manager/access/* ]] && return 0
   [[ "$entry" == "etc/systemd/system/openvpn-server@manager.service.d" || "$entry" == etc/systemd/system/openvpn-server@manager.service.d/* ]] && return 0
 
   [[ "$entry" == "etc/wireguard/wg0.conf" ]] && return 0
@@ -171,7 +173,7 @@ create_backup() {
   cp "$manifest" "$archive.manifest"
   chmod 0600 "$archive.manifest"
   ok "Backup criado: $archive"
-  warn "O backup pode conter chaves privadas de VPN. Trate o arquivo como segredo."
+  warn "O backup pode conter chaves privadas de VPN e dados de revenda. Trate o arquivo como segredo."
   pause
 }
 
