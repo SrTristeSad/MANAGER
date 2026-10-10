@@ -128,11 +128,21 @@ restore_backup() {
 
   tar -C / -xzf "$file" --no-same-owner
   systemctl daemon-reload || true
-  [[ -f /etc/dnsmasq.d/90-manager-adblock.conf ]] && systemctl restart dnsmasq 2>/dev/null || true
-  [[ -f /etc/fail2ban/jail.d/99-manager-sshd.local ]] && systemctl restart fail2ban 2>/dev/null || true
-  [[ -f /etc/wireguard/wg0.conf ]] && systemctl restart wg-quick@wg0 2>/dev/null || true
-  [[ -f /etc/openvpn/server/manager.conf ]] && systemctl restart openvpn-server@manager 2>/dev/null || true
-  [[ -f /etc/systemd/system/manager-certbot-renew.timer ]] && systemctl enable --now manager-certbot-renew.timer >/dev/null 2>&1 || true
+  if [[ -f /etc/dnsmasq.d/90-manager-adblock.conf ]]; then
+    systemctl restart dnsmasq 2>/dev/null || true
+  fi
+  if [[ -f /etc/fail2ban/jail.d/99-manager-sshd.local ]]; then
+    systemctl restart fail2ban 2>/dev/null || true
+  fi
+  if [[ -f /etc/wireguard/wg0.conf ]]; then
+    systemctl restart wg-quick@wg0 2>/dev/null || true
+  fi
+  if [[ -f /etc/openvpn/server/manager.conf ]]; then
+    systemctl restart openvpn-server@manager 2>/dev/null || true
+  fi
+  if [[ -f /etc/systemd/system/manager-certbot-renew.timer ]]; then
+    systemctl enable --now manager-certbot-renew.timer >/dev/null 2>&1 || true
+  fi
   if command -v sshd >/dev/null 2>&1 && sshd -t; then
     systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
   fi
