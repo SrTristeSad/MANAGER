@@ -46,6 +46,24 @@ jobs:
           version="$(tr -d '[:space:]' < VERSION)"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9._-]+)?$ ]]
 
+      - name: Installer source policy
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if sudo env -u GITHUB_ACTIONS MANAGER_REPO_RAW="http://example.invalid/manager" bash install.sh >/tmp/manager-http-source.log 2>&1; then
+            echo 'Installer accepted insecure HTTP source.' >&2
+            exit 1
+          fi
+          grep -q 'Fonte de instalação não suportada' /tmp/manager-http-source.log
+
+          if sudo env -u GITHUB_ACTIONS MANAGER_REPO_RAW="file://${GITHUB_WORKSPACE}" bash install.sh >/tmp/manager-file-source.log 2>&1; then
+            echo 'Installer accepted file:// without explicit local-test permission.' >&2
+            exit 1
+          fi
+          grep -q 'Fonte file:// só é permitida' /tmp/manager-file-source.log
+
       - name: Installer and recovery smoke test
         if: github.event_name == 'push'
         shell: bash
