@@ -80,6 +80,7 @@ jobs:
           test -f /opt/manager/lib/identity.sh
           test -x /opt/manager/modules/connection_engine.sh
           test -x /opt/manager/modules/policy_engine.sh
+          test -x /opt/manager/modules/session_engine.sh
           test -x /opt/manager/modules/wireguard.sh
           test -x /opt/manager/modules/openvpn.sh
           test -x /opt/manager/modules/adblock.sh
@@ -97,6 +98,9 @@ jobs:
           test -f /etc/systemd/system/manager-policy-reconcile.service
           test -f /etc/systemd/system/manager-policy-reconcile.timer
           test -f /etc/systemd/system/manager-policy-reconcile.path
+          test -f /etc/systemd/system/manager-session-cleanup.service
+          test -f /etc/systemd/system/manager-session-cleanup.timer
+          test -d /run/manager/session-leases/active
           test "$(cat /opt/manager/VERSION)" = "$(tr -d '[:space:]' < VERSION)"
           test "$(readlink -f /usr/local/bin/manager)" = "/opt/manager/manager"
           test "$(readlink -f /usr/local/bin/menu)" = "/opt/manager/manager"
@@ -110,6 +114,7 @@ jobs:
           grep -q -- '--proxy-hosts' /tmp/manager-help.log
           grep -q -- '--identities' /tmp/manager-help.log
           grep -q -- '--identity-sessions' /tmp/manager-help.log
+          grep -q -- '--leases' /tmp/manager-help.log
           sudo /opt/manager/manager --status >/tmp/manager-status.log
           grep -q 'STATUS DE SERVIÇOS' /tmp/manager-status.log
           sudo /opt/manager/manager --expired >/tmp/manager-expired.log
@@ -136,6 +141,52 @@ jobs:
           sudo /opt/manager/modules/connection_engine.sh --bind ci-bound ssh managerci
           sudo /opt/manager/modules/policy_engine.sh --reconcile
           sudo /opt/manager/modules/policy_engine.sh --authorize ssh managerci
+
+          lease1="$(sudo /opt/manager/modules/session_engine.sh --acquire ci-bound ssh managerci device-a 30)"
+          session1="$(printf '%s\n' "$lease1" | sed -n 's/.*session_id=\([a-f0-9]\{32\}\).*/\1/p')"
+          epoch1="$(printf '%s\n' "$lease1" | sed -n 's/.*epoch=\([0-9][0-9]*\).*/\1/p')"
+          test "${#session1}" -eq 32
+          test "$epoch1" -ge 1
+          sudo /opt/manager/manager --leases ci-bound > /tmp/manager-leases.log
+          grep -q "$session1" /tmp/manager-leases.log
+
+          retry="$(sudo /opt/manager/modules/session_engine.sh --acquire ci-bound ssh managerci device-a 30)"
+          retry_session="$(printf '%s\n' "$retry" | sed -n 's/.*session_id=\([a-f0-9]\{32\}\).*/\1/p')"
+          test "$retry_session" = "$session1"
+
+          if sudo /opt/manager/modules/session_engine.sh --acquire ci-bound ssh managerci device-b 30; then
+            echo 'Lease engine exceeded max_sessions=1.' >&2
+            exit 1
+          fi
+          sudo /opt/manager/modules/session_engine.sh --heartbeat "$session1" "$epoch1" 30 >/tmp/lease-heartbeat.log
+
+          switched="$(sudo /opt/manager/modules/session_engine.sh --switch ci-bound ssh managerci device-b 30)"
+          session2="$(printf '%s\n' "$switched" | sed -n 's/.*session_id=\([a-f0-9]\{32\}\).*/\1/p')"
+          epoch2="$(printf '%s\n' "$switched" | sed -n 's/.*epoch=\([0-9][0-9]*\).*/\1/p')"
+          test "$session2" != "$session1"
+          test "$epoch2" -gt "$epoch1"
+          if sudo /opt/manager/modules/session_engine.sh --heartbeat "$session1" "$epoch1" 30; then
+            echo 'Stale fenced session renewed after switch.' >&2
+            exit 1
+          fi
+          sudo /opt/manager/manager --leases ci-bound > /tmp/manager-leases.log
+          grep -q "$session2" /tmp/manager-leases.log
+          if grep -q "$session1" /tmp/manager-leases.log; then
+            echo 'Old lease remained active after switch.' >&2
+            exit 1
+          fi
+          sudo test -f /etc/manager/connection/session-epochs/ci-bound.epoch
+          test "$(sudo /opt/manager/modules/session_engine.sh --epoch ci-bound)" = "$epoch2"
+          sudo /opt/manager/modules/session_engine.sh --release "$session2" "$epoch2"
+          test -z "$(sudo /opt/manager/manager --leases ci-bound)"
+
+          short="$(sudo /opt/manager/modules/session_engine.sh --acquire ci-bound ssh managerci device-c 1)"
+          short_session="$(printf '%s\n' "$short" | sed -n 's/.*session_id=\([a-f0-9]\{32\}\).*/\1/p')"
+          test "${#short_session}" -eq 32
+          sleep 2
+          sudo /opt/manager/modules/session_engine.sh --cleanup
+          test -z "$(sudo /opt/manager/manager --leases ci-bound)"
+
           sudo /opt/manager/modules/connection_engine.sh --disable ci-bound
           sudo /opt/manager/modules/policy_engine.sh --reconcile
           grep -Eq '^DenyUsers .*managerci' /etc/ssh/sshd_config.d/65-manager-identity-policy.conf
@@ -185,6 +236,10 @@ jobs:
           test ! -e /opt/manager
           test ! -e /usr/local/bin/manager
           test -d /etc/manager
+          test -f /etc/manager/connection/session-epochs/ci-bound.epoch
+          test ! -d /run/manager/session-leases
+          test ! -e /etc/systemd/system/manager-session-cleanup.timer
+          test ! -e /etc/systemd/system/manager-session-cleanup.service
           test ! -e /etc/systemd/system/manager-policy-reconcile.timer
           test ! -e /etc/systemd/system/manager-policy-reconcile.path
           test ! -e /etc/ssh/sshd_config.d/65-manager-identity-policy.conf
