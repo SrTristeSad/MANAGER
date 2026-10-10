@@ -51,6 +51,49 @@ resolve_backup_file() {
   esac
 }
 
+entry_is_managed() {
+  local entry="${1%/}"
+  case "$entry" in
+    etc/manager|etc/manager/*|
+    etc/wireguard/wg0.conf|etc/wireguard/server.key|etc/wireguard/server.pub|
+    etc/openvpn/server/manager.conf|etc/openvpn/server/manager-ca.crt|etc/openvpn/server/manager-server.crt|etc/openvpn/server/manager-server.key|etc/openvpn/server/manager-crl.pem|etc/openvpn/server/manager-tls-crypt.key|
+    etc/systemd/system/openvpn-server@manager.service.d|etc/systemd/system/openvpn-server@manager.service.d/*|
+    etc/dnsmasq.d/90-manager-adblock.conf|etc/dnsmasq.d/91-manager-adblock-stats.conf|
+    etc/systemd/system/manager-adblock-update.timer|etc/systemd/system/manager-adblock-update.service|
+    etc/systemd/system/manager-certbot-renew.timer|etc/systemd/system/manager-certbot-renew.service|
+    etc/security/limits.d/99-manager-ssh.conf|
+    etc/fail2ban/jail.d/99-manager-sshd.local|
+    etc/ssh/sshd_config.d/99-manager.conf|
+    etc/apt/apt.conf.d/20auto-upgrades|
+    etc/sysctl.d/99-manager-wireguard.conf|etc/sysctl.d/99-manager-openvpn.conf|etc/sysctl.d/99-manager-performance.conf)
+      return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_archive_entries() {
+  local file="$1" entry
+  tar -tzf "$file" >/dev/null || return 1
+
+  if tar -tvzf "$file" | awk '$1 ~ /^[lh]/ {found=1} END {exit !found}'; then
+    err "O backup contém links simbólicos/hardlinks; restauração recusada."
+    return 1
+  fi
+
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    if [[ "$entry" == /* || "$entry" == '..' || "$entry" == ../* || "$entry" == */../* ]]; then
+      err "Entrada insegura no backup: $entry"
+      return 1
+    fi
+    if ! entry_is_managed "$entry"; then
+      err "Entrada fora do escopo do MANAGER: $entry"
+      return 1
+    fi
+  done < <(tar -tzf "$file")
+  return 0
+}
+
 create_backup() {
   header
   say "${C_WHITE}CRIAR BACKUP${C_RESET}\n"
@@ -105,11 +148,13 @@ verify_backup() {
   read -r -p "Nome do arquivo .tar.gz em $BACKUP_DIR: " input
   file="$(resolve_backup_file "$input")" || { err "Nome de backup inválido"; pause; return; }
   [[ -f "$file" ]] || { err "Arquivo não encontrado"; pause; return; }
-  tar -tzf "$file" >/dev/null || { err "Arquivo corrompido"; pause; return; }
+  validate_archive_entries "$file" || { err "Backup recusado pela validação de segurança"; pause; return; }
   if [[ -f "$file.sha256" ]]; then
     (cd "$BACKUP_DIR" && sha256sum -c "$(basename "$file").sha256") || { err "SHA-256 inválido"; pause; return; }
+  else
+    warn "Este arquivo não possui sidecar SHA-256."
   fi
-  ok "Backup íntegro"
+  ok "Estrutura e conteúdo do backup são válidos"
   pause
 }
 
@@ -120,7 +165,13 @@ restore_backup() {
   read -r -p "Nome do arquivo .tar.gz em $BACKUP_DIR: " input
   file="$(resolve_backup_file "$input")" || { err "Nome de backup inválido"; pause; return; }
   [[ -f "$file" ]] || { err "Arquivo não encontrado"; pause; return; }
-  tar -tzf "$file" >/dev/null || { err "Backup inválido"; pause; return; }
+  validate_archive_entries "$file" || { err "Backup recusado pela validação de segurança"; pause; return; }
+  if [[ -f "$file.sha256" ]]; then
+    (cd "$BACKUP_DIR" && sha256sum -c "$(basename "$file").sha256") || { err "SHA-256 inválido"; pause; return; }
+  else
+    warn "O backup não possui SHA-256 gerado pelo MANAGER."
+    confirm "Continuar mesmo assim?" || return
+  fi
   warn "Por segurança, somente arquivos dentro de $BACKUP_DIR podem ser restaurados."
   warn "A restauração substitui apenas arquivos listados como gerenciados pelo MANAGER."
   confirm "Restaurar este backup?" || return
@@ -132,11 +183,14 @@ restore_backup() {
   if [[ -s "$current" ]]; then
     tar -C / -czf "$safety" -T "$current"
     chmod 0600 "$safety"
+    sha256sum "$safety" > "$safety.sha256"
+    chmod 0600 "$safety.sha256"
     info "Snapshot de segurança: $safety"
   fi
   rm -f "$current"
 
-  tar -C / -xzf "$file" --no-same-owner --no-same-permissions
+  # Preserve the restrictive permissions stored by MANAGER backups (e.g. private keys).
+  tar -C / -xzf "$file" --no-same-owner
   systemctl daemon-reload || true
   if [[ -f /etc/dnsmasq.d/90-manager-adblock.conf ]]; then
     systemctl restart dnsmasq 2>/dev/null || true
