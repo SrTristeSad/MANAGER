@@ -48,7 +48,7 @@ service_state() {
   local service="$1"
   if systemctl is-active --quiet "$service" 2>/dev/null; then
     printf '%b' "${C_GREEN}ativo${C_RESET}"
-  elif systemctl list-unit-files "$service.service" >/dev/null 2>&1; then
+  elif systemctl list-unit-files "$service.service" 2>/dev/null | grep -q "^${service}\.service"; then
     printf '%b' "${C_RED}inativo${C_RESET}"
   else
     printf '%b' "${C_YELLOW}não instalado${C_RESET}"
@@ -67,12 +67,12 @@ is_valid_username() {
 }
 
 is_valid_ipv4() {
-  local ip="$1" IFS=. octets
+  local ip="$1" IFS=. octets o value
   read -r -a octets <<< "$ip"
   [[ ${#octets[@]} -eq 4 ]] || return 1
-  local o
   for o in "${octets[@]}"; do
     [[ "$o" =~ ^[0-9]{1,3}$ ]] || return 1
-    (( o >= 0 && o <= 255 )) || return 1
+    value=$((10#$o))
+    (( value >= 0 && value <= 255 )) || return 1
   done
 }
