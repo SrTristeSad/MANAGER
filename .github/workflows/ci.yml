@@ -45,3 +45,32 @@ jobs:
           set -euo pipefail
           version="$(tr -d '[:space:]' < VERSION)"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9._-]+)?$ ]]
+
+      - name: Installer and recovery smoke test
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+
+          sudo env MANAGER_REPO_RAW="$source_url" bash install.sh
+          test -x /opt/manager/manager
+          test -x /opt/manager/modules/wireguard.sh
+          test -x /opt/manager/modules/openvpn.sh
+          test -x /opt/manager/modules/adblock.sh
+          test "$(cat /opt/manager/VERSION)" = "$(tr -d '[:space:]' < VERSION)"
+          test "$(readlink -f /usr/local/bin/manager)" = "/opt/manager/manager"
+          test "$(readlink -f /usr/local/bin/menu)" = "/opt/manager/manager"
+
+          sudo env MANAGER_REPO_RAW="$source_url" bash install.sh --update
+          test -d /opt/manager.rollback
+          test -f /opt/manager.rollback/VERSION
+
+          printf 's\n' | sudo /opt/manager/rollback.sh
+          test -x /opt/manager/manager
+          test -d /opt/manager.rollback
+
+          sudo /opt/manager/uninstall.sh
+          test ! -e /opt/manager
+          test ! -e /usr/local/bin/manager
+          test -d /etc/manager
