@@ -68,7 +68,7 @@ jobs:
         if: github.event_name == 'push'
         shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           source_url="file://${GITHUB_WORKSPACE}"
 
           sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
