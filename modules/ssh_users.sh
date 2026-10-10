@@ -2,16 +2,121 @@
 set -Eeuo pipefail
 
 MANAGER_HOME="${MANAGER_HOME:-/opt/manager}"
+MANAGER_ETC="${MANAGER_ETC:-/etc/manager}"
 # shellcheck source=/dev/null
 source "$MANAGER_HOME/lib/common.sh"
 require_root
 
 LIMITS_FILE="/etc/security/limits.d/99-manager-ssh.conf"
+TEST_DIR="$MANAGER_ETC/ssh-tests"
+TEST_SERVICE="/etc/systemd/system/manager-test-users.service"
+TEST_TIMER="/etc/systemd/system/manager-test-users.timer"
 
 is_regular_login_user() {
   local uid="$1" shell="$2"
   (( uid >= 1000 && uid < 65534 )) || return 1
   [[ ! "$shell" =~ (nologin|false)$ ]]
+}
+
+remove_limit_entry() {
+  local user="$1" tmp
+  [[ -f "$LIMITS_FILE" ]] || return 0
+  tmp="$(mktemp)"
+  awk -v u="$user" '$1 != u {print}' "$LIMITS_FILE" > "$tmp"
+  install -m 0644 "$tmp" "$LIMITS_FILE"
+  rm -f "$tmp"
+}
+
+safe_delete_user() {
+  local user="$1"
+  [[ "$user" != root ]] || return 1
+  id "$user" >/dev/null 2>&1 || {
+    rm -f "$TEST_DIR/$user" 2>/dev/null || true
+    remove_limit_entry "$user"
+    return 0
+  }
+  pkill -TERM -u "$user" 2>/dev/null || true
+  sleep 0.2
+  pkill -KILL -u "$user" 2>/dev/null || true
+  userdel -r "$user" 2>/dev/null || userdel "$user"
+  remove_limit_entry "$user"
+  rm -f "$TEST_DIR/$user" 2>/dev/null || true
+}
+
+ensure_test_timer() {
+  mkdir -p "$TEST_DIR"
+  chmod 0700 "$TEST_DIR"
+
+  cat > "$TEST_SERVICE" <<EOF
+[Unit]
+Description=MANAGER - remove expired SSH test accounts
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=$MANAGER_HOME/modules/ssh_users.sh --cleanup-tests
+EOF
+
+  cat > "$TEST_TIMER" <<'EOF'
+[Unit]
+Description=MANAGER - check SSH test account expiry
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=15s
+Persistent=true
+Unit=manager-test-users.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  chmod 0644 "$TEST_SERVICE" "$TEST_TIMER"
+  systemctl daemon-reload
+  systemctl enable --now manager-test-users.timer >/dev/null
+}
+
+cleanup_test_users() {
+  local now meta user expiry removed=0
+  now="$(date +%s)"
+  mkdir -p "$TEST_DIR"
+  chmod 0700 "$TEST_DIR"
+
+  for meta in "$TEST_DIR"/*; do
+    [[ -f "$meta" ]] || continue
+    user="${meta##*/}"
+    is_valid_username "$user" || continue
+    expiry="$(awk -F= '$1=="expires_epoch" {print $2; exit}' "$meta" 2>/dev/null || true)"
+    [[ "$expiry" =~ ^[0-9]+$ ]] || continue
+    if (( now >= expiry )); then
+      safe_delete_user "$user" || true
+      removed=$((removed + 1))
+      printf '[MANAGER] Conta teste expirada removida: %s\n' "$user"
+    fi
+  done
+
+  return 0
+}
+
+account_expiry_days() {
+  getent shadow "$1" 2>/dev/null | awk -F: '{print $8}'
+}
+
+is_account_expired() {
+  local user="$1" expiry today
+  expiry="$(account_expiry_days "$user")"
+  [[ "$expiry" =~ ^[0-9]+$ ]] || return 1
+  today=$(( $(date +%s) / 86400 ))
+  (( expiry <= today ))
+}
+
+list_expired_usernames() {
+  local user uid shell
+  while IFS=: read -r user _ uid _ _ _ shell; do
+    is_regular_login_user "$uid" "$shell" || continue
+    is_account_expired "$user" && printf '%s\n' "$user"
+  done < /etc/passwd
 }
 
 list_users() {
@@ -71,6 +176,8 @@ create_user() {
     return
   fi
 
+  mkdir -p "$TEST_DIR"
+  rm -f "$TEST_DIR/$user"
   useradd -m -s /bin/bash "$user"
   if ! printf '%s:%s\n' "$user" "$pass" | chpasswd; then
     userdel -r "$user" 2>/dev/null || true
@@ -88,6 +195,87 @@ create_user() {
   pause
 }
 
+create_test_user() {
+  header
+  say "${C_WHITE}CRIAR USUÁRIO TESTE${C_RESET}\n"
+  local user minutes limit pass now expires_epoch backstop stamp
+  read -r -p "Duração em minutos [60]: " minutes
+  minutes="${minutes:-60}"
+  [[ "$minutes" =~ ^[0-9]+$ ]] && (( minutes >= 1 && minutes <= 10080 )) || {
+    err "Use de 1 a 10080 minutos (até 7 dias)."
+    pause
+    return
+  }
+
+  read -r -p "Usuário (vazio = gerar automaticamente): " user
+  if [[ -z "$user" ]]; then
+    stamp="$(date +%s)"
+    user="teste${stamp: -6}"
+  fi
+  is_valid_username "$user" || { err "Nome de usuário inválido"; pause; return; }
+  id "$user" >/dev/null 2>&1 && { err "Usuário já existe"; pause; return; }
+
+  read -r -p "Limite simultâneo [1]: " limit
+  limit="${limit:-1}"
+  [[ "$limit" =~ ^[1-9][0-9]*$ ]] && (( limit <= 50 )) || {
+    err "Limite inválido (1-50)."
+    pause
+    return
+  }
+
+  pass="$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"
+  now="$(date +%s)"
+  expires_epoch=$((now + minutes * 60))
+  backstop="$(date -d "@$((expires_epoch + 86400))" '+%F')"
+
+  useradd -m -s /bin/bash "$user"
+  if ! printf '%s:%s\n' "$user" "$pass" | chpasswd; then
+    userdel -r "$user" 2>/dev/null || true
+    err "Falha ao definir senha; usuário revertido"
+    pause
+    return
+  fi
+  chage -E "$backstop" "$user"
+
+  mkdir -p "$(dirname "$LIMITS_FILE")" "$TEST_DIR"
+  chmod 0700 "$TEST_DIR"
+  printf '%s hard maxlogins %s\n' "$user" "$limit" >> "$LIMITS_FILE"
+  chmod 0644 "$LIMITS_FILE"
+  printf 'expires_epoch=%s\ncreated_epoch=%s\n' "$expires_epoch" "$now" > "$TEST_DIR/$user"
+  chmod 0600 "$TEST_DIR/$user"
+  ensure_test_timer
+
+  ok "Conta teste criada"
+  printf '\n Usuário: %s\n Senha:   %s\n Expira:  %s\n Limite:  %s\n' \
+    "$user" "$pass" "$(date -d "@$expires_epoch" '+%F %T %Z')" "$limit"
+  say "\n${C_YELLOW}A senha é exibida somente agora e não é armazenada pelo MANAGER.${C_RESET}"
+  pause
+}
+
+list_test_users() {
+  header
+  say "${C_WHITE}USUÁRIOS TESTE${C_RESET}\n"
+  local meta user expiry now remaining found=0
+  now="$(date +%s)"
+  printf '%-20s %-22s %-12s\n' "USUÁRIO" "EXPIRA" "RESTANTE"
+  printf '%-20s %-22s %-12s\n' "--------------------" "----------------------" "------------"
+  for meta in "$TEST_DIR"/*; do
+    [[ -f "$meta" ]] || continue
+    user="${meta##*/}"
+    expiry="$(awk -F= '$1=="expires_epoch" {print $2; exit}' "$meta" 2>/dev/null || true)"
+    [[ "$expiry" =~ ^[0-9]+$ ]] || continue
+    found=1
+    if (( expiry <= now )); then
+      remaining="expirado"
+    else
+      remaining="$(( (expiry - now + 59) / 60 )) min"
+    fi
+    printf '%-20s %-22s %-12s\n' "$user" "$(date -d "@$expiry" '+%F %T')" "$remaining"
+  done
+  (( found == 1 )) || info "Nenhuma conta teste registrada"
+  pause
+}
+
 delete_user() {
   header
   local user
@@ -95,9 +283,7 @@ delete_user() {
   id "$user" >/dev/null 2>&1 || { err "Usuário não existe"; pause; return; }
   if [[ "$user" == "root" ]]; then err "root não pode ser removido"; pause; return; fi
   if confirm "Remover $user e o diretório pessoal?"; then
-    pkill -KILL -u "$user" 2>/dev/null || true
-    userdel -r "$user" 2>/dev/null || userdel "$user"
-    if [[ -f "$LIMITS_FILE" ]]; then sed -i "/^${user}[[:space:]]/d" "$LIMITS_FILE"; fi
+    safe_delete_user "$user"
     ok "Usuário removido"
   fi
   pause
@@ -120,6 +306,9 @@ change_expiry() {
   local user expiry
   read -r -p "Usuário: " user
   id "$user" >/dev/null 2>&1 || { err "Usuário não existe"; pause; return; }
+  if [[ -f "$TEST_DIR/$user" ]]; then
+    warn "$user é uma conta teste. O temporizador em minutos continuará valendo."
+  fi
   read -r -p "Nova expiração YYYY-MM-DD (vazio = nunca): " expiry
   if [[ -z "$expiry" ]]; then
     chage -E -1 "$user"
@@ -192,6 +381,56 @@ disconnect_user() {
   pause
 }
 
+show_expired_users() {
+  header
+  say "${C_WHITE}USUÁRIOS EXPIRADOS${C_RESET}\n"
+  local users=()
+  mapfile -t users < <(list_expired_usernames)
+  if (( ${#users[@]} == 0 )); then
+    info "Nenhuma conta SSH expirada"
+  else
+    printf '%s\n' "${users[@]}"
+    say "\nTotal: ${#users[@]}"
+  fi
+  pause
+}
+
+cleanup_expired_users_interactive() {
+  header
+  say "${C_WHITE}LIMPEZA DE EXPIRADOS${C_RESET}\n"
+  local users=() user
+  mapfile -t users < <(list_expired_usernames)
+  if (( ${#users[@]} == 0 )); then
+    info "Nenhuma conta SSH expirada"
+    pause
+    return
+  fi
+  printf '%s\n' "${users[@]}"
+  say "\n${C_YELLOW}Isso remove as contas acima e seus diretórios pessoais.${C_RESET}"
+  confirm "Remover ${#users[@]} conta(s) expirada(s)?" || { pause; return; }
+  for user in "${users[@]}"; do
+    safe_delete_user "$user" || warn "Falha ao remover $user"
+  done
+  ok "Limpeza concluída"
+  pause
+}
+
+case "${1:-}" in
+  --cleanup-tests)
+    cleanup_test_users
+    exit 0
+    ;;
+  --list-expired)
+    list_expired_usernames
+    exit 0
+    ;;
+  "") ;;
+  *)
+    err "Ação inválida: $1"
+    exit 2
+    ;;
+esac
+
 while true; do
   header
   say "${C_WHITE}GERENCIAMENTO DE USUÁRIOS SSH${C_RESET}\n"
@@ -204,6 +443,10 @@ while true; do
   say " 7) Limite de logins simultâneos"
   say " 8) Bloquear/desbloquear conta"
   say " 9) Desconectar usuário"
+  say "10) Criar usuário teste"
+  say "11) Listar usuários teste"
+  say "12) Listar expirados"
+  say "13) Limpar expirados"
   say " 0) Voltar"
   say ""
   read -r -p "Opção: " opt
@@ -217,6 +460,10 @@ while true; do
     7) set_login_limit ;;
     8) lock_toggle ;;
     9) disconnect_user ;;
+    10) create_test_user ;;
+    11) list_test_users ;;
+    12) show_expired_users ;;
+    13) cleanup_expired_users_interactive ;;
     0) exit 0 ;;
     *) warn "Opção inválida"; sleep 1 ;;
   esac
