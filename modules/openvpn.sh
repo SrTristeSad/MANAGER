@@ -33,6 +33,15 @@ extract_pem() {
   awk -v b="$begin" -v e="$end" '$0 ~ b {p=1} p {print} $0 ~ e {exit}' "$file"
 }
 
+port_busy() {
+  local port="$1" transport="$2"
+  if [[ "$transport" == udp ]]; then
+    ss -Hlun "sport = :$port" 2>/dev/null | grep -q .
+  else
+    ss -Hltn "sport = :$port" 2>/dev/null | grep -q .
+  fi
+}
+
 install_server() {
   header
   say "${C_WHITE}INSTALAR OPENVPN${C_RESET}\n"
@@ -42,13 +51,20 @@ install_server() {
     return
   fi
 
-  local port proto iface endpoint endpoint_in
+  local port transport server_proto iface endpoint endpoint_in
   read -r -p "Porta [1194]: " port
   port="${port:-1194}"
   is_valid_port "$port" || { err "Porta inválida"; pause; return; }
-  read -r -p "Protocolo [udp/tcp] (udp): " proto
-  proto="${proto:-udp}"
-  [[ "$proto" == udp || "$proto" == tcp ]] || { err "Protocolo inválido"; pause; return; }
+  read -r -p "Transporte [udp/tcp] (udp): " transport
+  transport="${transport:-udp}"
+  [[ "$transport" == udp || "$transport" == tcp ]] || { err "Protocolo inválido"; pause; return; }
+  if port_busy "$port" "$transport"; then
+    err "A porta $port/$transport já está em uso."
+    pause
+    return
+  fi
+  if [[ "$transport" == tcp ]]; then server_proto="tcp-server"; else server_proto="udp"; fi
+
   iface="$(ip -4 route show default | awk 'NR==1 {print $5}')"
   [[ -n "$iface" ]] || { err "Não encontrei a interface de saída padrão"; pause; return; }
   endpoint="$(curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
@@ -59,7 +75,7 @@ install_server() {
   say "\nRede VPN: $VPN_NET/24"
   say "Serviço: $(service_name)"
   say "PKI: Easy-RSA local, sem depender de CA externa."
-  confirm "Instalar OpenVPN em $endpoint:$port/$proto?" || return
+  confirm "Instalar OpenVPN em $endpoint:$port/$transport?" || return
 
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
@@ -79,6 +95,7 @@ install_server() {
 
   install -m 0644 "$EASYRSA_DIR/pki/ca.crt" "$CA_FILE"
   extract_pem '-----BEGIN CERTIFICATE-----' '-----END CERTIFICATE-----' "$EASYRSA_DIR/pki/issued/server.crt" > "$SERVER_CERT"
+  chmod 0644 "$SERVER_CERT"
   install -m 0600 "$EASYRSA_DIR/pki/private/server.key" "$SERVER_KEY"
   install -m 0644 "$EASYRSA_DIR/pki/crl.pem" "$CRL_FILE"
   openvpn --genkey secret "$TLS_KEY"
@@ -87,13 +104,13 @@ install_server() {
 
   printf '%s\n' "$endpoint" > "$STATE_DIR/endpoint"
   printf '%s\n' "$port" > "$STATE_DIR/port"
-  printf '%s\n' "$proto" > "$STATE_DIR/proto"
+  printf '%s\n' "$transport" > "$STATE_DIR/transport"
   printf '%s\n' "$iface" > "$STATE_DIR/egress-interface"
-  chmod 0600 "$STATE_DIR/endpoint" "$STATE_DIR/port" "$STATE_DIR/proto" "$STATE_DIR/egress-interface"
+  chmod 0600 "$STATE_DIR/endpoint" "$STATE_DIR/port" "$STATE_DIR/transport" "$STATE_DIR/egress-interface"
 
   cat > "$OVPN_CONF" <<EOF
 port $port
-proto $proto
+proto $server_proto
 dev tun0
 topology subnet
 server $VPN_NET $VPN_MASK
@@ -112,7 +129,6 @@ data-ciphers-fallback AES-256-GCM
 keepalive 10 120
 persist-key
 persist-tun
-explicit-exit-notify 1
 user nobody
 group nogroup
 push "redirect-gateway def1 bypass-dhcp"
@@ -132,12 +148,12 @@ EOF
 
   cat > "$OVERRIDE_FILE" <<EOF
 [Service]
-ExecStartPost=/bin/sh -c 'iptables -C FORWARD -i tun0 -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -i tun0 -j ACCEPT'
-ExecStartPost=/bin/sh -c 'iptables -C FORWARD -o tun0 -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -o tun0 -j ACCEPT'
-ExecStartPost=/bin/sh -c 'iptables -t nat -C POSTROUTING -s $VPN_NET/24 -o $iface -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s $VPN_NET/24 -o $iface -j MASQUERADE'
-ExecStopPost=-/sbin/iptables -D FORWARD -i tun0 -j ACCEPT
-ExecStopPost=-/sbin/iptables -D FORWARD -o tun0 -j ACCEPT
-ExecStopPost=-/sbin/iptables -t nat -D POSTROUTING -s $VPN_NET/24 -o $iface -j MASQUERADE
+ExecStartPost=/bin/sh -c '/usr/sbin/iptables -C FORWARD -i tun0 -j ACCEPT 2>/dev/null || /usr/sbin/iptables -I FORWARD 1 -i tun0 -j ACCEPT'
+ExecStartPost=/bin/sh -c '/usr/sbin/iptables -C FORWARD -o tun0 -j ACCEPT 2>/dev/null || /usr/sbin/iptables -I FORWARD 1 -o tun0 -j ACCEPT'
+ExecStartPost=/bin/sh -c '/usr/sbin/iptables -t nat -C POSTROUTING -s $VPN_NET/24 -o $iface -j MASQUERADE 2>/dev/null || /usr/sbin/iptables -t nat -A POSTROUTING -s $VPN_NET/24 -o $iface -j MASQUERADE'
+ExecStopPost=-/usr/sbin/iptables -D FORWARD -i tun0 -j ACCEPT
+ExecStopPost=-/usr/sbin/iptables -D FORWARD -o tun0 -j ACCEPT
+ExecStopPost=-/usr/sbin/iptables -t nat -D POSTROUTING -s $VPN_NET/24 -o $iface -j MASQUERADE
 EOF
 
   systemctl daemon-reload
@@ -150,17 +166,17 @@ EOF
   fi
 
   if command_exists ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then
-    ufw allow "$port/$proto" comment 'MANAGER OpenVPN' >/dev/null
-    info "UFW ativo: $port/$proto foi liberada."
+    ufw allow "$port/$transport" comment 'MANAGER OpenVPN' >/dev/null
+    info "UFW ativo: $port/$transport foi liberada."
   fi
-  ok "OpenVPN ativo em $endpoint:$port/$proto"
+  ok "OpenVPN ativo em $endpoint:$port/$transport"
   pause
 }
 
 add_client() {
   header
   [[ -f "$OVPN_CONF" && -x "$EASYRSA_DIR/easyrsa" ]] || { err "Instale o servidor OpenVPN primeiro"; pause; return; }
-  local name endpoint port proto file
+  local name endpoint port transport client_proto file
   read -r -p "Nome do cliente: " name
   is_valid_username "$name" || { err "Nome inválido"; pause; return; }
   file="$CLIENT_DIR/$name.ovpn"
@@ -172,12 +188,13 @@ add_client() {
   )
   endpoint="$(cat "$STATE_DIR/endpoint")"
   port="$(cat "$STATE_DIR/port")"
-  proto="$(cat "$STATE_DIR/proto")"
+  transport="$(cat "$STATE_DIR/transport")"
+  if [[ "$transport" == tcp ]]; then client_proto="tcp-client"; else client_proto="udp"; fi
 
   cat > "$file" <<EOF
 client
 dev tun
-proto $proto
+proto $client_proto
 remote $endpoint $port
 resolv-retry infinite
 nobind
