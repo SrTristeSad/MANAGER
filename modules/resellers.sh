@@ -17,6 +17,7 @@ init_state() {
   chmod 0700 "$STATE_DIR" "$RESELLERS_DIR" "$OWNERS_DIR"
   touch "$LOCK_FILE"
   chmod 0600 "$LOCK_FILE"
+  [[ -d "$RESELLERS_DIR" && -d "$OWNERS_DIR" && -f "$LOCK_FILE" ]]
 }
 
 valid_id() {
@@ -97,14 +98,10 @@ quota_allows_one_more() {
   local reseller_id="$1" quota used parent pquota pused
   reseller_exists "$reseller_id" || return 1
   [[ "$(enabled_of "$reseller_id")" == 1 ]] || return 1
-
   quota="$(quota_of "$reseller_id")"
   [[ "$quota" =~ ^[0-9]+$ ]] || return 1
   used="$(usage_for "$reseller_id")"
-  if (( quota > 0 && used >= quota )); then
-    return 1
-  fi
-
+  if (( quota > 0 && used >= quota )); then return 1; fi
   parent="$(parent_of "$reseller_id")"
   if [[ -n "$parent" ]]; then
     reseller_exists "$parent" || return 1
@@ -112,9 +109,7 @@ quota_allows_one_more() {
     pquota="$(quota_of "$parent")"
     [[ "$pquota" =~ ^[0-9]+$ ]] || return 1
     pused="$(subtree_usage "$parent")"
-    if (( pquota > 0 && pused >= pquota )); then
-      return 1
-    fi
+    if (( pquota > 0 && pused >= pquota )); then return 1; fi
   fi
   return 0
 }
@@ -143,19 +138,12 @@ list_resellers() {
   for file in "$RESELLERS_DIR"/*.conf; do
     [[ -f "$file" ]] || continue
     found=1
-    reseller_id="${file##*/}"
-    reseller_id="${reseller_id%.conf}"
+    reseller_id="${file##*/}"; reseller_id="${reseller_id%.conf}"
     role="$(read_field "$file" role)"
-    parent="$(read_field "$file" parent)"
-    [[ -n "$parent" ]] || parent="-"
-    quota="$(read_field "$file" quota)"
-    [[ "$quota" != 0 ]] || quota="∞"
+    parent="$(read_field "$file" parent)"; [[ -n "$parent" ]] || parent="-"
+    quota="$(read_field "$file" quota)"; [[ "$quota" != 0 ]] || quota="∞"
     enabled="$(read_field "$file" enabled)"
-    if [[ "$enabled" == 1 ]]; then
-      enabled="ativo"
-    else
-      enabled="bloqueado"
-    fi
+    if [[ "$enabled" == 1 ]]; then enabled="ativo"; else enabled="bloqueado"; fi
     used="$(usage_for "$reseller_id")"
     printf '%-20s %-14s %-20s %-8s %-8s %-10s\n' "$reseller_id" "$role" "$parent" "$used" "$quota" "$enabled"
   done
@@ -177,22 +165,16 @@ create_reseller() {
     subrevendedor|subreseller) role="subreseller" ;;
     *) err "Tipo inválido"; pause; return ;;
   esac
-
   if [[ "$role" == subreseller ]]; then
     read -r -p "Revendedor pai: " parent
     reseller_exists "$parent" || { err "Revendedor pai não existe"; pause; return; }
     [[ "$(role_of "$parent")" == reseller ]] || { err "Subrevendedor só pode ter revendedor como pai"; pause; return; }
   fi
-
   read -r -p "Cota de contas (0 = ilimitada): " quota
   [[ "$quota" =~ ^[0-9]+$ ]] || { err "Cota inválida"; pause; return; }
   (( quota <= 1000000 )) || { err "Cota muito alta"; pause; return; }
   created="$(date +%s)"
-
-  (
-    flock -x 9
-    write_reseller "$reseller_id" "$role" "$parent" "$quota" 1 "$created"
-  ) 9>"$LOCK_FILE"
+  ( flock -x 9; write_reseller "$reseller_id" "$role" "$parent" "$quota" 1 "$created" ) 9>"$LOCK_FILE"
   ok "$reseller_id criado"
   pause
 }
@@ -202,27 +184,16 @@ change_quota() {
   local reseller_id quota used role current parent pquota
   read -r -p "ID: " reseller_id
   reseller_exists "$reseller_id" || { err "ID não existe"; pause; return; }
-  used="$(usage_for "$reseller_id")"
-  current="$(quota_of "$reseller_id")"
+  used="$(usage_for "$reseller_id")"; current="$(quota_of "$reseller_id")"
   read -r -p "Nova cota (0 = ilimitada) [atual $current / uso $used]: " quota
   [[ "$quota" =~ ^[0-9]+$ ]] || { err "Cota inválida"; pause; return; }
-  if (( quota > 0 && quota < used )); then
-    err "A nova cota não pode ficar abaixo do uso atual ($used)"
-    pause
-    return
-  fi
-  role="$(role_of "$reseller_id")"
-  parent="$(parent_of "$reseller_id")"
+  if (( quota > 0 && quota < used )); then err "A nova cota não pode ficar abaixo do uso atual ($used)"; pause; return; fi
+  role="$(role_of "$reseller_id")"; parent="$(parent_of "$reseller_id")"
   if [[ "$role" == subreseller && -n "$parent" ]]; then
     pquota="$(quota_of "$parent")"
-    if [[ "$pquota" =~ ^[0-9]+$ ]] && (( pquota > 0 && quota > pquota )); then
-      warn "A cota do subrevendedor é maior que a do pai; o limite total do pai continuará valendo."
-    fi
+    if [[ "$pquota" =~ ^[0-9]+$ ]] && (( pquota > 0 && quota > pquota )); then warn "A cota do subrevendedor é maior que a do pai; o limite total do pai continuará valendo."; fi
   fi
-  (
-    flock -x 9
-    write_reseller "$reseller_id" "$role" "$parent" "$quota" "$(enabled_of "$reseller_id")" "$(read_field "$(record_file "$reseller_id")" created_epoch)"
-  ) 9>"$LOCK_FILE"
+  ( flock -x 9; write_reseller "$reseller_id" "$role" "$parent" "$quota" "$(enabled_of "$reseller_id")" "$(read_field "$(record_file "$reseller_id")" created_epoch)" ) 9>"$LOCK_FILE"
   ok "Cota atualizada"
   pause
 }
@@ -232,25 +203,11 @@ toggle_reseller() {
   local reseller_id role parent quota enabled created
   read -r -p "ID: " reseller_id
   reseller_exists "$reseller_id" || { err "ID não existe"; pause; return; }
-  role="$(role_of "$reseller_id")"
-  parent="$(parent_of "$reseller_id")"
-  quota="$(quota_of "$reseller_id")"
-  enabled="$(enabled_of "$reseller_id")"
-  created="$(read_field "$(record_file "$reseller_id")" created_epoch)"
-  if [[ "$enabled" == 1 ]]; then
-    enabled=0
-  else
-    enabled=1
-  fi
-  (
-    flock -x 9
-    write_reseller "$reseller_id" "$role" "$parent" "$quota" "$enabled" "$created"
-  ) 9>"$LOCK_FILE"
-  if [[ "$enabled" == 1 ]]; then
-    ok "$reseller_id ativado"
-  else
-    ok "$reseller_id bloqueado"
-  fi
+  role="$(role_of "$reseller_id")"; parent="$(parent_of "$reseller_id")"; quota="$(quota_of "$reseller_id")"
+  enabled="$(enabled_of "$reseller_id")"; created="$(read_field "$(record_file "$reseller_id")" created_epoch)"
+  if [[ "$enabled" == 1 ]]; then enabled=0; else enabled=1; fi
+  ( flock -x 9; write_reseller "$reseller_id" "$role" "$parent" "$quota" "$enabled" "$created" ) 9>"$LOCK_FILE"
+  if [[ "$enabled" == 1 ]]; then ok "$reseller_id ativado"; else ok "$reseller_id bloqueado"; fi
   pause
 }
 
@@ -263,10 +220,7 @@ assign_owner_impl() {
   [[ "$old" == "$owner" ]] && return 0
   quota_allows_one_more "$owner" || { err "Cota/estado não permite nova conta para $owner"; return 1; }
   tmp="$(mktemp)"
-  {
-    printf 'owner=%s\n' "$owner"
-    printf 'assigned_epoch=%s\n' "$(date +%s)"
-  } > "$tmp"
+  { printf 'owner=%s\n' "$owner"; printf 'assigned_epoch=%s\n' "$(date +%s)"; } > "$tmp"
   install -m 0600 "$tmp" "$(owner_file "$user")"
   rm -f "$tmp"
 }
@@ -274,28 +228,16 @@ assign_owner_impl() {
 assign_owner() {
   header
   local user owner
-  read -r -p "Usuário SSH: " user
-  read -r -p "Revendedor/subrevendedor: " owner
-  if (
-    flock -x 9
-    assign_owner_impl "$user" "$owner"
-  ) 9>"$LOCK_FILE"; then
-    ok "$user agora pertence a $owner"
-  fi
+  read -r -p "Usuário SSH: " user; read -r -p "Revendedor/subrevendedor: " owner
+  if ( flock -x 9; assign_owner_impl "$user" "$owner" ) 9>"$LOCK_FILE"; then ok "$user agora pertence a $owner"; fi
   pause
 }
 
 unassign_owner() {
   header
   local user file
-  read -r -p "Usuário SSH: " user
-  file="$(owner_file "$user")"
-  if [[ -f "$file" ]]; then
-    rm -f "$file"
-    ok "Propriedade removida"
-  else
-    info "$user não possui proprietário registrado"
-  fi
+  read -r -p "Usuário SSH: " user; file="$(owner_file "$user")"
+  if [[ -f "$file" ]]; then rm -f "$file"; ok "Propriedade removida"; else info "$user não possui proprietário registrado"; fi
   pause
 }
 
@@ -308,14 +250,8 @@ list_owners() {
   local file user owner exists found=0
   for file in "$OWNERS_DIR"/*; do
     [[ -f "$file" ]] || continue
-    found=1
-    user="${file##*/}"
-    owner="$(read_field "$file" owner)"
-    if id "$user" >/dev/null 2>&1; then
-      exists="sim"
-    else
-      exists="não"
-    fi
+    found=1; user="${file##*/}"; owner="$(read_field "$file" owner)"
+    if id "$user" >/dev/null 2>&1; then exists="sim"; else exists="não"; fi
     printf '%-24s %-24s %-10s\n' "$user" "$owner" "$exists"
   done
   (( found == 1 )) || info "Nenhuma conta possui proprietário registrado"
@@ -329,47 +265,33 @@ reconcile_owners() {
   for file in "$OWNERS_DIR"/*; do
     [[ -f "$file" ]] || continue
     user="${file##*/}"
-    if ! id "$user" >/dev/null 2>&1; then
-      rm -f "$file"
-      removed=$((removed + 1))
-    fi
+    if ! id "$user" >/dev/null 2>&1; then rm -f "$file"; removed=$((removed + 1)); fi
   done
   ok "$removed registro(s) órfão(s) removido(s)"
   pause
 }
 
-machine_usage() {
-  local reseller_id="${1:-}"
-  valid_id "$reseller_id" || exit 64
-  reseller_exists "$reseller_id" || exit 66
-  usage_for "$reseller_id"
-}
-
-machine_can_create() {
-  local reseller_id="${1:-}"
-  valid_id "$reseller_id" || exit 64
-  quota_allows_one_more "$reseller_id"
-}
-
+machine_usage() { local reseller_id="${1:-}"; valid_id "$reseller_id" || exit 64; reseller_exists "$reseller_id" || exit 66; usage_for "$reseller_id"; }
+machine_can_create() { local reseller_id="${1:-}"; valid_id "$reseller_id" || exit 64; quota_allows_one_more "$reseller_id"; }
 machine_assign() {
   local user="${1:-}" owner="${2:-}"
-  is_valid_username "$user" || exit 64
-  valid_id "$owner" || exit 64
+  is_valid_username "$user" || exit 64; valid_id "$owner" || exit 64; init_state
+  ( flock -x 9; assign_owner_impl "$user" "$owner" ) 9>"$LOCK_FILE"
+}
+machine_init() {
   init_state
-  (
-    flock -x 9
-    assign_owner_impl "$user" "$owner"
-  ) 9>"$LOCK_FILE"
+  printf '%s\n' "$STATE_DIR"
 }
 
-init_state
 case "${1:-}" in
-  --usage) machine_usage "${2:-}"; exit $? ;;
-  --can-create) machine_can_create "${2:-}"; exit $? ;;
-  --assign) machine_assign "${2:-}" "${3:-}"; exit $? ;;
-  --owner) owner_of_user "${2:-}"; exit 0 ;;
+  --init) machine_init; exit 0 ;;
+  --usage) init_state; machine_usage "${2:-}"; exit $? ;;
+  --can-create) init_state; machine_can_create "${2:-}"; exit $? ;;
+  --assign) init_state; machine_assign "${2:-}" "${3:-}"; exit $? ;;
+  --owner) init_state; owner_of_user "${2:-}"; exit 0 ;;
 esac
 
+init_state
 while true; do
   header
   say "${C_WHITE}REVENDEDORES, COTAS E PROPRIEDADE${C_RESET}\n"
