@@ -80,6 +80,9 @@ FILES=(
   "modules/ssh_monitor.sh"
   "modules/user_transfer.sh"
   "modules/resellers.sh"
+  "modules/reseller_accounts.sh"
+  "modules/proxy_hosts.sh"
+  "modules/proxies.sh"
   "modules/banner.sh"
   "modules/speedtest.sh"
   "modules/adblock.sh"
@@ -174,20 +177,25 @@ ln -sfn "$INSTALL_DIR/uninstall.sh" /usr/local/sbin/manager-uninstall
 printf '%s\n' "$NEW_VERSION" > "$ETC_DIR/installed-version"
 chmod 0644 "$ETC_DIR/installed-version"
 
+if [[ -d "$ETC_DIR/proxy" ]]; then
+  "$INSTALL_DIR/modules/proxies.sh" --reconcile >/dev/null 2>&1 || true
+fi
+
 echo ""
 echo "=================================================="
 echo " MANAGER $NEW_VERSION instalado com sucesso"
 echo "=================================================="
 echo ""
-echo "Comandos:   manager | menu"
-echo "Saúde:      manager --health"
-echo "Expirados:  manager --expired"
+echo "Comandos:    manager | menu"
+echo "Saúde:       manager --health"
+echo "Expirados:   manager --expired"
 echo "Sessões SSH: manager --ssh-sessions"
-echo "Rollback:   manager-rollback"
-echo "Remover:    manager-uninstall"
+echo "Proxies:     manager --proxy-status"
+echo "Rollback:    manager-rollback"
+echo "Remover:     manager-uninstall"
 [[ -d "$ROLLBACK_DIR" ]] && echo "Código anterior preservado em: $ROLLBACK_DIR"
 echo ""
 if [[ "${1:-}" != "--update" ]]; then
-  echo "VPNs, DNS, firewall, Fail2ban, TLS, Speedtest, vnStat e demais módulos"
+  echo "VPNs, DNS, proxies, firewall, Fail2ban, TLS, Speedtest, vnStat e demais módulos"
   echo "só instalam dependências quando você escolhe a função correspondente."
 fi
