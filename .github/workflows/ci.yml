@@ -1,0 +1,23 @@
+name: Shell CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Bash syntax
+        run: |
+          bash -n install.sh
+          bash -n manager
+          bash -n lib/common.sh
+          for file in modules/*.sh; do bash -n "$file"; done
+      - name: ShellCheck
+        run: |
+          shellcheck -x install.sh manager lib/common.sh modules/*.sh
