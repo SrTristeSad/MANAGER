@@ -58,9 +58,19 @@ jobs:
           test -x /opt/manager/modules/wireguard.sh
           test -x /opt/manager/modules/openvpn.sh
           test -x /opt/manager/modules/adblock.sh
+          test -x /opt/manager/modules/health.sh
+          test -x /opt/manager/modules/maintenance.sh
+          test -x /opt/manager/modules/ssh_keys.sh
           test "$(cat /opt/manager/VERSION)" = "$(tr -d '[:space:]' < VERSION)"
           test "$(readlink -f /usr/local/bin/manager)" = "/opt/manager/manager"
           test "$(readlink -f /usr/local/bin/menu)" = "/opt/manager/manager"
+
+          test "$(sudo /opt/manager/manager --version)" = "$(tr -d '[:space:]' < VERSION)"
+          sudo /opt/manager/manager --help | grep -q -- '--health'
+          health_rc=0
+          sudo /opt/manager/manager --health >/tmp/manager-health.log 2>&1 || health_rc=$?
+          test "$health_rc" -le 2
+          grep -q 'SAÚDE DO SERVIDOR' /tmp/manager-health.log
 
           sudo env MANAGER_REPO_RAW="$source_url" bash install.sh --update
           test -d /opt/manager.rollback
