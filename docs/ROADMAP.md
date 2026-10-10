@@ -18,22 +18,24 @@ Este documento registra a direção técnica do MANAGER até a versão 1.0. O ob
 - ampliar testes para distribuições suportadas;
 - manter documentação sincronizada com o código.
 
-## 0.5.0 — Paridade SSHPlus útil
+## 0.5.x — Paridade SSHPlus útil
 
-Reimplementar, de forma moderna, as capacidades ainda ausentes do MANAGER original, incluindo conforme aplicável:
+Status em **0.5.2**: a paridade operacional principal está implementada. O MANAGER já possui equivalentes modernos para:
 
 - contas temporárias/teste;
 - limpeza e relatório de expirados;
-- backup e migração de usuários;
+- backup e migração segura de usuários;
 - banner;
 - speedtest;
 - monitor de sessões SSH;
-- hosts e serviços de proxy suportados;
+- hosts de proxy e importação controlada de `payload.txt`;
+- Squid privado, proxy TCP e túneis WebSocket/TLS opcionais;
 - gerenciamento central de serviços;
 - revendedores e subrevendedores;
-- cotas e propriedade das contas.
+- cotas e propriedade das contas;
+- criação de conta diretamente vinculada ao revendedor com proteção contra corrida de cota.
 
-Recursos legados que dependerem de técnicas obsoletas ou inseguras devem receber uma implementação moderna equivalente, e não uma cópia literal.
+Recursos legados que dependem de técnicas obsoletas ou inseguras recebem uma implementação moderna equivalente, e não uma cópia literal. A conversão assistida de formatos antigos completos permanece na etapa de migração, pois não deve restaurar cegamente arquivos como `/etc/shadow` ou configurações antigas de rede.
 
 ## 0.6.0 — Connection Engine
 
@@ -50,6 +52,15 @@ Criar uma camada comum para identidades e protocolos:
 - tráfego e estado por conta.
 
 A conta passa a ser uma identidade MANAGER que pode possuir acesso a um ou mais protocolos, em vez de o núcleo assumir que toda identidade é somente um usuário Linux.
+
+Primeira fundação planejada:
+
+1. identidade MANAGER estável e independente do nome de usuário Linux;
+2. registro de protocolos habilitados por identidade;
+3. política comum de expiração, sessão e propriedade;
+4. operações estruturadas de criar/consultar/alterar/revogar identidade;
+5. adaptadores que traduzam o modelo comum para SSH, WireGuard e OpenVPN;
+6. interface local preparada para o futuro `managerctl`/Automation v2 sem shell arbitrário.
 
 ## 0.7.0 — Automation Engine
 
