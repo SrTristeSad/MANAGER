@@ -4,6 +4,41 @@ Todas as mudanças relevantes do MANAGER serão registradas aqui.
 
 O projeto usa versionamento semântico (`MAJOR.MINOR.PATCH`) enquanto a API/estrutura ainda está evoluindo.
 
+## [0.6.2] - 2026-10-10
+
+### Session / Lease Engine
+
+- Novo `session_engine.sh` como autoridade local de reservas de sessão e fundação do futuro lease global da Colmeia.
+- Cada lease recebe `session_id` aleatório de 128 bits, identidade, protocolo, recurso, dispositivo, `session_epoch`, heartbeat e expiração.
+- Leases ativas ficam somente em `/run/manager-session-leases`, evitando restaurar sessão fantasma após reboot ou backup.
+- O `session_epoch` persistente fica em `/etc/manager/connection/session-epochs` e funciona como fencing token por identidade.
+- Aquisições repetidas para a mesma identidade/protocolo/recurso/dispositivo na mesma geração são idempotentes: renovam a lease existente em vez de consumir uma segunda vaga.
+- `max_sessions` passa a ser aplicado atomicamente no Lease Engine local sob lock.
+- TTL padrão de 90 segundos, heartbeat renovável e limpeza automática de leases expiradas.
+- `--switch` avança o epoch, revoga a geração anterior e cria a nova lease na mesma operação protegida por lock.
+- `--revoke-all` permite invalidar administrativamente todas as leases da identidade e avançar o fencing token.
+
+### Política, lifecycle e persistência
+
+- Mudança de política invalida leases incompatíveis: identidade desabilitada/expirada, protocolo removido ou vínculo técnico alterado revogam as leases e avançam o epoch.
+- Novo `manager-session-reconcile.path` reage ao marcador de mudanças do Connection Engine; timer periódico funciona como retaguarda para TTL e reconciliação.
+- Eventos `ACQUIRE`, `RENEW`, `HEARTBEAT`, `RELEASE`, `EXPIRE`, `REVOKE` e `FENCE` são registrados em `/var/log/manager/session-events.log`, sem gravar credenciais.
+- Desinstalação normal descarta apenas leases runtime e preserva identidades + `session_epoch`; `--purge` continua sendo a operação explícita para apagar o estado do MANAGER.
+- O estado durável do Connection Engine ganhou snapshot defensivo durante uninstall para impedir regressões de módulos de remover identidades/epochs acidentalmente.
+
+### CLI, documentação e testes
+
+- Novo comando `manager --leases [ID]` para consultar reservas locais, separado de `manager --identity-sessions [ID]`, que mostra conexões reais observadas.
+- Novo menu `Session / Lease Engine` para inspeção, reconciliação e revogação administrativa.
+- Contratos não interativos: `--acquire`, `--heartbeat`, `--release`, `--switch`, `--revoke-all`, `--epoch`, `--cleanup` e `--reconcile`.
+- Nova documentação `docs/SESSION_ENGINE.md` descreve TTL, idempotência, fencing, códigos de erro e caminho de migração para Colmeia.
+- CI cobre limite `1/1`, retry idempotente, heartbeat, switch, fencing, TTL, invalidação por política e preservação do estado durável através de update, rollback e uninstall.
+
+### Limite desta etapa
+
+- A 0.6.2 cria a autoridade local de leases, mas conexões legadas de SSH/WireGuard/OpenVPN ainda não são obrigadas a adquirir lease em todos os caminhos. A próxima integração ligará os eventos reais de conexão ao contrato de lease sem quebrar clientes existentes.
+- A atomicidade desta versão é local à VPS. A Colmeia moverá a autoridade de lease para o hub para garantir `max_sessions_global` entre vários servidores/países.
+
 ## [0.6.1] - 2026-10-10
 
 ### Policy Enforcement
