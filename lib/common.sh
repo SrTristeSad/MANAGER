@@ -45,10 +45,13 @@ confirm() {
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
 service_state() {
-  local service="$1"
-  if systemctl is-active --quiet "$service" 2>/dev/null; then
+  local unit="$1" load_state
+  if systemctl is-active --quiet "$unit" 2>/dev/null; then
     printf '%b' "${C_GREEN}ativo${C_RESET}"
-  elif systemctl list-unit-files "$service.service" 2>/dev/null | grep -q "^${service}\.service"; then
+    return
+  fi
+  load_state="$(systemctl show -p LoadState --value "$unit" 2>/dev/null || true)"
+  if [[ "$load_state" == loaded ]]; then
     printf '%b' "${C_RED}inativo${C_RESET}"
   else
     printf '%b' "${C_YELLOW}não instalado${C_RESET}"
@@ -75,4 +78,22 @@ is_valid_ipv4() {
     value=$((10#$o))
     (( value >= 0 && value <= 255 )) || return 1
   done
+}
+
+is_valid_port() {
+  local port="$1"
+  [[ "$port" =~ ^[0-9]+$ ]] || return 1
+  (( port >= 1 && port <= 65535 ))
+}
+
+backup_file() {
+  local file="$1" backup_dir="${2:-$MANAGER_ETC/file-backups}"
+  [[ -e "$file" ]] || return 0
+  mkdir -p "$backup_dir"
+  chmod 0700 "$backup_dir"
+  local safe stamp
+  safe="${file#/}"
+  safe="${safe//\//__}"
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  cp -a "$file" "$backup_dir/${safe}.${stamp}"
 }
