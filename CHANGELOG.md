@@ -4,6 +4,33 @@ Todas as mudanças relevantes do MANAGER serão registradas aqui.
 
 O projeto usa versionamento semântico (`MAJOR.MINOR.PATCH`) enquanto a API/estrutura ainda está evoluindo.
 
+## [0.5.2] - 2026-10-10
+
+### Hosts, proxies e túneis
+
+- Nova lista moderna de hosts em `/etc/manager/proxy/hosts.txt`, com adicionar/remover/listar e importação controlada de `payload.txt` do SSHPlus antigo.
+- Novo Squid gerenciado pelo MANAGER em configuração própria, sem sobrescrever o `squid.conf` da distribuição.
+- O Squid do MANAGER não nasce como proxy aberto: por padrão aceita somente localhost e redes privadas RFC1918, com restrição adicional por hosts opcional.
+- Proxy TCP gerenciado com `socat`, sempre encaminhando para serviço local em `127.0.0.1`.
+- Túnel WebSocket opcional via pacote `websockify`, também restrito a backend local.
+- Túnel TLS opcional via `stunnel4`, com certificado autoassinado inicial e estado preparado para futura integração com certificados confiáveis.
+- Estado declarativo em `/etc/manager/proxy`, permitindo regenerar unidades systemd com `proxies.sh --reconcile`.
+- Novos modos não interativos `manager --proxy-status` e `manager --proxy-hosts`.
+
+### Contas de revenda
+
+- Nova criação direta de usuário SSH vinculada a revendedor/subrevendedor.
+- A cota é validada antes da criação e validada novamente sob lock na atribuição final.
+- Se a cota mudar durante a operação ou a associação falhar, a conta recém-criada é revertida para não ficar órfã.
+- Senhas continuam sem armazenamento em texto claro.
+
+### Backup, purge e segurança
+
+- Backup principal passou a incluir `/etc/manager/proxy`, inclusive certificados/chaves TLS gerenciados; o arquivo continua restrito a root.
+- Restauração tenta reconciliar as unidades de proxy a partir do estado salvo, sem depender de copiar unidades dinâmicas antigas.
+- `manager-uninstall --purge` desativa e remove as unidades próprias de Squid/TCP/WebSocket/TLS, preservando os pacotes instalados e regras UFW.
+- CI ganhou regressão específica contra Squid aberto (`http_access allow all` e origem `0.0.0.0/0`) e smoke tests para hosts/estado de proxy.
+
 ## [0.5.1] - 2026-10-10
 
 ### Contas, revenda e migração
