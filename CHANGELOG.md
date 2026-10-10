@@ -4,6 +4,29 @@ Todas as mudanças relevantes do MANAGER serão registradas aqui.
 
 O projeto usa versionamento semântico (`MAJOR.MINOR.PATCH`) enquanto a API/estrutura ainda está evoluindo.
 
+## [0.3.0] - 2026-10-10
+
+### Adicionado
+
+- OpenVPN moderno em `/etc/openvpn/server` com unidade `openvpn-server@manager`.
+- PKI própria via Easy-RSA, certificados individuais de clientes e revogação por CRL.
+- Perfis `.ovpn` completos com certificados/chaves embutidos.
+- Integração opcional do OpenVPN com o DNS Ad Block.
+- TLS/Let's Encrypt via Certbot em virtualenv isolado, com modos standalone e webroot.
+- Timer systemd próprio para verificação de renovação de certificados.
+- Whitelist e blacklist manuais no bloqueador DNS.
+- Estatísticas DNS opcionais, desligadas por padrão por privacidade.
+- Assistente de perfis guiados: servidor seguro, WireGuard, OpenVPN, DNS e completo.
+- Diagnóstico, logs, backup e desinstalador expandidos para OpenVPN/TLS.
+- Backup mais preciso: evita copiar configurações WireGuard alheias ao MANAGER.
+
+### Melhorado
+
+- BBR/fq agora guarda e restaura imediatamente o congestion control e qdisc anteriores.
+- Gestão de usuários SSH ganhou sessões online, bloqueio/desbloqueio e desconexão de usuário.
+- OpenVPN diferencia corretamente `tcp-server` e `tcp-client` quando TCP é escolhido.
+- Purge preserva certificados Let's Encrypt, regras UFW, backups e pacotes do sistema para reduzir risco de perda de serviço.
+
 ## [0.2.0] - 2026-10-10
 
 ### Adicionado
