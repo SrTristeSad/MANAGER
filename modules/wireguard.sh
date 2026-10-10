@@ -23,12 +23,16 @@ install_server() {
     return
   fi
 
-  local port iface endpoint private public
+  local port iface endpoint endpoint_in private public
   iface="$(ip -4 route show default | awk 'NR==1 {print $5}')"
   [[ -n "$iface" ]] || { err "Não encontrei a interface de saída padrão"; pause; return; }
   read -r -p "Porta UDP [51820]: " port
   port="${port:-51820}"
-  [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || { err "Porta inválida"; pause; return; }
+  if ! is_valid_port "$port"; then
+    err "Porta inválida"
+    pause
+    return
+  fi
   endpoint="$(curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
   read -r -p "IP/domínio público do servidor [$endpoint]: " endpoint_in
   endpoint="${endpoint_in:-$endpoint}"
@@ -60,12 +64,18 @@ PostDown = iptables -D FORWARD -i %i -j ACCEPT 2>/dev/null || true; iptables -D 
 EOF
   chmod 0600 "$WG_CONF"
 
+  backup_file /etc/sysctl.d/99-manager-wireguard.conf
   cat > /etc/sysctl.d/99-manager-wireguard.conf <<'EOF'
 net.ipv4.ip_forward = 1
 EOF
   sysctl --system >/dev/null
   systemctl enable --now wg-quick@wg0
-  ok "WireGuard ativo. Libere UDP $port no firewall/provedor se necessário."
+
+  if command_exists ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then
+    ufw allow "$port/udp" comment 'MANAGER WireGuard' >/dev/null
+    info "UFW ativo: UDP $port foi liberada."
+  fi
+  ok "WireGuard ativo. Verifique também o firewall do seu provedor/cloud, se houver."
   pause
 }
 
@@ -167,7 +177,9 @@ show_client() {
   say "${C_WHITE}CONFIGURAÇÃO: $file${C_RESET}\n"
   cat "$file"
   say "\n${C_WHITE}QR CODE:${C_RESET}"
-  command_exists qrencode && qrencode -t ANSIUTF8 < "$file" || true
+  if command_exists qrencode; then
+    qrencode -t ANSIUTF8 < "$file" || true
+  fi
   pause
 }
 
