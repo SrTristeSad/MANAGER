@@ -46,6 +46,21 @@ if ! command -v systemctl >/dev/null 2>&1; then
   exit 1
 fi
 
+case "$REPO_RAW" in
+  https://*) ;;
+  file://*)
+    if [[ "${GITHUB_ACTIONS:-false}" != "true" && "${MANAGER_ALLOW_FILE_SOURCE:-0}" != "1" ]]; then
+      echo "[ERRO] Fonte file:// só é permitida no CI ou com MANAGER_ALLOW_FILE_SOURCE=1." >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "[ERRO] Fonte de instalação não suportada: $REPO_RAW" >&2
+    echo "       Use HTTPS. file:// é reservado para testes locais explícitos." >&2
+    exit 1
+    ;;
+esac
+
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y curl ca-certificates iproute2 iputils-ping procps passwd login coreutils gawk sed grep tar util-linux dnsutils openssh-client
@@ -81,12 +96,22 @@ FILES=(
 
 curl_fetch() {
   local url="$1" out="$2"
-  if [[ "$url" == https://* ]]; then
-    curl -fL --proto '=https' --tlsv1.2 --retry 3 --retry-delay 1 --connect-timeout 10 --max-time 90 "$url" -o "$out"
-  else
-    # file:// is intentionally supported for CI/offline smoke testing.
-    curl -fL --retry 3 --retry-delay 1 --connect-timeout 10 --max-time 90 "$url" -o "$out"
-  fi
+  case "$url" in
+    https://*)
+      curl -fL --proto '=https' --tlsv1.2 --retry 3 --retry-delay 1 --connect-timeout 10 --max-time 90 "$url" -o "$out"
+      ;;
+    file://*)
+      if [[ "${GITHUB_ACTIONS:-false}" != "true" && "${MANAGER_ALLOW_FILE_SOURCE:-0}" != "1" ]]; then
+        echo "[ERRO] Tentativa de usar file:// sem autorização explícita." >&2
+        return 1
+      fi
+      curl -fL --retry 3 --retry-delay 1 --connect-timeout 10 --max-time 90 "$url" -o "$out"
+      ;;
+    *)
+      echo "[ERRO] URL de download recusada: $url" >&2
+      return 1
+      ;;
+  esac
 }
 
 for file in "${FILES[@]}"; do
