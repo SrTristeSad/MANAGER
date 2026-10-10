@@ -11,7 +11,7 @@ fi
 
 if $PURGE; then
   echo "ATENÇÃO: --purge remove configurações criadas pelo MANAGER."
-  echo "Certificados Let's Encrypt e regras UFW são preservados para evitar perda de acesso/serviços."
+  echo "Certificados Let's Encrypt, pacotes instalados e regras UFW são preservados para evitar perda de acesso/serviços."
   read -r -p "Digite PURGAR para continuar: " answer
   [[ "$answer" == PURGAR ]] || exit 1
 
@@ -71,6 +71,19 @@ if $PURGE; then
     rm -rf /etc/systemd/system/openvpn-server@manager.service.d
   fi
 
+  # Proxies/túneis possuem unidades próprias regeneráveis a partir de /etc/manager/proxy.
+  systemctl disable --now manager-squid.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-squid.service
+  for unit_file in \
+    /etc/systemd/system/manager-tcp-proxy-*.service \
+    /etc/systemd/system/manager-ws-proxy-*.service \
+    /etc/systemd/system/manager-tls-proxy-*.service; do
+    [[ -f "$unit_file" ]] || continue
+    unit_name="${unit_file##*/}"
+    systemctl disable --now "$unit_name" >/dev/null 2>&1 || true
+    rm -f "$unit_file"
+  done
+
   systemctl disable --now manager-certbot-renew.timer >/dev/null 2>&1 || true
   rm -f /etc/systemd/system/manager-certbot-renew.timer /etc/systemd/system/manager-certbot-renew.service
   if [[ "$certbot_owner" == "manager" ]]; then
@@ -124,5 +137,5 @@ if ! $PURGE; then
   echo "As configurações em /etc/manager e serviços configurados foram preservados."
   echo "Execute manager-uninstall --purge somente se quiser remover também as configurações do MANAGER."
 else
-  echo "Configurações do MANAGER removidas. Pacotes do sistema, certificados Let's Encrypt, backups e regras UFW foram preservados."
+  echo "Configurações e unidades próprias do MANAGER removidas. Pacotes do sistema, certificados Let's Encrypt, backups e regras UFW foram preservados."
 fi
