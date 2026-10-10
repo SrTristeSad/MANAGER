@@ -41,6 +41,8 @@ install_certbot() {
   ln -sfn "$CERTBOT_HOME/bin/certbot" "$CERTBOT_BIN"
   mkdir -p "$STATE_DIR"
   chmod 0700 "$STATE_DIR"
+  printf 'manager\n' > "$STATE_DIR/certbot.owner"
+  chmod 0600 "$STATE_DIR/certbot.owner"
   install_timer
   ok "Certbot instalado"
   pause
