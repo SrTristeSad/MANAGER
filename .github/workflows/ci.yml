@@ -21,13 +21,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bash -n manager lib/common.sh install.sh rollback.sh uninstall.sh modules/*.sh
+          bash -n manager lib/*.sh install.sh rollback.sh uninstall.sh modules/*.sh
 
       - name: ShellCheck
         shell: bash
         run: |
           set -euo pipefail
-          shellcheck -x manager lib/common.sh install.sh rollback.sh uninstall.sh modules/*.sh
+          shellcheck -x manager lib/*.sh install.sh rollback.sh uninstall.sh modules/*.sh
 
       - name: Safety regression checks
         shell: bash
@@ -77,6 +77,8 @@ jobs:
 
           sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
           test -x /opt/manager/manager
+          test -f /opt/manager/lib/identity.sh
+          test -x /opt/manager/modules/connection_engine.sh
           test -x /opt/manager/modules/wireguard.sh
           test -x /opt/manager/modules/openvpn.sh
           test -x /opt/manager/modules/adblock.sh
@@ -101,6 +103,7 @@ jobs:
           sudo /opt/manager/manager --help | grep -q -- '--ssh-sessions'
           sudo /opt/manager/manager --help | grep -q -- '--proxy-status'
           sudo /opt/manager/manager --help | grep -q -- '--proxy-hosts'
+          sudo /opt/manager/manager --help | grep -q -- '--identities'
           sudo /opt/manager/manager --status >/tmp/manager-status.log
           grep -q 'STATUS DE SERVIÇOS' /tmp/manager-status.log
           sudo /opt/manager/manager --expired >/tmp/manager-expired.log
@@ -110,6 +113,15 @@ jobs:
           sudo test -d /etc/manager/access/resellers
           sudo test -d /etc/manager/access/owners
           sudo test -f /etc/manager/access/.lock
+
+          test "$(sudo /opt/manager/modules/connection_engine.sh --init)" = "/etc/manager/connection"
+          sudo test -d /etc/manager/connection/identities
+          sudo /opt/manager/modules/connection_engine.sh --create ci-user '' 0 1 ssh
+          sudo /opt/manager/manager --identities | grep -q '^ci-user'
+          sudo /opt/manager/manager --identity ci-user | grep -q '^state=active$'
+          sudo /opt/manager/modules/connection_engine.sh --disable ci-user
+          sudo /opt/manager/manager --identity ci-user | grep -q '^state=disabled$'
+          sudo /opt/manager/modules/connection_engine.sh --enable ci-user
 
           sudo /opt/manager/modules/proxies.sh --init
           sudo test -d /etc/manager/proxy/tcp
