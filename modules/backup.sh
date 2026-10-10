@@ -20,7 +20,8 @@ collect_paths() {
     /etc/security/limits.d/99-manager-ssh.conf \
     /etc/fail2ban/jail.d/99-manager-sshd.local \
     /etc/ssh/sshd_config.d/99-manager.conf \
-    /etc/sysctl.d/99-manager-wireguard.conf; do
+    /etc/sysctl.d/99-manager-wireguard.conf \
+    /etc/sysctl.d/99-manager-performance.conf; do
     [[ -e "$p" ]] && printf '%s\n' "${p#/}"
   done
 }
@@ -46,7 +47,9 @@ create_backup() {
     echo "created=$(date -Is)"
     echo "hostname=$(hostname)"
     echo "kernel=$(uname -r)"
-    [[ -r /etc/os-release ]] && grep -E '^(ID|VERSION_ID|PRETTY_NAME)=' /etc/os-release || true
+    if [[ -r /etc/os-release ]]; then
+      grep -E '^(ID|VERSION_ID|PRETTY_NAME)=' /etc/os-release || true
+    fi
   } > "$manifest"
 
   tar -C / -czf "$archive" -T "$list"
@@ -108,9 +111,15 @@ restore_backup() {
 
   tar -C / -xzf "$file" --no-same-owner
   systemctl daemon-reload || true
-  [[ -f /etc/dnsmasq.d/90-manager-adblock.conf ]] && systemctl restart dnsmasq 2>/dev/null || true
-  [[ -f /etc/fail2ban/jail.d/99-manager-sshd.local ]] && systemctl restart fail2ban 2>/dev/null || true
-  [[ -f /etc/wireguard/wg0.conf ]] && systemctl restart wg-quick@wg0 2>/dev/null || true
+  if [[ -f /etc/dnsmasq.d/90-manager-adblock.conf ]]; then
+    systemctl restart dnsmasq 2>/dev/null || true
+  fi
+  if [[ -f /etc/fail2ban/jail.d/99-manager-sshd.local ]]; then
+    systemctl restart fail2ban 2>/dev/null || true
+  fi
+  if [[ -f /etc/wireguard/wg0.conf ]]; then
+    systemctl restart wg-quick@wg0 2>/dev/null || true
+  fi
   if command -v sshd >/dev/null 2>&1 && sshd -t; then
     systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
   fi
