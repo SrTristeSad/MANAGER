@@ -10,6 +10,7 @@ require_root
 STATE_DIR="$MANAGER_ETC/connection/node"
 CONF="$STATE_DIR/node.conf"
 LOCK_FILE="$STATE_DIR/.lock"
+CONNECTION_CHANGED="$MANAGER_ETC/connection/.changed"
 
 read_field() {
   local key="$1"
@@ -38,6 +39,12 @@ generate_node_id() {
     hex="$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
   fi
   printf 'node-%s\n' "$hex"
+}
+
+signal_context_change() {
+  install -d -m 0700 "$(dirname "$CONNECTION_CHANGED")"
+  touch "$CONNECTION_CHANGED"
+  chmod 0600 "$CONNECTION_CHANGED"
 }
 
 write_config() {
@@ -158,6 +165,7 @@ set_field_unlocked() {
 
   now="$(date +%s)"
   write_config "$node_id" "$name" "$country" "$region" "$pool" "$provider" "$city" "$capacity" "$weight" "$max_sessions" "$enabled" "$created" "$now"
+  signal_context_change
 }
 
 set_field() {
