@@ -18,7 +18,9 @@ WG_SERVER_IP6="fd66:66:66::1"
 
 state_value() {
   local key="$1"
-  [[ -f "$STATE_DIR/$key" ]] && tr -d '[:space:]' < "$STATE_DIR/$key" || true
+  if [[ -f "$STATE_DIR/$key" ]]; then
+    tr -d '[:space:]' < "$STATE_DIR/$key"
+  fi
 }
 
 ipv6_enabled() { [[ "$(state_value ipv6-enabled)" == 1 ]]; }
@@ -58,16 +60,8 @@ install_server() {
 
   read -r -p "Porta UDP [51820]: " port
   port="${port:-51820}"
-  if ! is_valid_port "$port"; then
-    err "Porta inválida"
-    pause
-    return
-  fi
-  if ss -Hlun "sport = :$port" 2>/dev/null | grep -q .; then
-    err "A porta UDP $port já está em uso."
-    pause
-    return
-  fi
+  if ! is_valid_port "$port"; then err "Porta inválida"; pause; return; fi
+  if ss -Hlun "sport = :$port" 2>/dev/null | grep -q .; then err "A porta UDP $port já está em uso."; pause; return; fi
   endpoint="$(curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null || curl -6fsS --max-time 5 https://api64.ipify.org 2>/dev/null || true)"
   read -r -p "IP/domínio público do servidor [$endpoint]: " endpoint_in
   endpoint="${endpoint_in:-$endpoint}"
@@ -136,8 +130,7 @@ EOF
 next_client_octet() {
   local n
   for n in $(seq 2 254); do
-    if ! grep -Rqs "Address = $WG_NET.$n/32" "$CLIENT_DIR" 2>/dev/null && \
-       ! grep -Rqs "Address = $WG_NET.$n/32," "$CLIENT_DIR" 2>/dev/null; then
+    if ! grep -Rqs "Address = $WG_NET.$n/32" "$CLIENT_DIR" 2>/dev/null && ! grep -Rqs "Address = $WG_NET.$n/32," "$CLIENT_DIR" 2>/dev/null; then
       echo "$n"
       return 0
     fi
@@ -169,11 +162,7 @@ add_client() {
   ip4="$WG_NET.$octet"
   address="$ip4/32"
   allowed="0.0.0.0/0"
-  if ipv6_enabled; then
-    ip6="$WG_NET6$octet"
-    address+=", $ip6/128"
-    allowed+=", ::/0"
-  fi
+  if ipv6_enabled; then ip6="$WG_NET6$octet"; address+=", $ip6/128"; allowed+=", ::/0"; fi
   priv="$(wg genkey)"
   pub="$(printf '%s' "$priv" | wg pubkey)"
   psk="$(wg genpsk)"
@@ -182,9 +171,7 @@ add_client() {
   port="$(cat "$STATE_DIR/port")"
   endpoint_port="$(wg_endpoint "$endpoint" "$port")"
   dns="1.1.1.1"
-  if grep -q "^listen-address=$WG_SERVER_IP$" /etc/dnsmasq.d/90-manager-adblock.conf 2>/dev/null; then
-    dns="$WG_SERVER_IP"
-  fi
+  if grep -q "^listen-address=$WG_SERVER_IP$" /etc/dnsmasq.d/90-manager-adblock.conf 2>/dev/null; then dns="$WG_SERVER_IP"; fi
 
   cat > "$file" <<EOF
 [Interface]
@@ -201,7 +188,6 @@ PersistentKeepalive = 25
 EOF
   chmod 0600 "$file"
   write_client_meta "$name" "$ip4" "$ip6" "$pub"
-
   cat >> "$WG_CONF" <<EOF
 
 # MANAGER-PEER-BEGIN $name
@@ -256,11 +242,7 @@ enable_ipv6_existing() {
   header
   say "${C_WHITE}WIREGUARD DUAL-STACK IPV6${C_RESET}\n"
   [[ -f "$WG_CONF" && -d "$STATE_DIR" ]] || { err "Servidor WireGuard do MANAGER não encontrado"; pause; return; }
-  if ipv6_enabled; then
-    ok "IPv6 já está habilitado para o WireGuard do MANAGER."
-    pause
-    return
-  fi
+  if ipv6_enabled; then ok "IPv6 já está habilitado para o WireGuard do MANAGER."; pause; return; fi
   ipv6_egress_available || { err "A VPS não possui rota IPv6 padrão com endereço global utilizável."; pause; return; }
   command_exists ip6tables || { err "ip6tables não está disponível"; pause; return; }
   local iface6 backup
@@ -270,14 +252,12 @@ enable_ipv6_existing() {
   cp -a "$WG_CONF" "$backup"
 
   sed -i -E "s#^Address = $WG_SERVER_IP/24$#Address = $WG_SERVER_IP/24, $WG_SERVER_IP6/64#" "$WG_CONF"
-  sed -i "/^PostUp = / s#$#; ip6tables -C FORWARD -i %i -j ACCEPT 2>/dev/null || ip6tables -I FORWARD 1 -i %i -j ACCEPT; ip6tables -C FORWARD -o %i -j ACCEPT 2>/dev/null || ip6tables -I FORWARD 1 -o %i -j ACCEPT; ip6tables -t nat -C POSTROUTING -s $WG_NET6/64 -o $iface6 -j MASQUERADE 2>/dev/null || ip6tables -t nat -A POSTROUTING -s $WG_NET6/64 -o $iface6 -j MASQUERADE#" "$WG_CONF"
-  sed -i "/^PostDown = / s#$#; ip6tables -D FORWARD -i %i -j ACCEPT 2>/dev/null || true; ip6tables -D FORWARD -o %i -j ACCEPT 2>/dev/null || true; ip6tables -t nat -D POSTROUTING -s $WG_NET6/64 -o $iface6 -j MASQUERADE 2>/dev/null || true#" "$WG_CONF"
+  sed -i "/^PostUp = / s#\$#; ip6tables -C FORWARD -i %i -j ACCEPT 2>/dev/null || ip6tables -I FORWARD 1 -i %i -j ACCEPT; ip6tables -C FORWARD -o %i -j ACCEPT 2>/dev/null || ip6tables -I FORWARD 1 -o %i -j ACCEPT; ip6tables -t nat -C POSTROUTING -s $WG_NET6/64 -o $iface6 -j MASQUERADE 2>/dev/null || ip6tables -t nat -A POSTROUTING -s $WG_NET6/64 -o $iface6 -j MASQUERADE#" "$WG_CONF"
+  sed -i "/^PostDown = / s#\$#; ip6tables -D FORWARD -i %i -j ACCEPT 2>/dev/null || true; ip6tables -D FORWARD -o %i -j ACCEPT 2>/dev/null || true; ip6tables -t nat -D POSTROUTING -s $WG_NET6/64 -o $iface6 -j MASQUERADE 2>/dev/null || true#" "$WG_CONF"
   upgrade_existing_clients_ipv6
 
   backup_file /etc/sysctl.d/99-manager-wireguard.conf
-  if ! grep -q '^net.ipv6.conf.all.forwarding' /etc/sysctl.d/99-manager-wireguard.conf 2>/dev/null; then
-    printf 'net.ipv6.conf.all.forwarding = 1\n' >> /etc/sysctl.d/99-manager-wireguard.conf
-  fi
+  if ! grep -q '^net.ipv6.conf.all.forwarding' /etc/sysctl.d/99-manager-wireguard.conf 2>/dev/null; then printf 'net.ipv6.conf.all.forwarding = 1\n' >> /etc/sysctl.d/99-manager-wireguard.conf; fi
   enable_ipv6_forwarding
   write_ipv6_state 1 "$iface6"
   if ! systemctl restart wg-quick@wg0; then
@@ -303,8 +283,7 @@ list_clients() {
     printf '%-18s %-16s %-24s %-22s\n' "CLIENTE" "IPv4" "IPv6" "ÚLTIMO HANDSHAKE"
     for meta in "$CLIENT_DIR"/*.meta; do
       name="$(awk -F= '$1=="name"{print $2}' "$meta")"
-      ip4="$(awk -F= '$1=="ip4"{print $2}' "$meta")"
-      [[ -n "$ip4" ]] || ip4="$(awk -F= '$1=="ip"{print $2}' "$meta")"
+      ip4="$(awk -F= '$1=="ip4"{print $2}' "$meta")"; [[ -n "$ip4" ]] || ip4="$(awk -F= '$1=="ip"{print $2}' "$meta")"
       ip6="$(awk -F= '$1=="ip6"{print $2}' "$meta")"
       pub="$(awk -F= '$1=="public_key"{print $2}' "$meta")"
       handshake="$(wg show wg0 latest-handshakes 2>/dev/null | awk -v p="$pub" '$1==p {if ($2==0) print "nunca"; else {cmd="date -d @"$2" +%Y-%m-%d_%H:%M"; cmd | getline d; close(cmd); print d}}')"
@@ -323,9 +302,7 @@ show_client() {
   say "${C_WHITE}CONFIGURAÇÃO: $file${C_RESET}\n"
   cat "$file"
   say "\n${C_WHITE}QR CODE:${C_RESET}"
-  if command_exists qrencode; then
-    qrencode -t ANSIUTF8 < "$file" || true
-  fi
+  if command_exists qrencode; then qrencode -t ANSIUTF8 < "$file" || true; fi
   pause
 }
 
@@ -339,11 +316,7 @@ remove_client() {
   pub="$(awk -F= '$1=="public_key"{print $2}' "$meta")"
   wg set wg0 peer "$pub" remove 2>/dev/null || true
   tmp="$(mktemp)"
-  awk -v n="$name" '
-    $0 == "# MANAGER-PEER-BEGIN " n {skip=1; next}
-    $0 == "# MANAGER-PEER-END " n {skip=0; next}
-    !skip {print}
-  ' "$WG_CONF" > "$tmp"
+  awk -v n="$name" '$0 == "# MANAGER-PEER-BEGIN " n {skip=1; next} $0 == "# MANAGER-PEER-END " n {skip=0; next} !skip {print}' "$WG_CONF" > "$tmp"
   install -m 0600 "$tmp" "$WG_CONF"
   rm -f "$tmp" "$CLIENT_DIR/$name.conf" "$meta"
   systemctl reload wg-quick@wg0 2>/dev/null || true
