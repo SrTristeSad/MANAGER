@@ -218,7 +218,7 @@ status_machine() {
 }
 
 case "${1:-}" in
-  --install) flock -x "$LOCK_FILE" -c "$0 --install-unlocked"; exit $? ;;
+  --install) init_guard; flock -x "$LOCK_FILE" -c "$0 --install-unlocked"; exit $? ;;
   --install-unlocked) install_units; exit $? ;;
   --reconcile) init_guard; flock -x "$LOCK_FILE" -c "$0 --reconcile-unlocked"; exit $? ;;
   --reconcile-unlocked) reconcile_locked; exit $? ;;
