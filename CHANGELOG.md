@@ -4,6 +4,43 @@ Todas as mudanças relevantes do MANAGER serão registradas aqui.
 
 O projeto usa versionamento semântico (`MAJOR.MINOR.PATCH`) enquanto a API/estrutura ainda está evoluindo.
 
+## [0.6.8] - 2026-10-10
+
+### IPv6 / dual-stack
+
+- WireGuard e OpenVPN passam a habilitar IPv6 automaticamente somente quando a VPS possui rota IPv6 padrão e endereço global utilizável, mantendo IPv4-only quando o host não possui saída IPv6 real.
+- WireGuard usa `fd66:66:66::/64`, entrega IPv4 + IPv6 no mesmo perfil, inclui `::/0` em `AllowedIPs` e formata endpoint IPv6 literal como `[endereço]:porta`.
+- Instalações WireGuard já gerenciadas pelo MANAGER podem migrar clientes existentes para dual-stack preservando chaves e adicionando o IPv6 correspondente ao peer/perfil.
+- OpenVPN usa `fd66:8::/64`, `server-ipv6` e `redirect-gateway ipv6`, com regras específicas de forwarding/NAT66 e rollback da configuração caso o daemon não volte saudável.
+- O modo portátil atual usa ULA + NAT66, evitando depender de prefixo IPv6 delegado pelo provedor; suporte futuro a prefixo roteado permanece compatível com a arquitetura.
+- O módulo Firewall garante `IPV6=yes` no UFW antes de administrar regras, evitando proteger uma porta somente em IPv4.
+
+### Policy, leases e lifecycle
+
+- Novo `modules/ipv6_guard.sh` espelha no plano IPv6 as decisões já tomadas pelo Connection/Policy/Session Engine, sem criar uma segunda autoridade de autenticação.
+- WireGuard e OpenVPN sem lease/política válida recebem bloqueio IPv6 específico por identidade; quando a lease volta, somente a regra correspondente é removida.
+- O IPv6 Guard usa regras específicas com `ip6tables` e não executa flush global de firewall.
+- Novas unidades `manager-ipv6-guard.service` e `manager-ipv6-guard.timer` mantêm reconciliação periódica.
+- Install/update, rollback e uninstall passam a conhecer o IPv6 Guard e removem/recriam somente seus recursos próprios.
+- O valor anterior de `net.ipv6.conf.all.forwarding` é preservado e restaurado no purge explícito, da mesma forma que o forwarding IPv4.
+- Estado dual-stack fica em `/etc/manager/wireguard` e `/etc/manager/openvpn`, sendo preservado por uninstall normal e reaplicado na reinstalação.
+
+### Provisionamento, CLI, accounting e testes
+
+- `manager --provision` passa a gerar cliente WireGuard dual-stack quando o servidor está com IPv6 ativo, mantendo `wireguard_ip` como alias IPv4 e adicionando `wireguard_ipv4` e `wireguard_ipv6`.
+- Provisionamento OpenVPN informa `openvpn_ipv6=1` quando o servidor entrega IPv6 e reconcilia o IPv6 Guard junto com Policy/Session Engine.
+- Novo `manager --ipv6-status` e nova opção `Estado IPv6 / dual-stack` no menu principal.
+- O Identity Usage existente continua sendo a fonte de bytes de WireGuard/OpenVPN: os contadores dos túneis já abrangem tráfego IPv4 e IPv6 e não são duplicados em outro accounting.
+- Nova documentação `docs/IPV6.md` e atualização de `docs/PROVISIONING.md`.
+- Novo CI `IPv6 Dual Stack` cobre helpers de rede, endpoint IPv6 literal, bloqueio/liberação por lease, lifecycle de uninstall/reinstall e persistência de estado.
+
+### Limites desta etapa
+
+- IPv6 depende da conectividade real entregue à VPS; o MANAGER não anuncia `::/0` quando o host não possui saída IPv6 utilizável.
+- ULA + NAT66 é o modo portátil da série 0.6.x; prefixos roteados/delegados podem ser adicionados posteriormente.
+- A autoridade de sessão continua local a uma VPS até a futura Colmeia.
+- Os próximos itens 0.6.x são metadados de nó/região/pool, passagem automática do contexto ACL e consolidação dos contratos internos usados pela Automation v2.
+
 ## [0.6.7] - 2026-10-10
 
 ### Cotas por identidade
