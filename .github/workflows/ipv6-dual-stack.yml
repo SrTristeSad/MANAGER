@@ -61,7 +61,14 @@ jobs:
               needle="${*:2}"
               [[ -f "$state" ]] && grep -Fqx -- "$needle" "$state"
               ;;
-            -I|-A)
+            -I)
+              if [[ "${3:-}" =~ ^[0-9]+$ ]]; then
+                printf '%s\n' "$2 ${*:4}" >> "$state"
+              else
+                printf '%s\n' "${*:2}" >> "$state"
+              fi
+              ;;
+            -A)
               printf '%s\n' "${*:2}" >> "$state"
               ;;
             -D)
