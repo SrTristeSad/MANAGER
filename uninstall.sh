@@ -56,6 +56,17 @@ else
   systemctl daemon-reload || true
 fi
 
+# Produtos, vínculos, ACL e baselines de franquia ficam dentro do estado
+# persistente do Connection Engine. Apenas o reconciliador systemd sai aqui.
+if [[ -x /opt/manager/modules/products.sh ]]; then
+  /opt/manager/modules/products.sh --detach >/dev/null 2>&1 || true
+else
+  systemctl disable --now manager-product-policy.timer >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-product-policy.timer \
+    /etc/systemd/system/manager-product-policy.service
+  systemctl daemon-reload || true
+fi
+
 # O bridge precisa sair antes do Session Engine, pois usa leases existentes para
 # liberar mapas, regras específicas e hooks de protocolo sem deixar lockout.
 if [[ -x /opt/manager/modules/protocol_leases.sh ]]; then
@@ -233,11 +244,12 @@ rm -rf /opt/manager /opt/manager.rollback
 echo "[OK] Código do MANAGER removido."
 if ! $PURGE; then
   echo "As configurações em /etc/manager e serviços configurados foram preservados."
+  echo "Produtos, vínculos, ACL e estado de franquia foram preservados no Connection Engine."
   echo "O histórico consolidado de uso em /var/lib/manager/identity-usage foi preservado."
   echo "Leases runtime foram descartadas; session_epoch e identidades persistem para reinstalação."
   echo "Hooks PAM/OpenVPN e o bridge de protocolos foram desanexados antes da remoção do código."
   echo "O enforcement de identidades foi desanexado junto com o código e volta a ser aplicado numa reinstalação."
   echo "Execute manager-uninstall --purge somente se quiser remover também as configurações e o histórico do MANAGER."
 else
-  echo "Configurações, histórico de uso e unidades próprias do MANAGER removidos. Pacotes do sistema, certificados Let's Encrypt, backups e regras UFW foram preservados."
+  echo "Configurações, produtos, ACL, franquias, histórico de uso e unidades próprias do MANAGER removidos. Pacotes do sistema, certificados Let's Encrypt, backups e regras UFW foram preservados."
 fi
