@@ -80,52 +80,72 @@ Implementado:
 - reutilização do `node_id` persistente;
 - identidade Ed25519 por nó;
 - identidade Ed25519 de controlador;
-- contratos de enrollment request e bundle assinados;
+- contracts de enrollment request/bundle assinados;
 - request com metadados, `issued_at`, nonce, chave pública, key ID e fingerprint;
-- controlador verifica assinatura e identidade derivada da chave pública antes de registrar o nó;
-- bundle assinado pelo controlador;
-- nó exige fingerprint SHA-256 pinado do controlador no aceite;
-- troca silenciosa de controlador recusada;
-- `node_epoch` monotônico como geração de autoridade;
-- revogação incrementa epoch e desabilita o nó;
-- retorno após revogação exige `reenroll` explícito;
-- bundle antigo recusado quando seu epoch é menor que o já aceito;
+- verificação de assinatura/identidade antes do registro;
+- pin SHA-256 do controlador no primeiro aceite;
+- `node_epoch` monotônico;
+- revogação + re-enrollment explícito;
+- fencing de bundle antigo;
 - estado durável em `/etc/manager/hive`;
-- backup protegido inclui chaves/estado da Colmeia;
-- uninstall/reinstall preserva confiança; purge remove estado server-side;
-- CI `Hive Node Enrollment` cobre tamper, pin errado, revoke, reenroll, fencing e lifecycle.
+- backup/uninstall/reinstall/purge testados;
+- CI `Hive Node Enrollment`.
 
 ### 0.8.1 — rede privada WireGuard da Colmeia ✅
 
 Implementado:
 
-- interface privada dedicada `mgh0`, separada do `wg0` de clientes;
-- mesh direto entre VPS, sem encaminhar o tráfego VPN dos usuários pelo controlador;
-- chave WireGuard privada criada e mantida exclusivamente em cada nó;
-- network request assinado pela identidade Ed25519 enrolled do nó;
-- controlador guarda apenas chave pública WireGuard, endpoint, porta e estado de topologia;
-- IPv4/IPv6 interno único por nó;
-- bundles de topologia assinados pelo controlador;
-- `config_epoch` monotônico e fencing contra rollback/divergência de topologia;
-- enable/disable de nó na malha sem apagar sua identidade;
-- nenhuma rota default `0.0.0.0/0` ou `::/0`;
+- interface dedicada `mgh0`, separada do `wg0` dos clientes;
+- mesh direto VPS↔VPS;
+- chave WireGuard privada exclusiva de cada nó;
+- network request assinado;
+- IPv4/IPv6 privado único por nó;
+- bundles de topologia assinados;
+- `config_epoch` e fencing;
+- nenhuma rota default;
 - nenhuma abertura automática de firewall;
-- ownership explícito de `mgh0.conf`, preservando configuração externa;
-- validação com `wg-quick strip` antes de aplicar;
-- restart real da interface quando a topologia muda;
-- rollback de runtime se a aplicação falhar;
-- lifecycle seguro de uninstall/rollback por drop-in do Automation v2;
-- chave/topologia duráveis sobrevivem a uninstall/rollback normal;
-- CI `Hive Private Network` e `Hive Network Lifecycle`.
+- ownership seguro de `mgh0.conf`;
+- validação antes de aplicar;
+- restart real quando topologia muda;
+- rollback de runtime;
+- lifecycle de uninstall/rollback preservando estado durável;
+- CI `Hive Private Network` + `Hive Network Lifecycle`.
 
-Limites atuais após 0.8.1:
+### 0.8.2 — heartbeat e saúde ✅
+
+Implementado:
+
+- heartbeat assinado pela identidade Ed25519 enrolled do nó;
+- `controller_id`, `node_id`, `node_epoch`, timestamp, nonce e métricas cobertos pela assinatura;
+- freshness de 120 segundos;
+- anti-replay com nonce single-use e criação exclusiva;
+- `node_epoch` exato como fencing de heartbeat stale;
+- ACK do controlador assinado por Ed25519;
+- transporte TLS 1.3 somente;
+- pin SHA-256 obrigatório do certificado TLS do controlador;
+- listener opt-in, sem abrir firewall automaticamente;
+- rate limit por origem;
+- CPU, RAM, load, rede, sessões, capacidade, peso, protocolos e serviços;
+- estado da malha `mgh0` e RTT;
+- estados `HEALTHY`, `DEGRADED`, `DRAINING`, `OFFLINE`;
+- thresholds de heartbeat atrasado/offline configuráveis;
+- audit de aceite/recusa sem segredos;
+- lifecycle destaca timer/listener antes da malha no uninstall/rollback;
+- CI `Hive Heartbeat and Health` cobrindo TLS pinning, tamper, replay, timeout, draining e epoch fencing.
+
+Limites atuais após 0.8.2:
 
 ```text
 private_hive_network=1
 wireguard_mesh=1
-controller_user_traffic_transit=0
-heartbeat=0
-node_health=0
+heartbeat=1
+node_health=1
+signed_heartbeat=1
+freshness=1
+anti_replay=1
+tls_transport=TLS1.3
+tls_server_pinning=sha256
+controller_in_user_vpn_path=0
 scheduler=0
 drain_runtime=0
 failover=0
@@ -136,32 +156,20 @@ global_accounting=0
 
 Documentação: `docs/HIVE.md`.
 
-### 0.8.2 — heartbeat e saúde — PRÓXIMO
+### 0.8.3 — scheduler, drain e seleção de nó — PRÓXIMO
 
 Planejado:
 
-- heartbeat assinado pelo nó;
-- freshness e anti-replay compatíveis com a Automation v2;
-- envio pela rede privada `mgh0` quando disponível;
-- CPU, RAM, rede e carga;
-- sessões e capacidade;
-- latência;
-- protocolos/serviços disponíveis;
-- estados `HEALTHY`, `DEGRADED`, `DRAINING`, `OFFLINE`;
-- tolerância configurável a heartbeat perdido;
-- último heartbeat e motivo do estado auditáveis;
-- controlador continua fora do tráfego VPN.
-
-### 0.8.3 — scheduler, drain e seleção de nó
-
 - weighted least-loaded;
 - capacidade/peso;
+- somente nós `HEALTHY`/elegíveis para novas alocações;
 - protocolo solicitado;
 - região/pool/ACL;
 - latência/health;
 - sticky session;
-- drain;
-- seleção determinística/auditável.
+- drain real;
+- seleção determinística e auditável;
+- failover de seleção quando um nó deixa de ser elegível, sem transformar o controlador em relay de tráfego.
 
 Comando desejado:
 
@@ -169,7 +177,7 @@ Comando desejado:
 manager hive node drain BR-SP-02
 ```
 
-Drain impede novas conexões, mas sessões existentes continuam até finalizar.
+Drain deverá impedir novas conexões naquele nó, mas sessões existentes continuam até finalizar.
 
 ### 0.8.4 — autoridade de sessões globais
 
@@ -233,7 +241,7 @@ max_sessions global = 1
 
 ### 0.8.10 — observabilidade distribuída
 
-- visão de saúde/capacidade por nó;
+- visão histórica de saúde/capacidade por nó;
 - histórico de decisões do scheduler;
 - leases/grants globais auditáveis;
 - métricas de failover, drain e latência;
