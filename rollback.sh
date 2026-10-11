@@ -30,9 +30,12 @@ read -r -p "Restaurar o código anterior? [s/N]: " answer
 [[ "$answer" =~ ^([sS]|[sS][iI][mM]|[yY]|[yY][eE][sS])$ ]] || exit 0
 
 # Unidades/hooks externos ao /opt precisam ser retirados pelo código que os
-# criou antes da troca. O estado persistente de uso permanece em /var/lib.
+# criou antes da troca. Estados persistentes permanecem em /etc/manager e /var/lib.
 if [[ -x "$INSTALL_DIR/modules/identity_usage.sh" ]]; then
   "$INSTALL_DIR/modules/identity_usage.sh" --detach >/dev/null 2>&1 || true
+fi
+if [[ -x "$INSTALL_DIR/modules/products.sh" ]]; then
+  "$INSTALL_DIR/modules/products.sh" --detach >/dev/null 2>&1 || true
 fi
 if [[ -x "$INSTALL_DIR/modules/protocol_leases.sh" ]]; then
   "$INSTALL_DIR/modules/protocol_leases.sh" --detach >/dev/null 2>&1 || true
@@ -59,6 +62,14 @@ ln -sfn "$INSTALL_DIR/uninstall.sh" /usr/local/sbin/manager-uninstall
 # Reaplica apenas os componentes disponíveis na versão que acabou de voltar.
 # Isso permite rollback para uma versão anterior sem deixar units/hooks
 # apontando para módulos ausentes.
+if [[ -x "$INSTALL_DIR/modules/products.sh" ]]; then
+  "$INSTALL_DIR/modules/products.sh" --install >/dev/null 2>&1 || true
+else
+  systemctl disable --now manager-product-policy.timer >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-product-policy.timer \
+    /etc/systemd/system/manager-product-policy.service
+  systemctl daemon-reload || true
+fi
 if [[ -x "$INSTALL_DIR/modules/session_engine.sh" ]]; then
   "$INSTALL_DIR/modules/session_engine.sh" --install >/dev/null 2>&1 || true
 fi
