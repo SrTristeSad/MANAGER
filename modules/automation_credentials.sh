@@ -127,61 +127,63 @@ PY
 }
 
 enroll_key() {
-  local principal_id="${1:-}" output="${2:-}" rotate="${3:-0}" tmp private pub hex key_id fingerprint now dir meta
+  local principal_id="${1:-}" output="${2:-}" rotate="${3:-0}"
   init_state
   require_principal "$principal_id" || return $?
   [[ -n "$output" ]] || { err "Informe o arquivo de saída da credencial."; return 64; }
   [[ "$rotate" == 0 || "$rotate" == 1 ]] || return 64
 
-  tmp="$(mktemp -d "$STATE_DIR/.enroll.XXXXXX")"
-  trap 'rm -rf "$tmp"' RETURN
-  private="$tmp/private.pem"
-  pub="$tmp/public.pem"
-  umask 077
-  openssl genpkey -algorithm ED25519 -out "$private" >/dev/null 2>&1 || { err "Falha ao gerar chave Ed25519"; return 70; }
-  openssl pkey -in "$private" -pubout -out "$pub" >/dev/null 2>&1 || { err "Falha ao extrair chave pública"; return 70; }
-  chmod 0600 "$private" "$pub"
+  (
+    local tmp private pub hex key_id fingerprint now dir meta old old_id
+    tmp="$(mktemp -d "$STATE_DIR/.enroll.XXXXXX")"
+    trap 'rm -rf "$tmp"' EXIT
+    private="$tmp/private.pem"
+    pub="$tmp/public.pem"
+    umask 077
+    openssl genpkey -algorithm ED25519 -out "$private" >/dev/null 2>&1 || { err "Falha ao gerar chave Ed25519"; exit 70; }
+    openssl pkey -in "$private" -pubout -out "$pub" >/dev/null 2>&1 || { err "Falha ao extrair chave pública"; exit 70; }
+    chmod 0600 "$private" "$pub"
 
-  hex="$(public_key_hex "$pub")"
-  [[ "$hex" =~ ^[a-f0-9]{64}$ ]] || { err "Falha ao calcular key_id"; return 70; }
-  key_id="ed25519-${hex:0:16}"
-  fingerprint="$(public_fingerprint "$pub")" || { err "Falha ao calcular fingerprint"; return 70; }
-  valid_key_id "$key_id" || return 70
+    hex="$(public_key_hex "$pub")"
+    [[ "$hex" =~ ^[a-f0-9]{64}$ ]] || { err "Falha ao calcular key_id"; exit 70; }
+    key_id="ed25519-${hex:0:16}"
+    fingerprint="$(public_fingerprint "$pub")" || { err "Falha ao calcular fingerprint"; exit 70; }
+    valid_key_id "$key_id" || exit 70
 
-  dir="$(principal_credentials_dir "$principal_id")"
-  install -d -m 0700 "$dir"
-  meta="$(credential_meta_file "$principal_id" "$key_id")"
-  [[ ! -e "$meta" && ! -e "$(credential_pub_file "$principal_id" "$key_id")" ]] || {
-    err "Colisão de key_id inesperada: $key_id"
-    return 65
-  }
+    dir="$(principal_credentials_dir "$principal_id")"
+    install -d -m 0700 "$dir"
+    meta="$(credential_meta_file "$principal_id" "$key_id")"
+    [[ ! -e "$meta" && ! -e "$(credential_pub_file "$principal_id" "$key_id")" ]] || {
+      err "Colisão de key_id inesperada: $key_id"
+      exit 65
+    }
 
-  # A credencial privada é criada primeiro. Se o registro público falhar, nenhuma
-  # chave nova fica ativa no daemon e o arquivo pode ser descartado com segurança.
-  create_bundle "$principal_id" "$key_id" "$fingerprint" "$private" "$output" || return $?
+    # A credencial privada é criada primeiro. Se o registro público falhar, nenhuma
+    # chave nova fica ativa no daemon e o arquivo pode ser descartado com segurança.
+    create_bundle "$principal_id" "$key_id" "$fingerprint" "$private" "$output" || exit $?
 
-  install -m 0600 "$pub" "$(credential_pub_file "$principal_id" "$key_id")"
-  now="$(date +%s)"
-  write_meta "$principal_id" "$key_id" "$fingerprint" 1 "$now" 0
+    install -m 0600 "$pub" "$(credential_pub_file "$principal_id" "$key_id")"
+    now="$(date +%s)"
+    write_meta "$principal_id" "$key_id" "$fingerprint" 1 "$now" 0
 
-  if [[ "$rotate" == 1 ]]; then
-    local old old_id
-    for old in "$dir"/*.conf; do
-      [[ -f "$old" ]] || continue
-      old_id="$(read_field "$old" key_id)"
-      [[ "$old_id" == "$key_id" ]] && continue
-      [[ "$(read_field "$old" enabled)" == 1 ]] || continue
-      revoke_key_internal "$principal_id" "$old_id" "$now" || true
-    done
-  fi
+    if [[ "$rotate" == 1 ]]; then
+      for old in "$dir"/*.conf; do
+        [[ -f "$old" ]] || continue
+        old_id="$(read_field "$old" key_id)"
+        [[ "$old_id" == "$key_id" ]] && continue
+        [[ "$(read_field "$old" enabled)" == 1 ]] || continue
+        revoke_key_internal "$principal_id" "$old_id" "$now" || true
+      done
+    fi
 
-  printf 'principal_id=%s\n' "$principal_id"
-  printf 'key_id=%s\n' "$key_id"
-  printf 'algorithm=ed25519\n'
-  printf 'fingerprint=%s\n' "$fingerprint"
-  printf 'credential_file=%s\n' "$output"
-  printf 'private_key_stored_server=0\n'
-  [[ "$rotate" == 1 ]] && printf 'rotation=completed\n'
+    printf 'principal_id=%s\n' "$principal_id"
+    printf 'key_id=%s\n' "$key_id"
+    printf 'algorithm=ed25519\n'
+    printf 'fingerprint=%s\n' "$fingerprint"
+    printf 'credential_file=%s\n' "$output"
+    printf 'private_key_stored_server=0\n'
+    [[ "$rotate" == 1 ]] && printf 'rotation=completed\n'
+  )
 }
 
 revoke_key() {
