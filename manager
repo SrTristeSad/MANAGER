@@ -56,6 +56,19 @@ Uso:
   manager hive controller reenroll REQUEST OUT
   manager hive controller revoke NODE_ID [REASON]
                                   administra a autoridade de enrollment da Colmeia
+  manager hive network status|init|up|down|reconcile
+                                  controla a interface privada mgh0
+  manager hive network request ENDPOINT OUT [PORT]
+                                  cria request WireGuard assinado do nó
+  manager hive network accept BUNDLE
+                                  valida bundle assinado e aplica a topologia
+  manager hive network controller init|status|list
+  manager hive network controller show NODE_ID
+  manager hive network controller approve REQUEST
+  manager hive network controller enable|disable NODE_ID
+  manager hive network controller bundle NODE_ID OUT
+  manager hive network controller bundle-all DIR
+                                  administra a topologia mesh privada da Colmeia
   manager automation legacy status
   manager automation legacy enable [PORT]
   manager automation legacy disable
@@ -90,14 +103,8 @@ EOF
 }
 
 case "${1:-}" in
-  --version|-v)
-    echo "$VERSION"
-    exit 0
-    ;;
-  --help|-h)
-    usage
-    exit 0
-    ;;
+  --version|-v) echo "$VERSION"; exit 0 ;;
+  --help|-h) usage; exit 0 ;;
 esac
 
 require_root
@@ -145,26 +152,15 @@ self_update() {
   remote="$(curl -fsSL --connect-timeout 5 --max-time 10 "$MANAGER_RAW/VERSION" 2>/dev/null | tr -d '[:space:]' || true)"
   say "Instalada: ${C_GREEN}$VERSION${C_RESET}"
   say "Remota:    ${C_CYAN}${remote:-indisponível}${C_RESET}\n"
-
   [[ -n "$remote" ]] || { err "Não foi possível consultar a versão remota."; pause; return; }
   if [[ "$remote" == "$VERSION" ]]; then info "Você já está na versão publicada atualmente."; fi
   confirm "Baixar e instalar a versão publicada?" || return
-
   tmp="$(mktemp)"
   if ! curl -fL --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 60 "$MANAGER_RAW/install.sh" -o "$tmp"; then
-    rm -f "$tmp"
-    err "Falha ao baixar o instalador."
-    pause
-    return
+    rm -f "$tmp"; err "Falha ao baixar o instalador."; pause; return
   fi
   chmod 0700 "$tmp"
-  if ! bash -n "$tmp"; then
-    rm -f "$tmp"
-    err "O instalador baixado não passou na validação de sintaxe."
-    pause
-    return
-  fi
-
+  if ! bash -n "$tmp"; then rm -f "$tmp"; err "O instalador baixado não passou na validação de sintaxe."; pause; return; fi
   info "Instalador baixado e validado com bash -n."
   if MANAGER_REPO_RAW="$MANAGER_RAW" bash "$tmp" --update; then
     ok "MANAGER atualizado"
@@ -197,63 +193,59 @@ case "${1:-}" in
   --proxy-status) exec "$MANAGER_HOME/modules/proxies.sh" --status ;;
   --proxy-hosts) exec "$MANAGER_HOME/modules/proxy_hosts.sh" --list ;;
   --identities) exec "$MANAGER_HOME/modules/connection_engine.sh" --list ;;
-  --identity)
-    [[ -n "${2:-}" ]] || { err "Informe o ID da identidade"; exit 64; }
-    exec "$MANAGER_HOME/modules/connection_engine.sh" --show "$2"
-    ;;
+  --identity) [[ -n "${2:-}" ]] || { err "Informe o ID da identidade"; exit 64; }; exec "$MANAGER_HOME/modules/connection_engine.sh" --show "$2" ;;
   --products) exec "$MANAGER_HOME/modules/products.sh" --list ;;
-  --product)
-    [[ -n "${2:-}" ]] || { err "Informe o ID do produto"; exit 64; }
-    exec "$MANAGER_HOME/modules/products.sh" --show "$2"
-    ;;
-  --product-assignment)
-    [[ -n "${2:-}" ]] || { err "Informe o ID da identidade"; exit 64; }
-    exec "$MANAGER_HOME/modules/products.sh" --assignment "$2"
-    ;;
-  --reseller-usage)
-    [[ -n "${2:-}" ]] || { err "Informe o ID do revendedor"; exit 64; }
-    exec "$MANAGER_HOME/modules/resellers.sh" --usage-detail "$2"
-    ;;
+  --product) [[ -n "${2:-}" ]] || { err "Informe o ID do produto"; exit 64; }; exec "$MANAGER_HOME/modules/products.sh" --show "$2" ;;
+  --product-assignment) [[ -n "${2:-}" ]] || { err "Informe o ID da identidade"; exit 64; }; exec "$MANAGER_HOME/modules/products.sh" --assignment "$2" ;;
+  --reseller-usage) [[ -n "${2:-}" ]] || { err "Informe o ID do revendedor"; exit 64; }; exec "$MANAGER_HOME/modules/resellers.sh" --usage-detail "$2" ;;
   --reseller-product-quota)
     [[ -n "${2:-}" && -n "${3:-}" ]] || { err "Uso: manager --reseller-product-quota OWNER PRODUCT"; exit 64; }
     exec "$MANAGER_HOME/modules/reseller_product_quotas.sh" --show "$2" "$3"
     ;;
   --provision)
     [[ -n "${2:-}" && -n "${3:-}" ]] || { err "Uso: manager --provision ID PLAN [OWNER] [PROTOCOLS]"; exit 64; }
-    run_provision_transaction --create "$2" "$3" "${4:-}" "${5:-}"
-    exit $?
+    run_provision_transaction --create "$2" "$3" "${4:-}" "${5:-}"; exit $?
     ;;
-  --revoke-identity)
-    [[ -n "${2:-}" ]] || { err "Informe o ID da identidade"; exit 64; }
-    run_provision_transaction --revoke "$2"
-    exit $?
-    ;;
+  --revoke-identity) [[ -n "${2:-}" ]] || { err "Informe o ID da identidade"; exit 64; }; run_provision_transaction --revoke "$2"; exit $? ;;
   --identity-sessions) exec "$MANAGER_HOME/modules/policy_engine.sh" --sessions "${2:-}" ;;
   --leases) exec "$MANAGER_HOME/modules/session_engine.sh" --list "${2:-}" ;;
-  --usage)
-    if [[ -n "${2:-}" ]]; then
-      exec "$MANAGER_HOME/modules/identity_usage.sh" --show "$2"
-    else
-      exec "$MANAGER_HOME/modules/identity_usage.sh" --list
-    fi
-    ;;
+  --usage) if [[ -n "${2:-}" ]]; then exec "$MANAGER_HOME/modules/identity_usage.sh" --show "$2"; else exec "$MANAGER_HOME/modules/identity_usage.sh" --list; fi ;;
   --ipv6-status) exec "$MANAGER_HOME/modules/ipv6_guard.sh" --status ;;
   --node) exec "$MANAGER_HOME/modules/node_metadata.sh" --show ;;
   --node-context) exec "$MANAGER_HOME/modules/node_metadata.sh" --context ;;
-  --node-set)
-    [[ -n "${2:-}" ]] || { err "Uso: manager --node-set FIELD VALUE"; exit 64; }
-    exec "$MANAGER_HOME/modules/node_metadata.sh" --set "$2" "${3:-}"
-    ;;
+  --node-set) [[ -n "${2:-}" ]] || { err "Uso: manager --node-set FIELD VALUE"; exit 64; }; exec "$MANAGER_HOME/modules/node_metadata.sh" --set "$2" "${3:-}" ;;
   hive)
     case "${2:-status}" in
       status) exec "$MANAGER_HOME/modules/hive_identity.sh" --status ;;
-      request)
-        [[ -n "${3:-}" ]] || { err "Uso: manager hive request /CAMINHO/request.json"; exit 64; }
-        exec "$MANAGER_HOME/modules/hive_identity.sh" --request "$3"
-        ;;
-      accept)
-        [[ -n "${3:-}" && -n "${4:-}" ]] || { err "Uso: manager hive accept BUNDLE CONTROLLER_FP"; exit 64; }
-        exec "$MANAGER_HOME/modules/hive_identity.sh" --accept "$3" "$4"
+      request) [[ -n "${3:-}" ]] || { err "Uso: manager hive request /CAMINHO/request.json"; exit 64; }; exec "$MANAGER_HOME/modules/hive_identity.sh" --request "$3" ;;
+      accept) [[ -n "${3:-}" && -n "${4:-}" ]] || { err "Uso: manager hive accept BUNDLE CONTROLLER_FP"; exit 64; }; exec "$MANAGER_HOME/modules/hive_identity.sh" --accept "$3" "$4" ;;
+      network)
+        case "${3:-status}" in
+          status) exec "$MANAGER_HOME/modules/hive_network.sh" --status ;;
+          init) exec "$MANAGER_HOME/modules/hive_network.sh" --init ;;
+          request)
+            [[ -n "${4:-}" && -n "${5:-}" ]] || { err "Uso: manager hive network request ENDPOINT OUT [PORT]"; exit 64; }
+            if [[ -n "${6:-}" ]]; then exec "$MANAGER_HOME/modules/hive_network.sh" --request "$4" "$5" "$6"; else exec "$MANAGER_HOME/modules/hive_network.sh" --request "$4" "$5"; fi
+            ;;
+          accept) [[ -n "${4:-}" ]] || { err "Uso: manager hive network accept BUNDLE"; exit 64; }; exec "$MANAGER_HOME/modules/hive_network.sh" --accept "$4" ;;
+          up|reconcile) exec "$MANAGER_HOME/modules/hive_network.sh" --reconcile ;;
+          down) exec "$MANAGER_HOME/modules/hive_network.sh" --down ;;
+          controller)
+            case "${4:-status}" in
+              init) exec "$MANAGER_HOME/modules/hive_network.sh" --controller-init ;;
+              status) exec "$MANAGER_HOME/modules/hive_network.sh" --controller-status ;;
+              list) exec "$MANAGER_HOME/modules/hive_network.sh" --controller-list ;;
+              show) [[ -n "${5:-}" ]] || { err "Uso: manager hive network controller show NODE_ID"; exit 64; }; exec "$MANAGER_HOME/modules/hive_network.sh" --controller-show "$5" ;;
+              approve) [[ -n "${5:-}" ]] || { err "Uso: manager hive network controller approve REQUEST"; exit 64; }; exec "$MANAGER_HOME/modules/hive_network.sh" --controller-approve "$5" ;;
+              enable) [[ -n "${5:-}" ]] || { err "Uso: manager hive network controller enable NODE_ID"; exit 64; }; exec "$MANAGER_HOME/modules/hive_network.sh" --controller-enable "$5" ;;
+              disable) [[ -n "${5:-}" ]] || { err "Uso: manager hive network controller disable NODE_ID"; exit 64; }; exec "$MANAGER_HOME/modules/hive_network.sh" --controller-disable "$5" ;;
+              bundle) [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager hive network controller bundle NODE_ID OUT"; exit 64; }; exec "$MANAGER_HOME/modules/hive_network.sh" --controller-bundle "$5" "$6" ;;
+              bundle-all) [[ -n "${5:-}" ]] || { err "Uso: manager hive network controller bundle-all DIR"; exit 64; }; exec "$MANAGER_HOME/modules/hive_network.sh" --controller-bundle-all "$5" ;;
+              *) err "Ação de rede do controlador inválida: ${4:-}"; exit 64 ;;
+            esac
+            ;;
+          *) err "Uso: manager hive network {status|init|request|accept|up|down|reconcile|controller ...}"; exit 64 ;;
+        esac
         ;;
       controller)
         case "${3:-status}" in
@@ -261,26 +253,14 @@ case "${1:-}" in
           status) exec "$MANAGER_HOME/modules/hive_identity.sh" --controller-status ;;
           fingerprint) exec "$MANAGER_HOME/modules/hive_identity.sh" --controller-fingerprint ;;
           list) exec "$MANAGER_HOME/modules/hive_identity.sh" --controller-list ;;
-          show)
-            [[ -n "${4:-}" ]] || { err "Uso: manager hive controller show NODE_ID"; exit 64; }
-            exec "$MANAGER_HOME/modules/hive_identity.sh" --controller-show "$4"
-            ;;
-          approve)
-            [[ -n "${4:-}" && -n "${5:-}" ]] || { err "Uso: manager hive controller approve REQUEST OUT"; exit 64; }
-            exec "$MANAGER_HOME/modules/hive_identity.sh" --controller-approve "$4" "$5"
-            ;;
-          reenroll)
-            [[ -n "${4:-}" && -n "${5:-}" ]] || { err "Uso: manager hive controller reenroll REQUEST OUT"; exit 64; }
-            exec "$MANAGER_HOME/modules/hive_identity.sh" --controller-reenroll "$4" "$5"
-            ;;
-          revoke)
-            [[ -n "${4:-}" ]] || { err "Uso: manager hive controller revoke NODE_ID [REASON]"; exit 64; }
-            exec "$MANAGER_HOME/modules/hive_identity.sh" --controller-revoke "$4" "${5:-}"
-            ;;
+          show) [[ -n "${4:-}" ]] || { err "Uso: manager hive controller show NODE_ID"; exit 64; }; exec "$MANAGER_HOME/modules/hive_identity.sh" --controller-show "$4" ;;
+          approve) [[ -n "${4:-}" && -n "${5:-}" ]] || { err "Uso: manager hive controller approve REQUEST OUT"; exit 64; }; exec "$MANAGER_HOME/modules/hive_identity.sh" --controller-approve "$4" "$5" ;;
+          reenroll) [[ -n "${4:-}" && -n "${5:-}" ]] || { err "Uso: manager hive controller reenroll REQUEST OUT"; exit 64; }; exec "$MANAGER_HOME/modules/hive_identity.sh" --controller-reenroll "$4" "$5" ;;
+          revoke) [[ -n "${4:-}" ]] || { err "Uso: manager hive controller revoke NODE_ID [REASON]"; exit 64; }; exec "$MANAGER_HOME/modules/hive_identity.sh" --controller-revoke "$4" "${5:-}" ;;
           *) err "Ação de controlador da Colmeia inválida: ${3:-}"; exit 64 ;;
         esac
         ;;
-      *) err "Uso: manager hive {status|request|accept|controller ...}"; exit 64 ;;
+      *) err "Uso: manager hive {status|request|accept|network ...|controller ...}"; exit 64 ;;
     esac
     ;;
   automation)
@@ -301,61 +281,28 @@ case "${1:-}" in
           principals) exec "$MANAGER_HOME/modules/automation_principals.sh" --list ;;
           principal)
             case "${4:-}" in
-              show)
-                [[ -n "${5:-}" ]] || { err "Uso: manager automation v2 principal show ID"; exit 64; }
-                exec "$MANAGER_HOME/modules/automation_principals.sh" --show "$5"
-                ;;
-              create)
-                [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager automation v2 principal create ID ROLE SUBJECT [PRODUCTS]"; exit 64; }
-                exec "$MANAGER_HOME/modules/automation_principals.sh" --create "$5" "$6" "${7:-}" "${8:-*}"
-                ;;
-              enable)
-                [[ -n "${5:-}" ]] || { err "Uso: manager automation v2 principal enable ID"; exit 64; }
-                exec "$MANAGER_HOME/modules/automation_principals.sh" --enable "$5"
-                ;;
-              disable)
-                [[ -n "${5:-}" ]] || { err "Uso: manager automation v2 principal disable ID"; exit 64; }
-                exec "$MANAGER_HOME/modules/automation_principals.sh" --disable "$5"
-                ;;
-              products)
-                [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager automation v2 principal products ID SCOPE"; exit 64; }
-                exec "$MANAGER_HOME/modules/automation_principals.sh" --set-products "$5" "$6"
-                ;;
+              show) [[ -n "${5:-}" ]] || { err "Uso: manager automation v2 principal show ID"; exit 64; }; exec "$MANAGER_HOME/modules/automation_principals.sh" --show "$5" ;;
+              create) [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager automation v2 principal create ID ROLE SUBJECT [PRODUCTS]"; exit 64; }; exec "$MANAGER_HOME/modules/automation_principals.sh" --create "$5" "$6" "${7:-}" "${8:-*}" ;;
+              enable) [[ -n "${5:-}" ]] || { err "Uso: manager automation v2 principal enable ID"; exit 64; }; exec "$MANAGER_HOME/modules/automation_principals.sh" --enable "$5" ;;
+              disable) [[ -n "${5:-}" ]] || { err "Uso: manager automation v2 principal disable ID"; exit 64; }; exec "$MANAGER_HOME/modules/automation_principals.sh" --disable "$5" ;;
+              products) [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager automation v2 principal products ID SCOPE"; exit 64; }; exec "$MANAGER_HOME/modules/automation_principals.sh" --set-products "$5" "$6" ;;
               *) err "Ação de principal inválida: ${4:-}"; exit 64 ;;
             esac
             ;;
-          credentials)
-            [[ -n "${4:-}" ]] || { err "Uso: manager automation v2 credentials ID"; exit 64; }
-            exec "$MANAGER_HOME/modules/automation_credentials.sh" --list "$4"
-            ;;
+          credentials) [[ -n "${4:-}" ]] || { err "Uso: manager automation v2 credentials ID"; exit 64; }; exec "$MANAGER_HOME/modules/automation_credentials.sh" --list "$4" ;;
           credential)
             case "${4:-}" in
-              show)
-                [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager automation v2 credential show ID KEY_ID"; exit 64; }
-                exec "$MANAGER_HOME/modules/automation_credentials.sh" --show "$5" "$6"
-                ;;
-              enroll)
-                [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager automation v2 credential enroll ID /CAMINHO/ARQUIVO"; exit 64; }
-                exec "$MANAGER_HOME/modules/automation_credentials.sh" --enroll "$5" "$6"
-                ;;
-              rotate)
-                [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager automation v2 credential rotate ID /CAMINHO/ARQUIVO"; exit 64; }
-                exec "$MANAGER_HOME/modules/automation_credentials.sh" --rotate "$5" "$6"
-                ;;
-              revoke)
-                [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager automation v2 credential revoke ID KEY_ID"; exit 64; }
-                exec "$MANAGER_HOME/modules/automation_credentials.sh" --revoke "$5" "$6"
-                ;;
+              show) [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager automation v2 credential show ID KEY_ID"; exit 64; }; exec "$MANAGER_HOME/modules/automation_credentials.sh" --show "$5" "$6" ;;
+              enroll) [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager automation v2 credential enroll ID /CAMINHO/ARQUIVO"; exit 64; }; exec "$MANAGER_HOME/modules/automation_credentials.sh" --enroll "$5" "$6" ;;
+              rotate) [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager automation v2 credential rotate ID /CAMINHO/ARQUIVO"; exit 64; }; exec "$MANAGER_HOME/modules/automation_credentials.sh" --rotate "$5" "$6" ;;
+              revoke) [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager automation v2 credential revoke ID KEY_ID"; exit 64; }; exec "$MANAGER_HOME/modules/automation_credentials.sh" --revoke "$5" "$6" ;;
               *) err "Ação de credencial inválida: ${4:-}"; exit 64 ;;
             esac
             ;;
           remote)
             case "${4:-status}" in
               status) exec "$MANAGER_HOME/modules/automation_v2.sh" --remote-status ;;
-              enable)
-                [[ -n "${5:-}" ]] || { err "Uso: manager automation v2 remote enable BIND_IP [PORT]"; exit 64; }
-                exec "$MANAGER_HOME/modules/automation_v2.sh" --remote-enable "$5" "${6:-9443}"
-                ;;
+              enable) [[ -n "${5:-}" ]] || { err "Uso: manager automation v2 remote enable BIND_IP [PORT]"; exit 64; }; exec "$MANAGER_HOME/modules/automation_v2.sh" --remote-enable "$5" "${6:-9443}" ;;
               disable) exec "$MANAGER_HOME/modules/automation_v2.sh" --remote-disable ;;
               rotate-certificate) exec "$MANAGER_HOME/modules/automation_v2.sh" --remote-rotate-certificate ;;
               *) err "Ação remota Automation v2 inválida: ${4:-}"; exit 64 ;;
@@ -369,11 +316,7 @@ case "${1:-}" in
     ;;
   --diagnostics) exec "$MANAGER_HOME/modules/diagnostics.sh" ;;
   "") ;;
-  *)
-    err "Opção desconhecida: $1"
-    usage
-    exit 64
-    ;;
+  *) err "Opção desconhecida: $1"; usage; exit 64 ;;
 esac
 
 while true; do
@@ -416,6 +359,7 @@ while true; do
   say ""
   say " ${C_WHITE}COLMEIA${C_RESET}"
   say " ${C_CYAN}39${C_RESET}) Identidade criptográfica / enrollment do nó"
+  say " ${C_CYAN}40${C_RESET}) Rede WireGuard privada / mesh"
   say ""
   say " ${C_WHITE}MONITORAMENTO E MANUTENÇÃO${C_RESET}"
   say " ${C_CYAN}10${C_RESET}) Tráfego e conexões"
@@ -469,10 +413,7 @@ while true; do
       say "${C_WHITE}SESSÕES OBSERVADAS / POLÍTICAS${C_RESET}\n"
       "$MANAGER_HOME/modules/policy_engine.sh" --sessions || true
       say ""
-      if confirm "Reconciliar políticas agora?"; then
-        "$MANAGER_HOME/modules/policy_engine.sh" --reconcile || true
-        ok "Reconciliação solicitada"
-      fi
+      if confirm "Reconciliar políticas agora?"; then "$MANAGER_HOME/modules/policy_engine.sh" --reconcile || true; ok "Reconciliação solicitada"; fi
       pause
       ;;
     30) run_module session_engine.sh ;;
@@ -528,6 +469,20 @@ while true; do
       say " manager hive request /root/node-request.json"
       say " manager hive controller approve REQUEST /root/node-bundle.json"
       say " manager hive accept BUNDLE SHA256:<fingerprint-controlador>"
+      pause
+      ;;
+    40)
+      header
+      say "${C_WHITE}COLMEIA — REDE PRIVADA WIREGUARD${C_RESET}\n"
+      "$MANAGER_HOME/modules/hive_network.sh" --status || true
+      say ""
+      "$MANAGER_HOME/modules/hive_network.sh" --controller-status 2>/dev/null || true
+      say ""
+      say "Fluxo via CLI:"
+      say " manager hive network request ENDPOINT /root/node.network.json [PORT]"
+      say " manager hive network controller approve REQUEST"
+      say " manager hive network controller bundle-all /root/hive-bundles"
+      say " manager hive network accept BUNDLE"
       pause
       ;;
     90) self_update ;;
