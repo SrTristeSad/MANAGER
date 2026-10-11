@@ -32,6 +32,7 @@ Uso:
   manager --identity ID           mostra uma identidade do Connection Engine
   manager --identity-sessions [ID] mostra sessões observadas por identidade
   manager --leases [ID]           mostra leases locais ativas
+  manager --usage [ID]            mostra tráfego/atividade consolidada por identidade
   manager --diagnostics           abre o diagnóstico
   manager --version               mostra a versão
   manager --help                  mostra esta ajuda
@@ -134,6 +135,13 @@ case "${1:-}" in
     ;;
   --identity-sessions) exec "$MANAGER_HOME/modules/policy_engine.sh" --sessions "${2:-}" ;;
   --leases) exec "$MANAGER_HOME/modules/session_engine.sh" --list "${2:-}" ;;
+  --usage)
+    if [[ -n "${2:-}" ]]; then
+      exec "$MANAGER_HOME/modules/identity_usage.sh" --show "$2"
+    else
+      exec "$MANAGER_HOME/modules/identity_usage.sh" --list
+    fi
+    ;;
   --diagnostics) exec "$MANAGER_HOME/modules/diagnostics.sh" ;;
   "") ;;
   *)
@@ -183,6 +191,7 @@ while true; do
   say " ${C_CYAN}17${C_RESET}) Manutenção do sistema"
   say " ${C_CYAN}20${C_RESET}) Serviços"
   say " ${C_CYAN}21${C_RESET}) Speedtest / latência"
+  say " ${C_CYAN}31${C_RESET}) Uso e atividade por identidade"
   say ""
   say " ${C_CYAN}90${C_RESET}) Atualizar MANAGER"
   say "  ${C_CYAN}0${C_RESET}) Sair"
@@ -230,6 +239,7 @@ while true; do
       pause
       ;;
     30) run_module session_engine.sh ;;
+    31) run_module identity_usage.sh ;;
     90) self_update ;;
     0) clear 2>/dev/null || true; exit 0 ;;
     *) warn "Opção inválida"; sleep 1 ;;
