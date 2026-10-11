@@ -117,10 +117,15 @@ assignment_increment() {
 }
 
 can_assign_impl() {
-  local owner="$1" product="$2" identity_id="$3" quota used increment parent pquota pused
+  local owner="$1" product="$2" identity_id="$3" quota used increment parent pquota pused identity
   reseller_exists "$owner" || return 66
   product_exists_local "$product" || return 66
   [[ "$(enabled_of "$owner")" == 1 ]] || return 73
+
+  identity="$(identity_file "$identity_id")"
+  if [[ -f "$identity" ]]; then
+    identity_counts_for_owner "$identity_id" "$owner" || return 73
+  fi
 
   increment="$(assignment_increment "$identity_id" "$product")"
   quota="$(quota_of "$owner" "$product")"
