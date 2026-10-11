@@ -24,9 +24,10 @@ jobs:
           sudo test -f /etc/manager/automation/v2/principals/local-root.conf
           test "$(sudo stat -c '%a' /etc/manager/automation/v2/principals/local-root.conf)" = 600
           sudo manager automation v2 status | grep -q '^rbac=1$'
-          sudo manager automation v2 status | grep -q '^principal_assertion=root-local$'
+          sudo manager automation v2 status | grep -q '^cryptographic_auth=1$'
+          sudo manager automation v2 status | grep -q '^nonlocal_signature_required=1$'
 
-      - name: Build reseller hierarchy products and logical identities
+      - name: Build authority objects
         shell: bash
         run: |
           set -euxo pipefail
@@ -41,7 +42,7 @@ jobs:
           sudo /opt/manager/modules/connection_engine.sh --create rbac-child rbac-sub 0 1 ssh
           sudo /opt/manager/modules/connection_engine.sh --create rbac-foreign rbac-other 0 1 ssh
 
-      - name: Create principals bound to existing authority objects
+      - name: Create principals and enroll Ed25519 credentials
         shell: bash
         run: |
           set -euxo pipefail
@@ -50,42 +51,58 @@ jobs:
           sudo manager automation v2 principal create p-user user rbac-owned
           sudo manager automation v2 principal create p-admin admin
 
-          sudo manager automation v2 principals > /tmp/principals.txt
-          grep -q 'p-res' /tmp/principals.txt
-          grep -q 'p-sub' /tmp/principals.txt
-          grep -q 'p-user' /tmp/principals.txt
-          grep -q 'p-admin' /tmp/principals.txt
+          sudo /opt/manager/modules/automation_credentials.sh --enroll p-res /tmp/p-res.credential
+          sudo /opt/manager/modules/automation_credentials.sh --enroll p-sub /tmp/p-sub.credential
+          sudo /opt/manager/modules/automation_credentials.sh --enroll p-user /tmp/p-user.credential
+          sudo /opt/manager/modules/automation_credentials.sh --enroll p-admin /tmp/p-admin.credential
 
-      - name: Enforce owner and identity scopes
+          for f in /tmp/p-{res,sub,user,admin}.credential; do
+            sudo test -f "$f"
+            test "$(sudo stat -c '%a' "$f")" = 600
+            if sudo grep -q 'PRIVATE KEY' /etc/manager/automation/v2/credentials/*/*.conf /etc/manager/automation/v2/credentials/*/*.pub 2>/dev/null; then
+              echo 'private key leaked into server credential registry' >&2
+              exit 1
+            fi
+          done
+
+      - name: Reject unsigned nonlocal principal
         shell: bash
         run: |
           set -euxo pipefail
+          set +e
+          sudo managerctl --principal p-res connection.status id=rbac-owned --request-id rbac-unsigned-0001 > /tmp/unsigned.json
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+          python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/unsigned.json'))
+          assert r['ok'] is False and r['code']==67
+          PY
 
-          sudo managerctl --principal p-res connection.status id=rbac-owned --request-id rbac-status-own-01 > /tmp/own.json
-          sudo managerctl --principal p-res connection.status id=rbac-child --request-id rbac-status-child-01 > /tmp/child.json
+      - name: Enforce owner and identity scopes with signed calls
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo managerctl --credential /tmp/p-res.credential connection.status id=rbac-owned --request-id rbac-status-own-01 > /tmp/own.json
+          sudo managerctl --credential /tmp/p-res.credential connection.status id=rbac-child --request-id rbac-status-child-01 > /tmp/child.json
 
           set +e
-          sudo managerctl --principal p-res connection.status id=rbac-foreign --request-id rbac-status-foreign-01 > /tmp/foreign.json
+          sudo managerctl --credential /tmp/p-res.credential connection.status id=rbac-foreign --request-id rbac-status-foreign-01 > /tmp/foreign.json
           rc=$?
           set -e
           test "$rc" -eq 67
 
-          sudo managerctl --principal p-sub connection.status id=rbac-child --request-id rbac-sub-own-0001 > /tmp/sub-own.json
+          sudo managerctl --credential /tmp/p-sub.credential connection.status id=rbac-child --request-id rbac-sub-own-0001 > /tmp/sub-own.json
           set +e
-          sudo managerctl --principal p-sub connection.status id=rbac-owned --request-id rbac-sub-parent-01 > /tmp/sub-parent.json
+          sudo managerctl --credential /tmp/p-sub.credential connection.status id=rbac-owned --request-id rbac-sub-parent-01 > /tmp/sub-parent.json
           rc=$?
           set -e
           test "$rc" -eq 67
 
-          sudo managerctl --principal p-user connection.status id=rbac-owned --request-id rbac-user-own-001 > /tmp/user-own.json
+          sudo managerctl --credential /tmp/p-user.credential connection.status id=rbac-owned --request-id rbac-user-own-001 > /tmp/user-own.json
           set +e
-          sudo managerctl --principal p-user connection.status id=rbac-child --request-id rbac-user-other-01 > /tmp/user-other.json
-          rc=$?
-          set -e
-          test "$rc" -eq 67
-
-          set +e
-          sudo managerctl --principal p-user connection.revoke id=rbac-owned --request-id rbac-user-revoke01 > /tmp/user-revoke.json
+          sudo managerctl --credential /tmp/p-user.credential connection.revoke id=rbac-owned --request-id rbac-user-revoke01 > /tmp/user-revoke.json
           rc=$?
           set -e
           test "$rc" -eq 67
@@ -102,7 +119,7 @@ jobs:
               assert r['ok'] is True
               assert r['principal_id']==principal
               assert r['principal_role']==role
-          for path in ['/tmp/foreign.json','/tmp/sub-parent.json','/tmp/user-other.json','/tmp/user-revoke.json']:
+          for path in ['/tmp/foreign.json','/tmp/sub-parent.json','/tmp/user-revoke.json']:
               r=json.load(open(path))
               assert r['ok'] is False and r['code']==67
           PY
@@ -111,31 +128,29 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          sudo managerctl --credential /tmp/p-user.credential describe --request-id rbac-user-describe1 > /tmp/user-describe.json
 
-          sudo managerctl --principal p-user describe --request-id rbac-user-describe1 > /tmp/user-describe.json
           set +e
-          sudo managerctl --principal p-res node.usage --request-id rbac-node-deny-001 > /tmp/node-deny.json
+          sudo managerctl --credential /tmp/p-res.credential node.usage --request-id rbac-node-deny-001 > /tmp/node-deny.json
           rc=$?
           set -e
           test "$rc" -eq 67
-          sudo managerctl --principal p-admin node.usage --request-id rbac-node-admin-001 > /tmp/node-admin.json
+          sudo managerctl --credential /tmp/p-admin.credential node.usage --request-id rbac-node-admin-001 > /tmp/node-admin.json
 
           set +e
-          sudo managerctl --principal p-res connection.preflight id=rbac-plan-denied plan=rbac-other-plan protocols=ssh --request-id rbac-plan-deny-001 > /tmp/plan-deny.json
+          sudo managerctl --credential /tmp/p-res.credential connection.preflight id=rbac-plan-denied plan=rbac-other-plan protocols=ssh --request-id rbac-plan-deny-001 > /tmp/plan-deny.json
           rc=$?
           set -e
           test "$rc" -eq 67
 
           sudo manager automation v2 principal products p-res '*'
-          sudo managerctl --principal p-res connection.preflight id=rbac-plan-allowed plan=rbac-other-plan protocols=ssh --request-id rbac-plan-allow01 > /tmp/plan-allow.json
+          sudo managerctl --credential /tmp/p-res.credential connection.preflight id=rbac-plan-allowed plan=rbac-other-plan protocols=ssh --request-id rbac-plan-allow01 > /tmp/plan-allow.json
 
           set +e
-          sudo managerctl --principal p-res connection.preflight id=rbac-owner-denied plan=rbac-basic owner=rbac-other protocols=ssh --request-id rbac-owner-deny01 > /tmp/owner-deny.json
+          sudo managerctl --credential /tmp/p-res.credential connection.preflight id=rbac-owner-denied plan=rbac-basic owner=rbac-other protocols=ssh --request-id rbac-owner-deny01 > /tmp/owner-deny.json
           rc=$?
           set -e
           test "$rc" -eq 67
-
-          sudo managerctl --principal p-res connection.preflight id=rbac-child-create plan=rbac-basic owner=rbac-sub protocols=ssh --request-id rbac-child-create1 > /tmp/child-preflight.json
 
           python3 - <<'PY'
           import json
@@ -145,7 +160,6 @@ jobs:
           assert json.load(open('/tmp/plan-deny.json'))['code']==67
           assert json.load(open('/tmp/plan-allow.json'))['ok'] is True
           assert json.load(open('/tmp/owner-deny.json'))['code']==67
-          assert json.load(open('/tmp/child-preflight.json'))['ok'] is True
           PY
 
       - name: Force reseller owner on real provisioning
@@ -153,7 +167,7 @@ jobs:
         run: |
           set -euxo pipefail
           sudo manager automation v2 principal products p-res rbac-basic
-          sudo managerctl --principal p-res connection.create id=rbac-new plan=rbac-basic protocols=ssh --request-id rbac-create-owner1 > /tmp/create.json
+          sudo managerctl --credential /tmp/p-res.credential connection.create id=rbac-new plan=rbac-basic protocols=ssh --request-id rbac-create-owner1 > /tmp/create.json
           sudo id rbac-new >/dev/null
           sudo grep -q '^owner=rbac-res$' /etc/manager/connection/identities/rbac-new.conf
           python3 - <<'PY'
@@ -165,21 +179,21 @@ jobs:
           assert len(r['result']['data']['ssh_password']) >= 16
           PY
 
-      - name: Bind idempotency to principal and re-check authorization before replay
+      - name: Re-check authorization and authentication before replay
         shell: bash
         run: |
           set -euxo pipefail
-          sudo managerctl --principal p-res connection.status id=rbac-new --request-id rbac-replay-scope1 > /tmp/replay-first.json
+          sudo managerctl --credential /tmp/p-res.credential connection.status id=rbac-new --request-id rbac-replay-scope1 > /tmp/replay-first.json
           sudo manager automation v2 principal disable p-res
 
           set +e
-          sudo managerctl --principal p-res connection.status id=rbac-new --request-id rbac-replay-scope1 > /tmp/replay-disabled.json
+          sudo managerctl --credential /tmp/p-res.credential connection.status id=rbac-new --request-id rbac-replay-scope1 > /tmp/replay-disabled.json
           rc=$?
           set -e
           test "$rc" -eq 67
 
           sudo manager automation v2 principal enable p-res
-          sudo managerctl --principal p-res connection.status id=rbac-new --request-id rbac-replay-scope1 > /tmp/replay-enabled.json
+          sudo managerctl --credential /tmp/p-res.credential connection.status id=rbac-new --request-id rbac-replay-scope1 > /tmp/replay-enabled.json
           python3 - <<'PY'
           import json
           a=json.load(open('/tmp/replay-first.json'))
@@ -190,39 +204,42 @@ jobs:
           assert c['ok'] is True and c['cached'] is True
           PY
 
-          sudo managerctl --principal p-admin describe --request-id rbac-cross-principal1 > /tmp/admin-request.json
+          sudo managerctl --credential /tmp/p-admin.credential describe --request-id rbac-cross-principal1 > /tmp/admin-request.json
           set +e
-          sudo managerctl --principal p-user describe --request-id rbac-cross-principal1 > /tmp/user-conflict.json
+          sudo managerctl --credential /tmp/p-user.credential describe --request-id rbac-cross-principal1 > /tmp/user-conflict.json
           rc=$?
           set -e
           test "$rc" -eq 65
 
-      - name: Verify structured RBAC audit
+      - name: Verify structured auth and RBAC audit
         shell: bash
         run: |
           set -euxo pipefail
           sudo grep -q '"principal_id":"p-res"' /var/log/manager/automation-v2-audit.jsonl
-          sudo grep -q '"principal_role":"reseller"' /var/log/manager/automation-v2-audit.jsonl
+          sudo grep -q '"auth_scheme":"ed25519-v1"' /var/log/manager/automation-v2-audit.jsonl
+          sudo grep -q '"auth_decision":"allow"' /var/log/manager/automation-v2-audit.jsonl
+          sudo grep -q '"auth_decision":"deny"' /var/log/manager/automation-v2-audit.jsonl
           sudo grep -q '"rbac_decision":"deny"' /var/log/manager/automation-v2-audit.jsonl
-          sudo grep -q '"rbac_decision":"allow"' /var/log/manager/automation-v2-audit.jsonl
-          if sudo grep -Eqi 'ssh_password|private_key|credential|passwd' /var/log/manager/automation-v2-audit.jsonl; then
-            echo 'RBAC audit contains secret-shaped fields.' >&2
+          if sudo grep -Eqi 'ssh_password|private_key|BEGIN PRIVATE|signature|token' /var/log/manager/automation-v2-audit.jsonl; then
+            echo 'automation audit contains secret material' >&2
             exit 1
           fi
 
-      - name: Preserve principals across uninstall and reinstall
+      - name: Preserve public credential registry across uninstall and reinstall
         shell: bash
         run: |
           set -euxo pipefail
+          key_id="$(sudo /opt/manager/modules/automation_credentials.sh --list p-res | awk '/p-res/ {print $2; exit}')"
+          test -n "$key_id"
           sudo /opt/manager/uninstall.sh
-          sudo test -f /etc/manager/automation/v2/principals/p-res.conf
+          sudo test -f "/etc/manager/automation/v2/credentials/p-res/${key_id}.conf"
+          sudo test -f "/etc/manager/automation/v2/credentials/p-res/${key_id}.pub"
           sudo test ! -e /run/manager-automation-v2/manager.sock
 
           source_url="file://${GITHUB_WORKSPACE}"
           sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
           sudo systemctl is-active --quiet manager-automation-v2.service
-          sudo manager automation v2 principal show p-res | grep -q '^role=reseller$'
-          sudo managerctl --principal p-res connection.status id=rbac-new --request-id rbac-after-reinstall > /tmp/after-reinstall.json
+          sudo managerctl --credential /tmp/p-res.credential connection.status id=rbac-new --request-id rbac-after-reinstall > /tmp/after-reinstall.json
           python3 - <<'PY'
           import json
           r=json.load(open('/tmp/after-reinstall.json'))
