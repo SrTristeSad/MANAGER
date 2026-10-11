@@ -45,9 +45,10 @@ remove_protocol_pam_fallback() {
   rm -f "$tmp"
 }
 
-# Automation v2 mantém somente socket Unix local, mas o daemon privilegiado
-# sempre precisa sair antes de /opt/manager ser removido. Estado/idempotência
-# permanecem no uninstall normal e somem apenas com --purge.
+# Automation v2 possui o socket Unix local e pode possuir o gateway TLS remoto.
+# Ambos precisam sair antes de /opt/manager ser removido. Estado, credenciais
+# públicas, idempotência, anti-replay e configuração TLS permanecem no uninstall
+# normal e somem apenas com --purge.
 if [[ -x /opt/manager/modules/automation_v2.sh ]]; then
   if $PURGE; then
     /opt/manager/modules/automation_v2.sh --purge >/dev/null 2>&1 || true
@@ -55,8 +56,9 @@ if [[ -x /opt/manager/modules/automation_v2.sh ]]; then
     /opt/manager/modules/automation_v2.sh --detach >/dev/null 2>&1 || true
   fi
 else
-  systemctl disable --now manager-automation-v2.service >/dev/null 2>&1 || true
-  rm -f /etc/systemd/system/manager-automation-v2.service
+  systemctl disable --now manager-automation-v2-remote.service manager-automation-v2.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-automation-v2-remote.service \
+    /etc/systemd/system/manager-automation-v2.service
   rm -rf /run/manager-automation-v2
   if $PURGE; then
     rm -rf /etc/manager/automation/v2 /var/lib/manager/automation-v2
@@ -315,7 +317,7 @@ if ! $PURGE; then
   echo "As configurações em /etc/manager e serviços configurados foram preservados."
   echo "Produtos, vínculos, ACL e estado de franquia foram preservados no Connection Engine."
   echo "A configuração do Automation Legacy foi preservada, mas seu listener foi fechado e a conta de integração ficou bloqueada."
-  echo "O estado/idempotência da Automation v2 foi preservado, mas o daemon/socket local foi removido."
+  echo "O estado/idempotência/anti-replay da Automation v2 e sua configuração TLS foram preservados, mas daemon, socket e gateway remoto foram removidos."
   echo "O histórico consolidado de uso em /var/lib/manager/identity-usage foi preservado."
   echo "Leases runtime e regras runtime do IPv6 Guard foram descartadas; estado persistente permanece para reinstalação."
   echo "Hooks PAM/OpenVPN e o bridge de protocolos foram desanexados antes da remoção do código."
