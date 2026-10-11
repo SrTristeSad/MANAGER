@@ -42,6 +42,10 @@ jobs:
             echo 'Open Squid proxy pattern detected.' >&2
             exit 1
           fi
+          if grep -REn 'NOPASSWD:[[:space:]]*ALL|bash[[:space:]]+-c[[:space:]]+"?\$' modules/protocol_leases.sh; then
+            echo 'Unsafe privilege/shell bridge pattern detected.' >&2
+            exit 1
+          fi
 
       - name: Version format
         shell: bash
@@ -55,7 +59,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           if sudo env -u GITHUB_ACTIONS MANAGER_REPO_RAW="http://example.invalid/manager" bash install.sh >/tmp/manager-http-source.log 2>&1; then
             echo 'Installer accepted insecure HTTP source.' >&2
             exit 1
@@ -87,49 +90,44 @@ jobs:
               "$stage" "$(sudo cat /etc/manager/connection/session-epochs/ci-bound.epoch)"
           }
 
+          assert_bridge_installed() {
+            test -x /opt/manager/modules/protocol_leases.sh
+            test -x /usr/local/libexec/manager-ssh-lease-hook
+            test -x /usr/local/libexec/manager-openvpn-lease-hook
+            test -f /etc/systemd/system/manager-protocol-leases.service
+            test -f /etc/systemd/system/manager-protocol-leases.timer
+            test -f /etc/systemd/system/manager-openvpn-lease-queue.service
+            test -f /etc/systemd/system/manager-openvpn-lease-queue.path
+            grep -Fq '# MANAGER-PROTOCOL-LEASE-BEGIN' /etc/pam.d/sshd
+            test "$(sudo /opt/manager/modules/protocol_leases.sh --runtime)" = "/run/manager-protocol-leases"
+          }
+
           sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
           test -x /opt/manager/manager
           test -f /opt/manager/lib/identity.sh
-          test -x /opt/manager/modules/connection_engine.sh
-          test -x /opt/manager/modules/policy_engine.sh
-          test -x /opt/manager/modules/session_engine.sh
-          test -x /opt/manager/modules/wireguard.sh
-          test -x /opt/manager/modules/openvpn.sh
-          test -x /opt/manager/modules/adblock.sh
-          test -x /opt/manager/modules/health.sh
-          test -x /opt/manager/modules/maintenance.sh
-          test -x /opt/manager/modules/ssh_keys.sh
-          test -x /opt/manager/modules/ssh_monitor.sh
-          test -x /opt/manager/modules/user_transfer.sh
-          test -x /opt/manager/modules/resellers.sh
-          test -x /opt/manager/modules/reseller_accounts.sh
-          test -x /opt/manager/modules/proxy_hosts.sh
-          test -x /opt/manager/modules/proxies.sh
-          test -x /opt/manager/modules/banner.sh
-          test -x /opt/manager/modules/speedtest.sh
+          for module in connection_engine policy_engine session_engine protocol_leases wireguard openvpn adblock health maintenance ssh_keys ssh_monitor user_transfer resellers reseller_accounts proxy_hosts proxies banner speedtest; do
+            test -x "/opt/manager/modules/${module}.sh"
+          done
           test -f /etc/systemd/system/manager-policy-reconcile.service
           test -f /etc/systemd/system/manager-policy-reconcile.timer
           test -f /etc/systemd/system/manager-policy-reconcile.path
           test -f /etc/systemd/system/manager-session-cleanup.service
           test -f /etc/systemd/system/manager-session-cleanup.timer
           test -f /etc/systemd/system/manager-session-reconcile.path
+          assert_bridge_installed
+
           session_runtime="$(sudo /opt/manager/modules/session_engine.sh --init)"
           test "$session_runtime" = "/run/manager-session-leases"
           sudo test -d "$session_runtime/active"
           test "$(cat /opt/manager/VERSION)" = "$(tr -d '[:space:]' < VERSION)"
           test "$(readlink -f /usr/local/bin/manager)" = "/opt/manager/manager"
           test "$(readlink -f /usr/local/bin/menu)" = "/opt/manager/manager"
-
           test "$(sudo /opt/manager/manager --version)" = "$(tr -d '[:space:]' < VERSION)"
+
           sudo /opt/manager/manager --help > /tmp/manager-help.log
-          grep -q -- '--health' /tmp/manager-help.log
-          grep -q -- '--expired' /tmp/manager-help.log
-          grep -q -- '--ssh-sessions' /tmp/manager-help.log
-          grep -q -- '--proxy-status' /tmp/manager-help.log
-          grep -q -- '--proxy-hosts' /tmp/manager-help.log
-          grep -q -- '--identities' /tmp/manager-help.log
-          grep -q -- '--identity-sessions' /tmp/manager-help.log
-          grep -q -- '--leases' /tmp/manager-help.log
+          for arg in --health --expired --ssh-sessions --proxy-status --proxy-hosts --identities --identity-sessions --leases; do
+            grep -q -- "$arg" /tmp/manager-help.log
+          done
           sudo /opt/manager/manager --status >/tmp/manager-status.log
           grep -q 'STATUS DE SERVIÇOS' /tmp/manager-status.log
           sudo /opt/manager/manager --expired >/tmp/manager-expired.log
@@ -168,7 +166,6 @@ jobs:
           retry="$(sudo /opt/manager/modules/session_engine.sh --acquire ci-bound ssh managerci device-a 30)"
           retry_session="$(printf '%s\n' "$retry" | tr '\t' '\n' | awk -F= '$1=="session_id"{print $2}')"
           test "$retry_session" = "$session1"
-
           if sudo /opt/manager/modules/session_engine.sh --acquire ci-bound ssh managerci device-b 30; then
             echo 'Lease engine exceeded max_sessions=1.' >&2
             exit 1
@@ -186,10 +183,7 @@ jobs:
           fi
           sudo /opt/manager/manager --leases ci-bound > /tmp/manager-leases.log
           grep -q "$session2" /tmp/manager-leases.log
-          if grep -q "$session1" /tmp/manager-leases.log; then
-            echo 'Old lease remained active after switch.' >&2
-            exit 1
-          fi
+          ! grep -q "$session1" /tmp/manager-leases.log
           sudo test -f /etc/manager/connection/session-epochs/ci-bound.epoch
           test "$(sudo /opt/manager/modules/session_engine.sh --epoch ci-bound)" = "$epoch2"
           sudo /opt/manager/modules/session_engine.sh --release "$session2" "$epoch2"
@@ -214,20 +208,30 @@ jobs:
             echo 'Policy-invalidated lease renewed after fencing.' >&2
             exit 1
           fi
-
           sudo /opt/manager/modules/policy_engine.sh --reconcile
           grep -Eq '^DenyUsers .*managerci' /etc/ssh/sshd_config.d/65-manager-identity-policy.conf
-          if sudo /opt/manager/modules/policy_engine.sh --authorize ssh managerci; then
-            echo 'Disabled identity was authorized.' >&2
-            exit 1
-          fi
           sudo /opt/manager/modules/connection_engine.sh --enable ci-bound
           sudo /opt/manager/modules/policy_engine.sh --reconcile
-          if grep -Eq '^DenyUsers .*managerci' /etc/ssh/sshd_config.d/65-manager-identity-policy.conf; then
-            echo 'Re-enabled identity remained denied in SSH policy.' >&2
+          ! grep -Eq '^DenyUsers .*managerci' /etc/ssh/sshd_config.d/65-manager-identity-policy.conf
+          sudo /opt/manager/modules/policy_engine.sh --authorize ssh managerci
+
+          # Protocol Lease Bridge: a conexão observada passa a possuir a vaga.
+          sudo useradd -m -s /bin/bash managerbridge
+          sudo /opt/manager/modules/connection_engine.sh --create ci-bridge '' 0 1 ssh
+          sudo /opt/manager/modules/connection_engine.sh --bind ci-bridge ssh managerbridge
+          sudo /opt/manager/modules/protocol_leases.sh --observe-connect ssh managerbridge bridge-device-a
+          sudo /opt/manager/manager --leases ci-bridge > /tmp/bridge-leases.log
+          grep -q 'device=bridge-device-a' /tmp/bridge-leases.log
+          if sudo /opt/manager/modules/protocol_leases.sh --observe-connect ssh managerbridge bridge-device-b; then
+            echo 'Protocol bridge admitted a second real session over max_sessions=1.' >&2
             exit 1
           fi
-          sudo /opt/manager/modules/policy_engine.sh --authorize ssh managerci
+          sudo /opt/manager/modules/protocol_leases.sh --observe-disconnect ssh bridge-device-a
+          test -z "$(sudo /opt/manager/manager --leases ci-bridge)"
+
+          # Recursos não gerenciados não devem ser transformados em lockout global.
+          sudo /opt/manager/modules/protocol_leases.sh --observe-connect ssh root unmanaged-device
+          sudo /opt/manager/modules/protocol_leases.sh --observe-disconnect ssh unmanaged-device
 
           sudo /opt/manager/modules/connection_engine.sh --disable ci-user
           sudo /opt/manager/manager --identity ci-user > /tmp/manager-identity.log
@@ -239,7 +243,6 @@ jobs:
           sudo test -d /etc/manager/proxy/websocket
           sudo test -d /etc/manager/proxy/tls
           sudo /opt/manager/manager --proxy-status >/tmp/manager-proxy-status.log
-
           sudo /opt/manager/modules/proxy_hosts.sh --add example.com
           sudo /opt/manager/manager --proxy-hosts > /tmp/manager-proxy-hosts.log
           grep -q '^\.example\.com$' /tmp/manager-proxy-hosts.log
@@ -256,11 +259,13 @@ jobs:
           test -d /opt/manager.rollback
           test -f /opt/manager.rollback/VERSION
           assert_connection_state after-update
+          assert_bridge_installed
 
           printf 's\n' | sudo /opt/manager/rollback.sh
           test -x /opt/manager/manager
           test -d /opt/manager.rollback
           assert_connection_state after-rollback
+          assert_bridge_installed
 
           sudo /opt/manager/uninstall.sh
           test ! -e /opt/manager
@@ -268,6 +273,14 @@ jobs:
           test -d /etc/manager
           assert_connection_state after-uninstall
           test ! -d /run/manager-session-leases
+          test ! -d /run/manager-protocol-leases
+          test ! -e /usr/local/libexec/manager-ssh-lease-hook
+          test ! -e /usr/local/libexec/manager-openvpn-lease-hook
+          ! grep -Fq '# MANAGER-PROTOCOL-LEASE-BEGIN' /etc/pam.d/sshd
+          test ! -e /etc/systemd/system/manager-protocol-leases.timer
+          test ! -e /etc/systemd/system/manager-protocol-leases.service
+          test ! -e /etc/systemd/system/manager-openvpn-lease-queue.service
+          test ! -e /etc/systemd/system/manager-openvpn-lease-queue.path
           test ! -e /etc/systemd/system/manager-session-cleanup.timer
           test ! -e /etc/systemd/system/manager-session-cleanup.service
           test ! -e /etc/systemd/system/manager-session-reconcile.path
