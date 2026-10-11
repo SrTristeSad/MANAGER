@@ -21,12 +21,13 @@ jobs:
           source_url="file://${GITHUB_WORKSPACE}"
           sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
           sudo systemctl is-active --quiet manager-automation-v2.service
-          sudo manager automation v2 status | grep -q '^cryptographic_auth=1$'
-          sudo manager automation v2 status | grep -q '^credential_algorithm=ed25519$'
-          sudo manager automation v2 status | grep -q '^auth_scheme=ed25519-v2$'
-          sudo manager automation v2 status | grep -q '^timestamp_signed=1$'
-          sudo manager automation v2 status | grep -q '^nonce_signed=1$'
-          sudo manager automation v2 status | grep -q '^anti_replay=1$'
+          sudo manager automation v2 status > /tmp/auth-v2-status.log
+          grep -q '^cryptographic_auth=1$' /tmp/auth-v2-status.log
+          grep -q '^credential_algorithm=ed25519$' /tmp/auth-v2-status.log
+          grep -q '^auth_scheme=ed25519-v2$' /tmp/auth-v2-status.log
+          grep -q '^timestamp_signed=1$' /tmp/auth-v2-status.log
+          grep -q '^nonce_signed=1$' /tmp/auth-v2-status.log
+          grep -q '^anti_replay=1$' /tmp/auth-v2-status.log
           sudo managerctl describe --request-id auth-local-root-01 > /tmp/local-root.json
 
       - name: Create principal and enroll first credential
