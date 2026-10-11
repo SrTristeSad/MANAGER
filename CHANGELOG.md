@@ -4,6 +4,66 @@ Todas as mudanças relevantes do MANAGER são registradas aqui. O projeto usa ve
 
 > O histórico detalhado das revisões antigas continua disponível no histórico Git. A partir da série 0.7, este arquivo prioriza mudanças de arquitetura e segurança que afetam contratos públicos/operacionais.
 
+## [0.8.1] - 2026-10-11
+
+### Colmeia — rede privada WireGuard
+
+- Adicionado `modules/hive_network.sh` como plano de dados privado da Colmeia, separado das VPNs dos usuários.
+- Interface dedicada `mgh0`; o `wg0` de clientes não é reutilizado nem alterado pela malha.
+- Topologia inicial é mesh direto VPS↔VPS; o controlador distribui autoridade/topologia e não vira relay do tráfego VPN dos usuários.
+- Cada nó gera sua própria chave WireGuard local; a chave privada nunca é enviada ao controlador, a outro nó, ao request ou ao bundle.
+- Network request é assinado pela identidade Ed25519 do nó já enrolled e vinculado ao `node_id`/`node_epoch`.
+- Controlador atribui IPv4/IPv6 internos únicos e mantém somente chave pública, endpoint, porta e estado de topologia.
+- Bundles de topologia são assinados pelo controlador e emitidos por nó.
+- Novo `config_epoch` monotônico cerca rollback de topologia; bundle antigo ou divergente no mesmo epoch é recusado.
+- Nós podem ser habilitados/desabilitados na topologia sem apagar sua identidade criptográfica.
+- Nenhum bundle da Colmeia instala rota default `0.0.0.0/0` ou `::/0`.
+- O MANAGER não abre automaticamente a porta WireGuard da malha no firewall.
+
+### Runtime e ownership
+
+- `mgh0.conf` gerado pelo MANAGER recebe marker explícito e ownership durável separado.
+- Configuração `mgh0.conf` externa, symlink, arquivo não regular ou arquivo sem ownership do MANAGER é preservada e recusada para overwrite/remove.
+- Configuração renderizada é validada por `wg-quick strip` usando um arquivo temporário com basename exato `mgh0.conf`.
+- Quando `mgh0` já está ativa, mudança/reconcile usa `restart`, garantindo remoção/aplicação real de peers.
+- Falha de aplicação restaura configuração, ownership e estado de serviço anteriores.
+- Aceite de bundle também restaura o estado/topologia anterior se a aplicação do runtime falhar.
+
+### Lifecycle
+
+- Adicionado `modules/hive_lifecycle.sh`.
+- A malha se integra ao lifecycle já existente da `manager-automation-v2.service` através de drop-in systemd MANAGER-owned.
+- `ExecStopPost` destaca `mgh0` durante uninstall/rollback enquanto o código atual ainda existe.
+- `ExecStartPost` reconcilia a topologia durável após restart normal do Automation v2.
+- Quando Automation v2 é desabilitado por uninstall/rollback, o helper/drop-in se auto-remove e não fica órfão numa versão antiga sem Hive Network.
+- Uninstall normal remove somente runtime/ownership da malha e preserva chave WireGuard local/topologia durável.
+- Rollback para uma versão sem Hive Network deixa `mgh0` e hooks externos removidos, preservando estado durável para retorno posterior.
+
+### CLI
+
+- `manager hive network status|init|up|down|reconcile`.
+- `manager hive network request ENDPOINT OUT [PORT]`.
+- `manager hive network accept BUNDLE`.
+- `manager hive network controller init|status|list`.
+- `manager hive network controller show NODE_ID`.
+- `manager hive network controller approve REQUEST`.
+- `manager hive network controller enable|disable NODE_ID`.
+- `manager hive network controller bundle NODE_ID OUT`.
+- `manager hive network controller bundle-all DIR`.
+
+### CI
+
+- Workflow `Hive Private Network` cobre dois nós isolados, requests assinados, tamper detection, endereços internos únicos, bundles assinados, ausência de chave privada exportada, ausência de rota default, `config_epoch`, disable de peer, ownership externo e restart de interface ativa.
+- Workflow `Hive Network Lifecycle` cobre uninstall normal e rollback real para uma árvore 0.8.0 sem Hive Network.
+- Regressão de `grep -q`/SIGPIPE no teste de status do Automation v2 foi corrigida sem alterar o daemon.
+- Antes do bump de release, os **18/18 workflows** do HEAD funcional concluíram com sucesso.
+
+### Próxima etapa
+
+- 0.8.2: heartbeat assinado + saúde dos nós.
+- 0.8.3: scheduler, drain e seleção de nó.
+- 0.8.4: autoridade global de sessões/leases.
+
 ## [0.8.0] - 2026-10-11
 
 ### Colmeia — identidade criptográfica e enrollment de nós
