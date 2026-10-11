@@ -4,7 +4,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 > O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva capacidades úteis, substitui implementações inseguras/obsoletas e evolui para uma arquitetura própria de identidade, automação, VPN, revenda e operação multi-servidor.
 
-Versão atual: **0.8.0**.
+Versão atual: **0.8.1**.
 
 ## Princípios
 
@@ -17,7 +17,7 @@ Versão atual: **0.8.0**.
 - integrações novas usam operações estruturadas e nunca shell remoto arbitrário;
 - senhas/chaves privadas não são persistidas pelo servidor para replay posterior;
 - autenticação, freshness, anti-replay, rate limit e autorização são reavaliados antes do replay idempotente;
-- a Colmeia estabelece confiança criptográfica antes de introduzir scheduler ou autoridade global de sessões.
+- a Colmeia estabelece confiança criptográfica e rede privada própria antes de introduzir scheduler ou autoridade global de sessões.
 
 ## Recursos atuais
 
@@ -236,32 +236,35 @@ Não existe shell/comando/caminho arbitrário.
 
 Documentação: [`docs/AUTOMATION_V2.md`](docs/AUTOMATION_V2.md).
 
-## Colmeia — 0.8.0
+## Colmeia — 0.8.0 a 0.8.1
 
-A 0.8.0 inicia o modo multi-servidor criando a raiz de confiança entre nós e controlador, sem ainda ativar heartbeat, scheduler ou leases globais.
+A 0.8.0 criou a raiz de confiança entre nós e controlador. A 0.8.1 acrescenta a **rede privada da Colmeia**, sem ainda ativar heartbeat, scheduler ou autoridade global de sessões.
 
-Cada VPS recebe uma identidade Ed25519 ligada ao `node_id`:
+Cada VPS possui uma identidade Ed25519 de controle ligada ao `node_id` e uma chave WireGuard própria para a malha. A chave WireGuard privada nasce e permanece no próprio nó; o controlador recebe somente chave pública, endpoint e metadados de rede.
 
 ```text
-/etc/manager/hive/node/
+/etc/manager/hive/node/                 identidade Ed25519 do nó
+/etc/manager/hive/network/              chave/topologia privada do nó
+/etc/manager/hive/controller/           autoridade e registry público
+/etc/wireguard/mgh0.conf                runtime WireGuard gerenciado
 ```
 
-O controlador mantém sua identidade e o registry público dos nós aprovados:
+A interface da Colmeia é `mgh0`, separada do `wg0` usado por clientes. A topologia atual é mesh direto VPS↔VPS: o controlador distribui a topologia, mas **não carrega o tráfego VPN dos usuários**.
+
+Fluxo da rede:
 
 ```text
-/etc/manager/hive/controller/
-```
-
-Fluxo:
-
-```text
-nó cria request assinado
+nó enrolled gera chave WireGuard local
         ↓
-controlador valida e aprova
+nó envia network request assinado
         ↓
-controlador emite bundle assinado
+controlador valida node_epoch e assinatura
         ↓
-nó aceita somente com fingerprint pinado do controlador
+controlador atribui IPv4/IPv6 interno e config_epoch
+        ↓
+controlador emite bundle de topologia assinado por nó
+        ↓
+nó valida assinatura/fencing e reconcilia mgh0
 ```
 
 Comandos principais:
@@ -273,15 +276,36 @@ manager hive controller init
 manager hive controller fingerprint
 manager hive controller approve /root/node-request.json /root/node-bundle.json
 manager hive accept /root/node-bundle.json SHA256:<fingerprint-controlador>
-manager hive controller list
-manager hive controller show NODE_ID
-manager hive controller revoke NODE_ID [REASON]
-manager hive controller reenroll REQUEST OUT
+
+manager hive network status
+manager hive network init
+manager hive network request vpn-br-01.example.com /root/node-network.json 51870
+manager hive network controller init
+manager hive network controller approve /root/node-network.json
+manager hive network controller list
+manager hive network controller bundle NODE_ID /root/NODE_ID.network.json
+manager hive network accept /root/NODE_ID.network.json
+manager hive network reconcile
+manager hive network down
 ```
 
-Revogação incrementa `node_epoch`. Re-enrollment explícito gera uma geração nova; bundles antigos ficam cercados por fencing e não podem rebaixar o nó para uma autoridade anterior.
+O controlador também pode `enable`/`disable` nós na topologia e gerar bundles para todos os nós com `bundle-all`.
 
-Estado da 0.8.0:
+### Fronteiras de segurança da rede
+
+- `config_epoch` monotônico impede rollback de topologia;
+- bundle divergente reutilizando o mesmo `config_epoch` é recusado;
+- `node_epoch` continua cercando nó revogado/re-enrolled;
+- nenhuma chave WireGuard privada é enviada ao controlador ou a outro nó;
+- `mgh0` nunca instala `0.0.0.0/0` ou `::/0`;
+- o MANAGER não abre automaticamente a porta WireGuard no firewall;
+- `mgh0.conf` externo/symlink/não pertencente ao MANAGER não é sobrescrito nem removido;
+- configuração nova passa por `wg-quick strip` usando exatamente `mgh0.conf` antes de ativação;
+- mudança de topologia reinicia uma `mgh0` já ativa, em vez de deixar peers antigos em memória;
+- falha ao aplicar restaura configuração/ownership/estado anteriores;
+- uninstall/rollback desligam e removem apenas o runtime MANAGER da malha, preservando chave local e topologia durável para reinstalação.
+
+Estado da 0.8.1:
 
 ```text
 cryptographic_node_identity=1
@@ -289,6 +313,12 @@ controller_identity=1
 signed_enrollment=1
 controller_fingerprint_pinning=1
 node_epoch_fencing=1
+private_hive_network=1
+wireguard_mesh=1
+signed_network_requests=1
+signed_topology_bundles=1
+config_epoch_fencing=1
+controller_user_traffic_transit=0
 heartbeat=0
 node_health=0
 scheduler=0
@@ -296,7 +326,7 @@ global_lease_authority=0
 global_accounting=0
 ```
 
-O estado da Colmeia entra no backup protegido do MANAGER e pode conter chaves privadas de nó/controlador; trate o backup como segredo operacional. Uninstall normal preserva a confiança, purge remove o estado server-side.
+O estado da Colmeia entra no backup protegido do MANAGER e pode conter chaves privadas de nó/controlador; trate o backup como segredo operacional. Uninstall normal preserva a confiança e o estado durável da rede; purge remove o estado server-side.
 
 Documentação: [`docs/HIVE.md`](docs/HIVE.md).
 
@@ -308,7 +338,7 @@ manager-uninstall
 manager-uninstall --purge
 ```
 
-Uninstall normal fecha listeners/socket e remove código, mas preserva estado durável necessário para reinstalação, incluindo Automation v2 e confiança da Colmeia. O purge remove estado server-side. Arquivos privados externos de credencial da Automation não são apagados automaticamente.
+Uninstall normal fecha listeners/socket e remove código, mas preserva estado durável necessário para reinstalação, incluindo Automation v2 e confiança/topologia da Colmeia. O runtime `mgh0` gerenciado é destacado antes da remoção. O purge remove estado server-side. Arquivos privados externos de credencial da Automation não são apagados automaticamente.
 
 ## Segurança
 
@@ -325,6 +355,9 @@ Uninstall normal fecha listeners/socket e remove código, mas preserva estado du
 - rate limit existe no daemon e gateway remoto;
 - Colmeia usa Ed25519 e pin do controlador no trust bootstrap;
 - `node_epoch` impede aceitar bundle antigo após revogação/re-enrollment;
+- topologia WireGuard da Colmeia usa bundle assinado + `config_epoch`;
+- chave WireGuard privada da Colmeia nunca sai do nó;
+- config externa `mgh0.conf` é preservada;
 - nenhuma ação estruturada aceita shell/comando/caminho arbitrário.
 
 ## CLI principal
@@ -352,6 +385,15 @@ manager hive controller show NODE_ID
 manager hive controller approve REQUEST OUT
 manager hive controller reenroll REQUEST OUT
 manager hive controller revoke NODE_ID [REASON]
+manager hive network status|init|up|down|reconcile
+manager hive network request ENDPOINT OUT [PORT]
+manager hive network accept BUNDLE
+manager hive network controller init|status|list
+manager hive network controller show NODE_ID
+manager hive network controller approve REQUEST
+manager hive network controller enable|disable NODE_ID
+manager hive network controller bundle NODE_ID OUT
+manager hive network controller bundle-all DIR
 manager automation legacy status
 manager automation v2 status
 manager automation v2 principals
@@ -391,30 +433,37 @@ Plano detalhado: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 0.6.x  Connection/Policy/Session Engine completo                     ✅
 0.7.x  Automation Engine segura/remota                               ✅
 0.8.0  Colmeia — identidade e enrollment de nós                      ✅
-0.8.1  heartbeat + saúde de nós                                      próximo
-0.8.2  scheduler / drain / failover
-0.8.3  autoridade de leases globais
-0.8.4  accounting global
-0.8.5  resiliência operacional
+0.8.1  rede privada WireGuard da Colmeia                             ✅
+0.8.2  heartbeat + saúde de nós                                      próximo
+0.8.3  scheduler / drain / seleção de nó
+0.8.4  autoridade de leases globais
+0.8.5  VPN allocation / login global
+0.8.6  quotas/accounting globais
+0.8.7  failover e resiliência operacional
+0.8.8  comandos remotos controlados
+0.8.9  rotação de chaves / anti-replay distribuído
+0.8.10 observabilidade distribuída
 0.9.x  Telegram Bot + Mini App
 1.0.0  release de produção
 ```
 
 ## Testes
 
-O CI cobre syntax/ShellCheck, lifecycle, Connection/Session Engine, products/quotas, IPv6, Automation v2 e, a partir da 0.8.0:
+O CI cobre syntax/ShellCheck, lifecycle, Connection/Session Engine, products/quotas, IPv6, Automation v2 e Colmeia. A 0.8.1 acrescenta testes específicos para:
 
-- geração da identidade Ed25519 do nó;
-- identidade do controlador;
-- request de enrollment assinado;
-- alteração do request detectada;
-- fingerprint incorreto do controlador recusado;
-- primeiro enrollment em `node_epoch=1`;
-- revogação com incremento de epoch;
-- re-enrollment explícito;
-- bundle antigo recusado por fencing;
-- persistência das chaves após uninstall/reinstall;
-- purge do estado da Colmeia.
+- request WireGuard assinado e adulteração recusada;
+- IPv4/IPv6 internos únicos por nó;
+- bundles de topologia assinados;
+- ausência de chave WireGuard privada no controlador/bundles/requests;
+- ausência de rota default na malha;
+- fencing de `config_epoch`;
+- remoção de peer quando um nó é desabilitado;
+- ownership de `mgh0.conf` e preservação de configuração externa;
+- restart de `mgh0` quando a topologia muda;
+- detach preservando chave/topologia duráveis;
+- uninstall normal sem runtime órfão;
+- rollback para versão sem Hive Network sem `mgh0`/drop-in órfãos;
+- persistência do estado durável após uninstall/rollback.
 
 ## Origem
 
