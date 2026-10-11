@@ -31,6 +31,37 @@ restore_connection_state() {
   CONNECTION_SNAPSHOT=""
 }
 
+remove_protocol_pam_fallback() {
+  local pam=/etc/pam.d/sshd tmp
+  [[ -f "$pam" ]] || return 0
+  grep -Fqx '# MANAGER-PROTOCOL-LEASE-BEGIN' "$pam" 2>/dev/null || return 0
+  tmp="$(mktemp)"
+  awk '
+    $0=="# MANAGER-PROTOCOL-LEASE-BEGIN" {skip=1; next}
+    $0=="# MANAGER-PROTOCOL-LEASE-END" {skip=0; next}
+    !skip {print}
+  ' "$pam" > "$tmp"
+  install -m 0644 "$tmp" "$pam"
+  rm -f "$tmp"
+}
+
+# O bridge precisa sair antes do Session Engine, pois usa leases existentes para
+# liberar mapas, regras específicas e hooks de protocolo sem deixar lockout.
+if [[ -x /opt/manager/modules/protocol_leases.sh ]]; then
+  /opt/manager/modules/protocol_leases.sh --detach >/dev/null 2>&1 || true
+else
+  systemctl disable --now manager-protocol-leases.timer manager-openvpn-lease-queue.path >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-protocol-leases.timer \
+    /etc/systemd/system/manager-protocol-leases.service \
+    /etc/systemd/system/manager-openvpn-lease-queue.service \
+    /etc/systemd/system/manager-openvpn-lease-queue.path \
+    /usr/local/libexec/manager-ssh-lease-hook \
+    /usr/local/libexec/manager-openvpn-lease-hook
+  remove_protocol_pam_fallback
+  rm -rf /run/manager-protocol-leases
+  systemctl daemon-reload || true
+fi
+
 # Leases ativas são runtime e não sobrevivem sem o código do MANAGER.
 # Os epochs persistentes ficam em /etc/manager quando não há --purge.
 if [[ -x /opt/manager/modules/session_engine.sh ]]; then
@@ -121,6 +152,9 @@ if $PURGE; then
       /etc/openvpn/server/manager-tls-crypt.key
     rm -rf /etc/systemd/system/openvpn-server@manager.service.d
   fi
+  if getent group manager-openvpn >/dev/null 2>&1; then
+    groupdel manager-openvpn >/dev/null 2>&1 || true
+  fi
 
   systemctl disable --now manager-squid.service >/dev/null 2>&1 || true
   rm -f /etc/systemd/system/manager-squid.service
@@ -190,6 +224,7 @@ echo "[OK] Código do MANAGER removido."
 if ! $PURGE; then
   echo "As configurações em /etc/manager e serviços configurados foram preservados."
   echo "Leases runtime foram descartadas; session_epoch e identidades persistem para reinstalação."
+  echo "Hooks PAM/OpenVPN e o bridge de protocolos foram desanexados antes da remoção do código."
   echo "O enforcement de identidades foi desanexado junto com o código e volta a ser aplicado numa reinstalação."
   echo "Execute manager-uninstall --purge somente se quiser remover também as configurações do MANAGER."
 else
