@@ -4,7 +4,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 > O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva capacidades úteis, substitui implementações inseguras/obsoletas e prepara uma arquitetura própria para Automation v2, Telegram e Modo Colmeia.
 
-Versão atual: **0.6.10**.
+Versão atual: **0.6.11**.
 
 ## Princípios
 
@@ -33,6 +33,8 @@ Versão atual: **0.6.10**.
 - UFW configurado para administrar IPv4 e IPv6 quando usado pelo MANAGER;
 - identidade persistente do nó com região, pool, capacidade e capacidades detectadas;
 - ACL de produto resolve automaticamente `region`, `pool` e `node_id` do nó local;
+- agregado local de uso/sessões por `node_id`, explicitamente separado de billing global;
+- contrato interno allowlisted para preflight/create/revoke/status dos acessos;
 - DNS Ad Block com dnsmasq, whitelist/blacklist e atualização diária;
 - Squid privado, proxy TCP, WebSocket e TLS opcionais;
 - hosts de proxy gerenciados;
@@ -403,6 +405,48 @@ O Session Engine também recusa novas leases quando o nó local está fora da re
 
 Documentação: [`docs/NODE_PRODUCT_ACL.md`](docs/NODE_PRODUCT_ACL.md).
 
+## Fechamento do Connection Engine — 0.6.11
+
+A 0.6.11 fecha os dois itens que ainda restavam antes da Automation Engine.
+
+### Superfície allowlisted de lifecycle
+
+A fronteira privilegiada comum é:
+
+```bash
+/opt/manager/modules/connection_actions.sh --describe
+/opt/manager/modules/connection_actions.sh --status maria
+/opt/manager/modules/connection_actions.sh --preflight maria premium '' ssh,wireguard
+/opt/manager/modules/connection_actions.sh --create maria premium '' ssh,wireguard
+/opt/manager/modules/connection_actions.sh --revoke maria
+```
+
+O contrato `manager-connection-actions-v1` aceita somente essas ações e os protocolos `ssh`, `wireguard` e `openvpn`. Ele declara `arbitrary_shell=0`, `arbitrary_command=0` e `arbitrary_path=0` e reutiliza o provisionamento/revogação transacional já testado.
+
+Documentação: [`docs/CONNECTION_ACTIONS.md`](docs/CONNECTION_ACTIONS.md).
+
+### Uso agregado local por nó
+
+```bash
+/opt/manager/modules/node_usage.sh --show
+```
+
+O contrato `manager-node-usage-v1` agrega `node_id`, região/pool, identidades, leases/sessões, protocolos ativos, última atividade e bytes WireGuard/OpenVPN já contabilizados pelo Identity Usage.
+
+Ele deixa explícito:
+
+```text
+usage_scope=node-local
+billing_authoritative=0
+global_usage_supported=0
+```
+
+Logo, o snapshot serve como telemetria local e **não** é tratado como faturamento global da futura Colmeia. Se houver SSH sem byte accounting confiável, `traffic_complete=0` continua sinalizando medição parcial.
+
+Documentação: [`docs/NODE_USAGE.md`](docs/NODE_USAGE.md).
+
+**A série 0.6.x está concluída.** Transporte remoto, Legacy `syncpainel`, RBAC, autenticação, idempotência e API pertencem à 0.7.x. Scheduler, health distribuído e autoridade multi-nó pertencem à 0.8.x.
+
 ## O limite que prepara a Colmeia
 
 Hoje autoridade de lease, produto, accounting e cota de revenda ainda é local na VPS. O modelo já representa o comportamento planejado para a Colmeia:
@@ -414,7 +458,7 @@ allowed_regions = BR, US, DE, FR, ...
 max_sessions = 1
 ```
 
-O MANAGER já possui o objeto persistente de nó (`node_id`, região, pool, capacidade e protocolos) e já usa o contexto do nó para autorizar produtos e novas leases. No futuro, o Hub substituirá locks locais por autoridade global e adicionará heartbeat, scheduler e identidade criptográfica sem mudar os conceitos de produto, ACL, identidade, cota, `session_id`, TTL, heartbeat e `session_epoch`.
+O MANAGER já possui o objeto persistente de nó (`node_id`, região, pool, capacidade e protocolos), já usa o contexto do nó para autorizar produtos e novas leases e já expõe telemetria local em contrato estável. No futuro, o Hub substituirá locks locais por autoridade global e adicionará heartbeat, scheduler e identidade criptográfica sem mudar os conceitos de produto, ACL, identidade, cota, `session_id`, TTL, heartbeat e `session_epoch`.
 
 ## Backup e migração
 
@@ -454,6 +498,7 @@ O detector de legado reconhece estruturas como `/root/usuarios.db`, `/etc/SSHPlu
 - provisionamento não registra senha/chaves privadas no audit log;
 - metadados do nó usam campos allowlisted e não oferecem shell/comando arbitrário;
 - ACL restrita de região/pool/nó falha fechada quando o contexto necessário está ausente;
+- contrato `manager-connection-actions-v1` não aceita shell, comando ou caminho arbitrário;
 - self-update baixa e valida o instalador antes da execução.
 
 ## CLI
@@ -486,6 +531,13 @@ manager --node-set FIELD VALUE    altera metadado allowlisted do nó
 manager --diagnostics             diagnóstico
 manager --version                 versão
 manager --help                    ajuda
+```
+
+Contratos internos preparados para a Automation v2:
+
+```text
+/opt/manager/modules/connection_actions.sh
+/opt/manager/modules/node_usage.sh
 ```
 
 ## Sistemas suportados
@@ -534,7 +586,7 @@ Desinstalar preservando estado:
 manager-uninstall
 ```
 
-Identidades, produtos, cotas/slots de revenda, ACL, baseline de franquia, `session_epoch`, identidade/metadados do nó, estado dual-stack e histórico consolidado de uso ficam preservados no uninstall normal. Regras runtime do IPv6 Guard são removidas e recriadas na reinstalação.
+Identidades, produtos, cotas/slots de revenda, ACL, baseline de franquia, `session_epoch`, identidade/metadados do nó, estado dual-stack e histórico consolidado de uso ficam preservados no uninstall normal. Regras runtime do IPv6 Guard são removidas e recriadas na reinstalação. Os contratos da 0.6.11 não criam banco ou serviço persistente adicional.
 
 Purge explícito:
 
@@ -550,7 +602,7 @@ Plano detalhado: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ```text
 0.5.x  paridade SSHPlus útil
-0.6.x  Connection Engine, políticas, leases, accounting, produtos, provisionamento, revenda, dual-stack, metadados e ACL automática de nó
+0.6.x  Connection Engine completo: políticas, leases, accounting, produtos, provisionamento, revenda, dual-stack, nó/ACL, telemetria local e lifecycle allowlisted
 0.7.0  Legacy v1 + Automation v2
 0.8.0  Modo Colmeia
 0.9.0  Telegram Bot + Mini App
@@ -564,11 +616,11 @@ Uma única camada de compatibilidade com o ecossistema `syncpainel`, desligada p
 
 ### Automation v2
 
-Ações estruturadas, RBAC, auditoria, idempotência, autenticação criptográfica, anti-replay e interface privilegiada controlada. Sem shell arbitrário para integrações.
+Ações estruturadas, RBAC, auditoria, idempotência, autenticação criptográfica, anti-replay e interface privilegiada controlada. Sem shell arbitrário para integrações. A 0.6.11 fornece a fronteira allowlisted local que essa camada consumirá.
 
 ### Colmeia
 
-O objeto local de nó e a aplicação local das ACLs já existem. Planejado a partir deles: identidade criptográfica por nó, heartbeat/health, regiões/pools, capacidade real, drain/failover, sticky sessions, scheduler weighted least-loaded, sessão global por identidade/plano, cota global de revenda, lease/fencing global, agregação de uso e comunicação autenticada/criptografada.
+O objeto local de nó, aplicação local das ACLs e telemetria local já existem. Planejado a partir deles: identidade criptográfica por nó, heartbeat/health, regiões/pools, capacidade real, drain/failover, sticky sessions, scheduler weighted least-loaded, sessão global por identidade/plano, cota global de revenda, lease/fencing global, agregação global de uso e comunicação autenticada/criptografada.
 
 ### Telegram
 
@@ -591,7 +643,8 @@ O CI cobre:
 - cotas de revenda por identidade, hierarquia pai/subrevendedor, produtos, adoção de SSH legado, migração e persistência;
 - IPv6 dual-stack, endpoint literal IPv6, guard por lease e persistência no lifecycle;
 - identidade/metadados do nó, campos imutáveis, validação, persistência de `node_id` e uninstall/reinstall;
-- contexto ACL automático do nó, compatibilidade com contexto explícito, fail-closed e recusa de lease fora de `region`, `pool` ou `node_id`.
+- contexto ACL automático do nó, compatibilidade com contexto explícito, fail-closed e recusa de lease fora de `region`, `pool` ou `node_id`;
+- contrato allowlisted de lifecycle, segredo SSH fora de logs, agregado local por nó e semântica explícita de não-billing global.
 
 ## Origem
 
