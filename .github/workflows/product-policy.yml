@@ -35,6 +35,17 @@ jobs:
           printf '[Interface]\nPrivateKey = ci-placeholder\nAddress = 10.66.66.210/32\n' | sudo tee /etc/manager/wireguard/clients/ciwg.conf >/dev/null
           sudo chmod 0600 /etc/manager/wireguard/clients/ciwg.meta /etc/manager/wireguard/clients/ciwg.conf
 
+          # O produto abaixo é restrito a BR / BR-PREMIUM. Desde a 0.6.9/0.6.10
+          # o Session Engine usa o contexto real do nó, então o fixture precisa
+          # representar um nó elegível em vez de depender de contexto vazio.
+          sudo /opt/manager/modules/node_metadata.sh --set country BR
+          sudo /opt/manager/modules/node_metadata.sh --set region BR
+          sudo /opt/manager/modules/node_metadata.sh --set pool BR-PREMIUM
+          sudo /opt/manager/manager --node-context > /tmp/product-node-context.log
+          grep -q '^country=BR$' /tmp/product-node-context.log
+          grep -q '^region=BR$' /tmp/product-node-context.log
+          grep -q '^pool=BR-PREMIUM$' /tmp/product-node-context.log
+
           sudo /opt/manager/modules/connection_engine.sh --create ci-product '' 0 5 wireguard,openvpn
           sudo /opt/manager/modules/connection_engine.sh --bind ci-product wireguard ciwg
 
@@ -54,6 +65,7 @@ jobs:
           grep -q '^effective_protocols=wireguard,openvpn$' /tmp/assignment.log
           grep -q '^quota_enforceable=1$' /tmp/assignment.log
 
+          # Contrato antigo explícito continua válido.
           sudo /opt/manager/modules/products.sh --authorize ci-product wireguard BR BR-PREMIUM BR-SP-01
           if sudo /opt/manager/modules/products.sh --authorize ci-product wireguard US BR-PREMIUM BR-SP-01; then
             echo 'Region ACL accepted an unauthorized region.' >&2
@@ -63,6 +75,9 @@ jobs:
             echo 'Product protocol ACL accepted SSH.' >&2
             exit 1
           fi
+
+          # Contrato 0.6.10: sem contexto explícito, usa node.conf local.
+          sudo /opt/manager/modules/products.sh --authorize ci-product wireguard
 
           lease="$(sudo /opt/manager/modules/session_engine.sh --acquire ci-product wireguard ciwg product-device 30)"
           session="$(printf '%s\n' "$lease" | tr '\t' '\n' | awk -F= '$1=="session_id"{print $2}')"
