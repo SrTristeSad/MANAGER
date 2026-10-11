@@ -52,7 +52,7 @@ Uso:
   manager automation legacy restart
   manager automation legacy rotate-password
                                   controla a compatibilidade syncpainel (desligada por padrão)
-  manager automation v2 status    mostra estado do daemon/socket/RBAC
+  manager automation v2 status    mostra estado do daemon/socket/RBAC/autenticação
   manager automation v2 principals
                                   lista principals locais da Automation v2
   manager automation v2 principal show ID
@@ -61,6 +61,13 @@ Uso:
   manager automation v2 principal disable ID
   manager automation v2 principal products ID SCOPE
                                   administra principals/RBAC localmente
+  manager automation v2 credentials ID
+                                  lista credenciais públicas registradas para um principal
+  manager automation v2 credential show ID KEY_ID
+  manager automation v2 credential enroll ID /CAMINHO/ARQUIVO
+  manager automation v2 credential rotate ID /CAMINHO/ARQUIVO
+  manager automation v2 credential revoke ID KEY_ID
+                                  administra enrollment, rotação e revogação Ed25519
   manager --diagnostics           abre o diagnóstico
   manager --version               mostra a versão
   manager --help                  mostra esta ajuda
@@ -263,6 +270,31 @@ case "${1:-}" in
               *) err "Ação de principal inválida: ${4:-}"; exit 64 ;;
             esac
             ;;
+          credentials)
+            [[ -n "${4:-}" ]] || { err "Uso: manager automation v2 credentials ID"; exit 64; }
+            exec "$MANAGER_HOME/modules/automation_credentials.sh" --list "$4"
+            ;;
+          credential)
+            case "${4:-}" in
+              show)
+                [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager automation v2 credential show ID KEY_ID"; exit 64; }
+                exec "$MANAGER_HOME/modules/automation_credentials.sh" --show "$5" "$6"
+                ;;
+              enroll)
+                [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager automation v2 credential enroll ID /CAMINHO/ARQUIVO"; exit 64; }
+                exec "$MANAGER_HOME/modules/automation_credentials.sh" --enroll "$5" "$6"
+                ;;
+              rotate)
+                [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager automation v2 credential rotate ID /CAMINHO/ARQUIVO"; exit 64; }
+                exec "$MANAGER_HOME/modules/automation_credentials.sh" --rotate "$5" "$6"
+                ;;
+              revoke)
+                [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager automation v2 credential revoke ID KEY_ID"; exit 64; }
+                exec "$MANAGER_HOME/modules/automation_credentials.sh" --revoke "$5" "$6"
+                ;;
+              *) err "Ação de credencial inválida: ${4:-}"; exit 64 ;;
+            esac
+            ;;
           *) err "Ação Automation v2 inválida: ${3:-}"; exit 64 ;;
         esac
         ;;
@@ -314,7 +346,7 @@ while true; do
   say ""
   say " ${C_WHITE}AUTOMAÇÃO${C_RESET}"
   say " ${C_CYAN}37${C_RESET}) Legacy v1 / compatibilidade syncpainel"
-  say " ${C_CYAN}38${C_RESET}) Automation v2 / principals e RBAC"
+  say " ${C_CYAN}38${C_RESET}) Automation v2 / principals, RBAC e credenciais"
   say ""
   say " ${C_WHITE}MONITORAMENTO E MANUTENÇÃO${C_RESET}"
   say " ${C_CYAN}10${C_RESET}) Tráfego e conexões"
@@ -390,7 +422,21 @@ while true; do
       ;;
     36) run_module node_metadata.sh ;;
     37) run_module automation_legacy.sh ;;
-    38) run_module automation_principals.sh ;;
+    38)
+      header
+      say "${C_WHITE}AUTOMATION V2${C_RESET}\n"
+      say " 1) Principals / RBAC"
+      say " 2) Credenciais Ed25519"
+      say " 0) Voltar"
+      say ""
+      read -r -p "Opção: " automation_opt
+      case "$automation_opt" in
+        1) run_module automation_principals.sh ;;
+        2) run_module automation_credentials.sh ;;
+        0) ;;
+        *) warn "Opção inválida"; sleep 1 ;;
+      esac
+      ;;
     90) self_update ;;
     0) clear 2>/dev/null || true; exit 0 ;;
     *) warn "Opção inválida"; sleep 1 ;;
