@@ -1,0 +1,186 @@
+name: Product Policy and Quotas
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  product-policy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo test -x /opt/manager/modules/products.sh
+          sudo test -f /opt/manager/lib/product_policy.sh
+          sudo test -f /etc/systemd/system/manager-product-policy.service
+          sudo test -f /etc/systemd/system/manager-product-policy.timer
+          test "$(sudo /opt/manager/modules/products.sh --init)" = "/etc/manager/connection/products"
+
+      - name: Verify product limits and ACL
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo install -d -m 0700 /etc/manager/wireguard/clients
+          printf 'name=ciwg\nip=10.66.66.210\npublic_key=ci-product-public-key\n' | sudo tee /etc/manager/wireguard/clients/ciwg.meta >/dev/null
+          printf '[Interface]\nPrivateKey = ci-placeholder\nAddress = 10.66.66.210/32\n' | sudo tee /etc/manager/wireguard/clients/ciwg.conf >/dev/null
+          sudo chmod 0600 /etc/manager/wireguard/clients/ciwg.meta /etc/manager/wireguard/clients/ciwg.conf
+
+          sudo /opt/manager/modules/connection_engine.sh --create ci-product '' 0 5 wireguard,openvpn
+          sudo /opt/manager/modules/connection_engine.sh --bind ci-product wireguard ciwg
+
+          # Baseline do accounting antes de iniciar a franquia do produto.
+          sudo /opt/manager/modules/identity_usage.sh --ingest-counter ci-product wireguard ciwg peer-ci-product 1000 2000
+
+          sudo /opt/manager/modules/products.sh --create premium 'Brasil Premium' 1 30 1 wireguard,openvpn 1000 lifetime block BR BR-PREMIUM '*'
+          sudo /opt/manager/modules/products.sh --assign ci-product premium
+
+          sudo /opt/manager/manager --products > /tmp/products.log
+          grep -q '^premium' /tmp/products.log
+          sudo /opt/manager/manager --product premium > /tmp/product.log
+          grep -q '^max_sessions=1$' /tmp/product.log
+          grep -q '^acl_regions=BR$' /tmp/product.log
+          sudo /opt/manager/manager --product-assignment ci-product > /tmp/assignment.log
+          grep -q '^effective_max_sessions=1$' /tmp/assignment.log
+          grep -q '^effective_protocols=wireguard,openvpn$' /tmp/assignment.log
+          grep -q '^quota_enforceable=1$' /tmp/assignment.log
+
+          sudo /opt/manager/modules/products.sh --authorize ci-product wireguard BR BR-PREMIUM BR-SP-01
+          if sudo /opt/manager/modules/products.sh --authorize ci-product wireguard US BR-PREMIUM BR-SP-01; then
+            echo 'Region ACL accepted an unauthorized region.' >&2
+            exit 1
+          fi
+          if sudo /opt/manager/modules/products.sh --authorize ci-product ssh BR BR-PREMIUM BR-SP-01; then
+            echo 'Product protocol ACL accepted SSH.' >&2
+            exit 1
+          fi
+
+          lease="$(sudo /opt/manager/modules/session_engine.sh --acquire ci-product wireguard ciwg product-device 30)"
+          session="$(printf '%s\n' "$lease" | tr '\t' '\n' | awk -F= '$1=="session_id"{print $2}')"
+          epoch="$(printf '%s\n' "$lease" | tr '\t' '\n' | awk -F= '$1=="epoch"{print $2}')"
+          test "${#session}" -eq 32
+          if sudo /opt/manager/modules/session_engine.sh --acquire ci-product wireguard ciwg product-device-2 30; then
+            echo 'Product max_sessions=1 was not enforced.' >&2
+            exit 1
+          fi
+          sudo /opt/manager/modules/session_engine.sh --release "$session" "$epoch"
+
+      - name: Enforce measured traffic quota
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # +300 upload and +800 download = 1100 bytes after product baseline.
+          sudo /opt/manager/modules/identity_usage.sh --ingest-counter ci-product wireguard ciwg peer-ci-product 1300 2800
+          sudo /opt/manager/modules/products.sh --reconcile
+          sudo /opt/manager/manager --product-assignment ci-product > /tmp/quota.log
+          grep -q '^quota_used_bytes=1100$' /tmp/quota.log
+          grep -q '^quota_exceeded=1$' /tmp/quota.log
+          grep -q '^quota_enforceable=1$' /tmp/quota.log
+          grep -q '^effective_state=quota-exceeded$' /tmp/quota.log
+          if sudo /opt/manager/modules/session_engine.sh --acquire ci-product wireguard ciwg quota-device 30; then
+            echo 'Session engine admitted a quota-exceeded identity.' >&2
+            exit 1
+          fi
+
+          sudo /opt/manager/modules/products.sh --reset-quota ci-product
+          sudo /opt/manager/manager --product-assignment ci-product > /tmp/quota-reset.log
+          grep -q '^quota_used_bytes=0$' /tmp/quota-reset.log
+          grep -q '^effective_state=active$' /tmp/quota-reset.log
+
+          # Em warn o consumo continua visível, mas não bloqueia a identidade.
+          sudo /opt/manager/modules/products.sh --update premium 'Brasil Premium' 1 30 1 wireguard,openvpn 500 lifetime warn BR BR-PREMIUM '*'
+          sudo /opt/manager/modules/identity_usage.sh --ingest-counter ci-product wireguard ciwg peer-ci-product 1600 3400
+          sudo /opt/manager/modules/products.sh --reconcile
+          sudo /opt/manager/manager --product-assignment ci-product > /tmp/quota-warn.log
+          grep -q '^quota_exceeded=1$' /tmp/quota-warn.log
+          grep -q '^quota_action=warn$' /tmp/quota-warn.log
+          grep -q '^effective_state=active$' /tmp/quota-warn.log
+
+          sudo /opt/manager/modules/products.sh --update premium 'Brasil Premium' 0 30 1 wireguard,openvpn 500 lifetime warn BR BR-PREMIUM '*'
+          sudo /opt/manager/manager --product-assignment ci-product > /tmp/product-disabled.log
+          grep -q '^effective_state=product-disabled$' /tmp/product-disabled.log
+          sudo /opt/manager/modules/products.sh --update premium 'Brasil Premium' 1 30 1 wireguard,openvpn 500 lifetime warn BR BR-PREMIUM '*'
+
+      - name: Do not falsely enforce partial SSH bytes
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo useradd -m -s /bin/bash managerquota
+          sudo /opt/manager/modules/connection_engine.sh --create ci-ssh '' 0 2 ssh
+          sudo /opt/manager/modules/connection_engine.sh --bind ci-ssh ssh managerquota
+          sudo /opt/manager/modules/products.sh --create ssh-plan 'SSH Plan' 1 0 1 ssh 100 lifetime block '*' '*' '*'
+          sudo /opt/manager/modules/products.sh --assign ci-ssh ssh-plan
+
+          state=/var/lib/manager/identity-usage/identities/ci-ssh.state
+          sudo install -d -m 0700 "$(dirname "$state")"
+          cat <<'STATE' | sudo tee "$state" >/dev/null
+          version=1
+          id=ci-ssh
+          download_bytes=500
+          upload_bytes=500
+          wireguard_download_bytes=0
+          wireguard_upload_bytes=0
+          openvpn_download_bytes=0
+          openvpn_upload_bytes=0
+          last_activity_epoch=0
+          last_protocol=ssh
+          last_resource=managerquota
+          tracking_started_epoch=1
+          updated_epoch=1
+          STATE
+          sudo chmod 0600 "$state"
+
+          sudo /opt/manager/modules/products.sh --reconcile
+          sudo /opt/manager/manager --product-assignment ci-ssh > /tmp/ssh-quota.log
+          grep -q '^quota_exceeded=1$' /tmp/ssh-quota.log
+          grep -q '^quota_enforceable=0$' /tmp/ssh-quota.log
+          grep -q '^effective_state=active$' /tmp/ssh-quota.log
+
+      - name: Restore base identity policy on unassign
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/products.sh --unassign ci-product
+          sudo /opt/manager/manager --identity ci-product > /tmp/base-restored.log
+          grep -q '^max_sessions=5$' /tmp/base-restored.log
+          grep -q '^protocols=wireguard,openvpn$' /tmp/base-restored.log
+          grep -q '^expires_epoch=0$' /tmp/base-restored.log
+
+      - name: Preserve product state through uninstall and reinstall
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/products.sh --assign ci-product premium
+          assignment=/etc/manager/connection/products/assignments/ci-product.conf
+          quota_state=/etc/manager/connection/product-usage/identities/ci-product.state
+          sudo test -f "$assignment"
+          sudo test -f "$quota_state"
+
+          sudo /opt/manager/uninstall.sh
+          sudo test -f "$assignment"
+          sudo test -f "$quota_state"
+          sudo test ! -e /etc/systemd/system/manager-product-policy.timer
+          sudo test ! -e /etc/systemd/system/manager-product-policy.service
+
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo /opt/manager/manager --product-assignment ci-product > /tmp/product-restored.log
+          grep -q '^product_id=premium$' /tmp/product-restored.log
+          sudo test -f /etc/systemd/system/manager-product-policy.timer
+
+      - name: Purge product state
+        shell: bash
+        run: |
+          set -euxo pipefail
+          printf 'PURGAR\n' | sudo /opt/manager/uninstall.sh --purge
+          sudo test ! -e /etc/manager/connection/products
+          sudo test ! -e /etc/manager/connection/product-usage
