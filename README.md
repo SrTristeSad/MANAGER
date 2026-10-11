@@ -4,7 +4,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 > O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva capacidades úteis, substitui implementações inseguras/obsoletas e prepara uma arquitetura própria para Automation v2, Telegram e Modo Colmeia.
 
-Versão atual: **0.6.8**.
+Versão atual: **0.6.9**.
 
 ## Princípios
 
@@ -31,6 +31,7 @@ Versão atual: **0.6.8**.
 - OpenVPN com Easy-RSA, perfis `.ovpn`, CRL, UDP/TCP e `server-ipv6` opcional;
 - IPv6 Guard ligado ao Policy/Session Engine para impedir bypass de limites pelo tráfego IPv6;
 - UFW configurado para administrar IPv4 e IPv6 quando usado pelo MANAGER;
+- identidade persistente do nó com região, pool, capacidade e capacidades detectadas;
 - DNS Ad Block com dnsmasq, whitelist/blacklist e atualização diária;
 - Squid privado, proxy TCP, WebSocket e TLS opcionais;
 - hosts de proxy gerenciados;
@@ -337,6 +338,40 @@ O provisionamento unificado herda o estado dual-stack do servidor. WireGuard ret
 
 Documentação: [`docs/IPV6.md`](docs/IPV6.md).
 
+## Identidade e metadados do nó — 0.6.9
+
+Cada VPS MANAGER passa a possuir um `node_id` estável e independente das identidades de clientes. O registro fica em:
+
+```text
+/etc/manager/connection/node/node.conf
+```
+
+Ele armazena nome, país, região, pool, provedor, cidade, capacidade lógica, peso, limite declarado de sessões e estado administrativo. O módulo também publica protocolos instalados, capacidade IPv6, interfaces/endereço locais e endpoints configurados, sem alterar a rede.
+
+Exemplo de configuração:
+
+```bash
+manager --node-set country BR
+manager --node-set region BR-SP
+manager --node-set pool BRASIL-PREMIUM
+manager --node-set capacity 8
+manager --node-set weight 3
+manager --node-set max_sessions 500
+```
+
+Consultar o nó:
+
+```bash
+manager --node
+manager --node-context
+```
+
+O `node_id` é criado uma única vez, é somente leitura e sobrevive a uninstall/reinstall normal porque faz parte do estado persistente do Connection Engine. Ele é um identificador lógico, não a futura chave criptográfica de enrollment da Colmeia.
+
+País não define Colmeia: vários nós do mesmo país, cidade ou provedor podem pertencer ao mesmo domínio de operação e ao mesmo pool. `capacity` e `weight` ainda são declarativos nesta etapa; o scheduler multi-nó virá depois.
+
+Documentação: [`docs/NODE_METADATA.md`](docs/NODE_METADATA.md).
+
 ## O limite que prepara a Colmeia
 
 Hoje autoridade de lease, produto, accounting e cota de revenda ainda é local na VPS. O modelo já representa o comportamento planejado para a Colmeia:
@@ -348,7 +383,7 @@ allowed_regions = BR, US, DE, FR, ...
 max_sessions = 1
 ```
 
-No futuro, o Hub substituirá locks locais por autoridade global sem mudar os conceitos de produto, ACL, identidade, cota, `session_id`, TTL, heartbeat e `session_epoch`.
+O MANAGER já possui o objeto persistente de nó (`node_id`, região, pool, capacidade e protocolos). No futuro, o Hub substituirá locks locais por autoridade global e adicionará heartbeat, scheduler e identidade criptográfica sem mudar os conceitos de produto, ACL, identidade, cota, `session_id`, TTL, heartbeat e `session_epoch`.
 
 ## Backup e migração
 
@@ -363,7 +398,7 @@ estado WireGuard/OpenVPN
 DNS/TLS/banner/performance
 ```
 
-Slots de identidade e cotas por produto estão sob `/etc/manager/access`, portanto participam do backup existente. Estado dual-stack fica nos diretórios WireGuard/OpenVPN dentro de `/etc/manager`; leases e regras runtime não entram no backup.
+Slots de identidade e cotas por produto estão sob `/etc/manager/access`; identidade/metadados do nó ficam sob `/etc/manager/connection`, portanto participam do backup existente. Estado dual-stack fica nos diretórios WireGuard/OpenVPN dentro de `/etc/manager`; leases e regras runtime não entram no backup.
 
 A exportação de usuários Linux é separada e não guarda senha em texto claro nem substitui `/etc/passwd`/`etc/shadow` inteiros durante restauração.
 
@@ -380,12 +415,13 @@ O detector de legado reconhece estruturas como `/root/usuarios.db`, `/etc/SSHPlu
 - Squid sem `http_access allow all`;
 - nada de flush global de firewall IPv4 ou IPv6;
 - credenciais VPN com permissões restritas;
-- estado de identidade, produto, revenda e accounting restritos a root;
+- estado de identidade, produto, revenda, nó e accounting restritos a root;
 - OpenVPN não recebe acesso root ao Lease Engine;
-- IPv6 Guard cria/remova somente regras específicas da identidade;
+- IPv6 Guard cria/remove somente regras específicas da identidade;
 - hooks externos são removidos antes de uninstall/rollback;
 - franquia SSH não é bloqueada com dados incompletos;
 - provisionamento não registra senha/chaves privadas no audit log;
+- metadados do nó usam campos allowlisted e não oferecem shell/comando arbitrário;
 - self-update baixa e valida o instalador antes da execução.
 
 ## CLI
@@ -412,6 +448,9 @@ manager --identity-sessions [ID]  sessões reais observadas
 manager --leases [ID]             leases autorizadas
 manager --usage [ID]              tráfego/atividade consolidada
 manager --ipv6-status             estado dual-stack e IPv6 Guard
+manager --node                    identidade/metadados/capacidades do nó
+manager --node-context            contexto country/region/pool/node
+manager --node-set FIELD VALUE    altera metadado allowlisted do nó
 manager --diagnostics             diagnóstico
 manager --version                 versão
 manager --help                    ajuda
@@ -463,7 +502,7 @@ Desinstalar preservando estado:
 manager-uninstall
 ```
 
-Identidades, produtos, cotas/slots de revenda, ACL, baseline de franquia, `session_epoch`, estado dual-stack e histórico consolidado de uso ficam preservados no uninstall normal. Regras runtime do IPv6 Guard são removidas e recriadas na reinstalação.
+Identidades, produtos, cotas/slots de revenda, ACL, baseline de franquia, `session_epoch`, identidade/metadados do nó, estado dual-stack e histórico consolidado de uso ficam preservados no uninstall normal. Regras runtime do IPv6 Guard são removidas e recriadas na reinstalação.
 
 Purge explícito:
 
@@ -479,7 +518,7 @@ Plano detalhado: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ```text
 0.5.x  paridade SSHPlus útil
-0.6.x  Connection Engine, políticas, leases, accounting, produtos, provisionamento, revenda e dual-stack
+0.6.x  Connection Engine, políticas, leases, accounting, produtos, provisionamento, revenda, dual-stack e metadados de nó
 0.7.0  Legacy v1 + Automation v2
 0.8.0  Modo Colmeia
 0.9.0  Telegram Bot + Mini App
@@ -497,7 +536,7 @@ Ações estruturadas, RBAC, auditoria, idempotência, autenticação criptográf
 
 ### Colmeia
 
-Planejado: identidade criptográfica por nó, regiões/pools, capacidade/health, drain/failover, sticky sessions, sessão global por identidade/plano, cota global de revenda, lease/fencing global, agregação de uso e comunicação autenticada/criptografada.
+O objeto local de nó já existe. Planejado a partir dele: identidade criptográfica por nó, heartbeat/health, regiões/pools, capacidade real, drain/failover, sticky sessions, scheduler weighted least-loaded, sessão global por identidade/plano, cota global de revenda, lease/fencing global, agregação de uso e comunicação autenticada/criptografada.
 
 ### Telegram
 
@@ -518,7 +557,8 @@ O CI cobre:
 - Product Policy, ACL e franquias;
 - Unified Provisioning e revogação;
 - cotas de revenda por identidade, hierarquia pai/subrevendedor, produtos, adoção de SSH legado, migração e persistência;
-- IPv6 dual-stack, endpoint literal IPv6, guard por lease e persistência no lifecycle.
+- IPv6 dual-stack, endpoint literal IPv6, guard por lease e persistência no lifecycle;
+- identidade/metadados do nó, campos imutáveis, validação, persistência de `node_id` e uninstall/reinstall.
 
 ## Origem
 
