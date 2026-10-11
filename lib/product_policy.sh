@@ -3,7 +3,6 @@
 PRODUCT_ROOT="${PRODUCT_ROOT:-${IDENTITY_ROOT:-${MANAGER_ETC:-/etc/manager}/connection}/products}"
 PRODUCT_DIR="$PRODUCT_ROOT/catalog"
 PRODUCT_ASSIGN_DIR="$PRODUCT_ROOT/assignments"
-PRODUCT_LOCK="$PRODUCT_ROOT/.lock"
 PRODUCT_USAGE_ROOT="${MANAGER_PRODUCT_USAGE_ROOT:-${IDENTITY_ROOT:-${MANAGER_ETC:-/etc/manager}/connection}/product-usage}"
 PRODUCT_USAGE_DIR="$PRODUCT_USAGE_ROOT/identities"
 IDENTITY_USAGE_DIR="${MANAGER_USAGE_ROOT:-/var/lib/manager/identity-usage}/identities"
