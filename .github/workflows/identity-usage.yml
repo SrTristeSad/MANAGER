@@ -1,0 +1,92 @@
+name: Identity Usage Accounting
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  identity-usage:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo test -x /opt/manager/modules/identity_usage.sh
+          sudo test -f /etc/systemd/system/manager-identity-usage.service
+          sudo test -f /etc/systemd/system/manager-identity-usage.timer
+          test "$(sudo /opt/manager/modules/identity_usage.sh --init)" = "/var/lib/manager/identity-usage"
+
+      - name: Verify delta accounting and counter reset
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo install -d -m 0700 /etc/manager/wireguard/clients
+          printf 'name=ciwg\nip=10.66.66.200\npublic_key=ci-public-key\n' | sudo tee /etc/manager/wireguard/clients/ciwg.meta >/dev/null
+          printf '[Interface]\nPrivateKey = ci-placeholder\nAddress = 10.66.66.200/32\n' | sudo tee /etc/manager/wireguard/clients/ciwg.conf >/dev/null
+          sudo chmod 0600 /etc/manager/wireguard/clients/ciwg.meta /etc/manager/wireguard/clients/ciwg.conf
+
+          sudo /opt/manager/modules/connection_engine.sh --create ci-usage '' 0 2 wireguard
+          sudo /opt/manager/modules/connection_engine.sh --bind ci-usage wireguard ciwg
+
+          # First observation is a baseline, not retroactive consumption.
+          sudo /opt/manager/modules/identity_usage.sh --ingest-counter ci-usage wireguard ciwg peer-ci 1000 2000
+          sudo /opt/manager/manager --usage ci-usage > /tmp/usage-1.log
+          grep -q '^download_bytes=0$' /tmp/usage-1.log
+          grep -q '^upload_bytes=0$' /tmp/usage-1.log
+          grep -q '^total_bytes=0$' /tmp/usage-1.log
+          grep -q '^traffic_complete=1$' /tmp/usage-1.log
+
+          # Server receives from peer = user upload; server sends to peer = user download.
+          sudo /opt/manager/modules/identity_usage.sh --ingest-counter ci-usage wireguard ciwg peer-ci 1250 2600
+          sudo /opt/manager/manager --usage ci-usage > /tmp/usage-2.log
+          grep -q '^download_bytes=600$' /tmp/usage-2.log
+          grep -q '^upload_bytes=250$' /tmp/usage-2.log
+          grep -q '^total_bytes=850$' /tmp/usage-2.log
+          grep -q '^wireguard_download_bytes=600$' /tmp/usage-2.log
+          grep -q '^wireguard_upload_bytes=250$' /tmp/usage-2.log
+
+          # A protocol restart can reset its absolute counters. The new value is then a fresh delta.
+          sudo /opt/manager/modules/identity_usage.sh --ingest-counter ci-usage wireguard ciwg peer-ci 100 200
+          sudo /opt/manager/manager --usage ci-usage > /tmp/usage-3.log
+          grep -q '^download_bytes=800$' /tmp/usage-3.log
+          grep -q '^upload_bytes=350$' /tmp/usage-3.log
+          grep -q '^total_bytes=1150$' /tmp/usage-3.log
+
+          if sudo /opt/manager/modules/identity_usage.sh --ingest-counter ci-usage wireguard wrong peer-ci 200 300; then
+            echo 'Usage engine accepted a counter from an unbound resource.' >&2
+            exit 1
+          fi
+
+      - name: Preserve history through uninstall and reinstall
+        shell: bash
+        run: |
+          set -euxo pipefail
+          state=/var/lib/manager/identity-usage/identities/ci-usage.state
+          sudo test -f "$state"
+          grep -q '^total_bytes=1150$' <(sudo cat "$state")
+
+          sudo /opt/manager/uninstall.sh
+          sudo test -f "$state"
+          sudo test ! -e /etc/systemd/system/manager-identity-usage.timer
+          sudo test ! -e /etc/systemd/system/manager-identity-usage.service
+
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo /opt/manager/manager --usage ci-usage > /tmp/usage-restored.log
+          grep -q '^total_bytes=1150$' /tmp/usage-restored.log
+
+      - name: Purge usage history
+        shell: bash
+        run: |
+          set -euxo pipefail
+          printf 'PURGAR\n' | sudo /opt/manager/uninstall.sh --purge
+          sudo test ! -e /var/lib/manager/identity-usage
