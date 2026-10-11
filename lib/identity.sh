@@ -18,6 +18,10 @@ identity_init() {
 
 identity_signal_change() {
   identity_init
+  # Provisionamento transacional pode fazer várias escritas intermediárias.
+  # Nesses casos o chamador sinaliza uma única vez depois do commit/rollback,
+  # evitando que o watcher aplique uma identidade parcialmente construída.
+  [[ "${MANAGER_DEFER_POLICY_SIGNAL:-0}" == 1 ]] && return 0
   touch "$IDENTITY_CHANGED"
 }
 
