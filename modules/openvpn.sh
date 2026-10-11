@@ -25,8 +25,24 @@ OVERRIDE_FILE="$OVERRIDE_DIR/10-manager-network.conf"
 VPN_NET="10.8.0.0"
 VPN_MASK="255.255.255.0"
 VPN_SERVER_IP="10.8.0.1"
+VPN_NET6="fd66:8::/64"
 
 service_name() { printf 'openvpn-server@%s' "$OVPN_NAME"; }
+
+state_value() {
+  local key="$1"
+  [[ -f "$STATE_DIR/$key" ]] && tr -d '[:space:]' < "$STATE_DIR/$key" || true
+}
+
+ipv6_enabled() { [[ "$(state_value ipv6-enabled)" == 1 ]]; }
+
+write_ipv6_state() {
+  local enabled="$1" iface6="${2:-}"
+  install -d -m 0700 "$STATE_DIR"
+  printf '%s\n' "$enabled" > "$STATE_DIR/ipv6-enabled"
+  printf '%s\n' "$iface6" > "$STATE_DIR/egress6-interface"
+  chmod 0600 "$STATE_DIR/ipv6-enabled" "$STATE_DIR/egress6-interface"
+}
 
 extract_pem() {
   local begin="$1" end="$2" file="$3"
@@ -42,16 +58,41 @@ port_busy() {
   fi
 }
 
+write_network_override() {
+  local iface4="$1" iface6="${2:-}" ipv6="${3:-0}"
+  install -d -m 0755 "$OVERRIDE_DIR"
+  cat > "$OVERRIDE_FILE" <<EOF
+[Service]
+ExecStartPost=/bin/sh -c '/usr/sbin/iptables -C FORWARD -i tun0 -j ACCEPT 2>/dev/null || /usr/sbin/iptables -I FORWARD 1 -i tun0 -j ACCEPT'
+ExecStartPost=/bin/sh -c '/usr/sbin/iptables -C FORWARD -o tun0 -j ACCEPT 2>/dev/null || /usr/sbin/iptables -I FORWARD 1 -o tun0 -j ACCEPT'
+ExecStartPost=/bin/sh -c '/usr/sbin/iptables -t nat -C POSTROUTING -s $VPN_NET/24 -o $iface4 -j MASQUERADE 2>/dev/null || /usr/sbin/iptables -t nat -A POSTROUTING -s $VPN_NET/24 -o $iface4 -j MASQUERADE'
+ExecStopPost=-/usr/sbin/iptables -D FORWARD -i tun0 -j ACCEPT
+ExecStopPost=-/usr/sbin/iptables -D FORWARD -o tun0 -j ACCEPT
+ExecStopPost=-/usr/sbin/iptables -t nat -D POSTROUTING -s $VPN_NET/24 -o $iface4 -j MASQUERADE
+EOF
+  if [[ "$ipv6" == 1 ]]; then
+    cat >> "$OVERRIDE_FILE" <<EOF
+ExecStartPost=/bin/sh -c '/usr/sbin/ip6tables -C FORWARD -i tun0 -j ACCEPT 2>/dev/null || /usr/sbin/ip6tables -I FORWARD 1 -i tun0 -j ACCEPT'
+ExecStartPost=/bin/sh -c '/usr/sbin/ip6tables -C FORWARD -o tun0 -j ACCEPT 2>/dev/null || /usr/sbin/ip6tables -I FORWARD 1 -o tun0 -j ACCEPT'
+ExecStartPost=/bin/sh -c '/usr/sbin/ip6tables -t nat -C POSTROUTING -s $VPN_NET6 -o $iface6 -j MASQUERADE 2>/dev/null || /usr/sbin/ip6tables -t nat -A POSTROUTING -s $VPN_NET6 -o $iface6 -j MASQUERADE'
+ExecStopPost=-/usr/sbin/ip6tables -D FORWARD -i tun0 -j ACCEPT
+ExecStopPost=-/usr/sbin/ip6tables -D FORWARD -o tun0 -j ACCEPT
+ExecStopPost=-/usr/sbin/ip6tables -t nat -D POSTROUTING -s $VPN_NET6 -o $iface6 -j MASQUERADE
+EOF
+  fi
+}
+
 install_server() {
   header
   say "${C_WHITE}INSTALAR OPENVPN${C_RESET}\n"
   if [[ -f "$OVPN_CONF" ]]; then
     warn "$OVPN_CONF já existe. O MANAGER não irá sobrescrever o servidor existente."
+    info "Use a opção de reconciliar IPv6 para atualizar uma instalação MANAGER existente."
     pause
     return
   fi
 
-  local port transport server_proto iface endpoint endpoint_in
+  local port transport server_proto iface iface6 endpoint endpoint_in ipv6=0
   read -r -p "Porta [1194]: " port
   port="${port:-1194}"
   is_valid_port "$port" || { err "Porta inválida"; pause; return; }
@@ -66,13 +107,20 @@ install_server() {
   if [[ "$transport" == tcp ]]; then server_proto="tcp-server"; else server_proto="udp"; fi
 
   iface="$(ip -4 route show default | awk 'NR==1 {print $5}')"
-  [[ -n "$iface" ]] || { err "Não encontrei a interface de saída padrão"; pause; return; }
-  endpoint="$(curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+  [[ -n "$iface" ]] || { err "Não encontrei a interface de saída IPv4 padrão"; pause; return; }
+  if ipv6_egress_available; then
+    iface6="$(ipv6_default_interface)"
+    ipv6=1
+  else
+    iface6=""
+  fi
+  endpoint="$(curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null || curl -6fsS --max-time 5 https://api64.ipify.org 2>/dev/null || true)"
   read -r -p "IP/domínio público do servidor [$endpoint]: " endpoint_in
   endpoint="${endpoint_in:-$endpoint}"
   [[ -n "$endpoint" ]] || { err "Informe um endpoint público"; pause; return; }
 
-  say "\nRede VPN: $VPN_NET/24"
+  say "\nRede VPN IPv4: $VPN_NET/24"
+  if (( ipv6 == 1 )); then say "Rede VPN IPv6: $VPN_NET6 (saída por $iface6)"; else say "IPv6: indisponível nesta VPS; túnel será IPv4-only."; fi
   say "Serviço: $(service_name)"
   say "PKI: Easy-RSA local, sem depender de CA externa."
   confirm "Instalar OpenVPN em $endpoint:$port/$transport?" || return
@@ -107,6 +155,7 @@ install_server() {
   printf '%s\n' "$transport" > "$STATE_DIR/transport"
   printf '%s\n' "$iface" > "$STATE_DIR/egress-interface"
   chmod 0600 "$STATE_DIR/endpoint" "$STATE_DIR/port" "$STATE_DIR/transport" "$STATE_DIR/egress-interface"
+  write_ipv6_state "$ipv6" "$iface6"
 
   cat > "$OVPN_CONF" <<EOF
 port $port
@@ -137,25 +186,24 @@ push "dhcp-option DNS 9.9.9.9"
 status /run/openvpn/manager-status.log
 verb 3
 EOF
+  if (( ipv6 == 1 )); then
+    {
+      printf 'server-ipv6 %s\n' "$VPN_NET6"
+      printf 'push "redirect-gateway ipv6"\n'
+    } >> "$OVPN_CONF"
+  fi
   chmod 0644 "$OVPN_CONF"
 
   backup_file "$SYSCTL_FILE"
-  cat > "$SYSCTL_FILE" <<'EOF'
-net.ipv4.ip_forward = 1
-EOF
+  {
+    printf 'net.ipv4.ip_forward = 1\n'
+    (( ipv6 == 0 )) || printf 'net.ipv6.conf.all.forwarding = 1\n'
+  } > "$SYSCTL_FILE"
   chmod 0644 "$SYSCTL_FILE"
   enable_ipv4_forwarding
+  (( ipv6 == 0 )) || enable_ipv6_forwarding
 
-  cat > "$OVERRIDE_FILE" <<EOF
-[Service]
-ExecStartPost=/bin/sh -c '/usr/sbin/iptables -C FORWARD -i tun0 -j ACCEPT 2>/dev/null || /usr/sbin/iptables -I FORWARD 1 -i tun0 -j ACCEPT'
-ExecStartPost=/bin/sh -c '/usr/sbin/iptables -C FORWARD -o tun0 -j ACCEPT 2>/dev/null || /usr/sbin/iptables -I FORWARD 1 -o tun0 -j ACCEPT'
-ExecStartPost=/bin/sh -c '/usr/sbin/iptables -t nat -C POSTROUTING -s $VPN_NET/24 -o $iface -j MASQUERADE 2>/dev/null || /usr/sbin/iptables -t nat -A POSTROUTING -s $VPN_NET/24 -o $iface -j MASQUERADE'
-ExecStopPost=-/usr/sbin/iptables -D FORWARD -i tun0 -j ACCEPT
-ExecStopPost=-/usr/sbin/iptables -D FORWARD -o tun0 -j ACCEPT
-ExecStopPost=-/usr/sbin/iptables -t nat -D POSTROUTING -s $VPN_NET/24 -o $iface -j MASQUERADE
-EOF
-
+  write_network_override "$iface" "$iface6" "$ipv6"
   systemctl daemon-reload
   systemctl enable --now "$(service_name)"
   if ! systemctl is-active --quiet "$(service_name)"; then
@@ -223,9 +271,11 @@ EOF
 name=$name
 created=$(date -Is)
 status=active
+ipv6=$(ipv6_enabled && echo 1 || echo 0)
 EOF
   chmod 0600 "$META_DIR/$name.meta"
   ok "Cliente criado: $file"
+  ipv6_enabled && info "O servidor entregará também um endereço IPv6 de $VPN_NET6."
   say "Importe esse arquivo no aplicativo OpenVPN Connect ou cliente compatível."
   pause
 }
@@ -301,9 +351,57 @@ use_adblock_dns() {
   pause
 }
 
+enable_ipv6_existing() {
+  header
+  say "${C_WHITE}OPENVPN DUAL-STACK IPV6${C_RESET}\n"
+  [[ -f "$OVPN_CONF" && -f "$STATE_DIR/egress-interface" ]] || { err "Servidor OpenVPN do MANAGER não encontrado"; pause; return; }
+  if ipv6_enabled; then ok "IPv6 já está habilitado para o OpenVPN do MANAGER."; pause; return; fi
+  ipv6_egress_available || { err "A VPS não possui rota IPv6 padrão com endereço global utilizável."; pause; return; }
+  command_exists ip6tables || { err "ip6tables não está disponível"; pause; return; }
+
+  local iface4 iface6 conf_backup override_backup sysctl_backup="" had_override=0
+  iface4="$(state_value egress-interface)"
+  iface6="$(ipv6_default_interface)"
+  [[ -n "$iface4" && -n "$iface6" ]] || { err "Interfaces de saída incompletas"; pause; return; }
+  confirm "Ativar $VPN_NET6 e reiniciar OpenVPN? Clientes conectados serão reconectados." || return
+
+  conf_backup="$(mktemp)"
+  override_backup="$(mktemp)"
+  cp -a "$OVPN_CONF" "$conf_backup"
+  if [[ -f "$OVERRIDE_FILE" ]]; then cp -a "$OVERRIDE_FILE" "$override_backup"; had_override=1; fi
+  if [[ -f "$SYSCTL_FILE" ]]; then sysctl_backup="$(mktemp)"; cp -a "$SYSCTL_FILE" "$sysctl_backup"; fi
+
+  grep -q '^server-ipv6 ' "$OVPN_CONF" || printf 'server-ipv6 %s\n' "$VPN_NET6" >> "$OVPN_CONF"
+  grep -Fqx 'push "redirect-gateway ipv6"' "$OVPN_CONF" || printf 'push "redirect-gateway ipv6"\n' >> "$OVPN_CONF"
+  if ! grep -q '^net.ipv6.conf.all.forwarding' "$SYSCTL_FILE" 2>/dev/null; then printf 'net.ipv6.conf.all.forwarding = 1\n' >> "$SYSCTL_FILE"; fi
+  chmod 0644 "$SYSCTL_FILE"
+  enable_ipv6_forwarding
+  write_network_override "$iface4" "$iface6" 1
+  systemctl daemon-reload
+  write_ipv6_state 1 "$iface6"
+
+  if ! systemctl restart "$(service_name)" || ! systemctl is-active --quiet "$(service_name)"; then
+    install -m 0644 "$conf_backup" "$OVPN_CONF"
+    if (( had_override == 1 )); then install -m 0644 "$override_backup" "$OVERRIDE_FILE"; else rm -f "$OVERRIDE_FILE"; fi
+    if [[ -n "$sysctl_backup" ]]; then install -m 0644 "$sysctl_backup" "$SYSCTL_FILE"; fi
+    write_ipv6_state 0 ""
+    systemctl daemon-reload
+    systemctl restart "$(service_name)" >/dev/null 2>&1 || true
+    rm -f "$conf_backup" "$override_backup" ${sysctl_backup:+"$sysctl_backup"}
+    err "OpenVPN rejeitou a atualização IPv6; configuração anterior restaurada."
+    pause
+    return
+  fi
+  rm -f "$conf_backup" "$override_backup" ${sysctl_backup:+"$sysctl_backup"}
+  ok "OpenVPN atualizado para dual-stack em $VPN_NET6."
+  pause
+}
+
 status_server() {
   header
   say "${C_WHITE}STATUS OPENVPN${C_RESET}\n"
+  printf 'IPv6 VPN: %s\n' "$(ipv6_enabled && printf 'ativo (%s)' "$VPN_NET6" || printf 'desativado')"
+  if ipv6_enabled; then printf 'Saída IPv6: %s\n' "$(state_value egress6-interface)"; fi
   systemctl --no-pager --full status "$(service_name)" 2>/dev/null | sed -n '1,18p' || true
   say "\nInterfaces:"
   ip -br addr show tun0 2>/dev/null || true
@@ -311,6 +409,17 @@ status_server() {
   sed -n '1,80p' /run/openvpn/manager-status.log 2>/dev/null || true
   pause
 }
+
+machine_state() {
+  printf 'ipv6_enabled=%s\n' "$(ipv6_enabled && echo 1 || echo 0)"
+  printf 'ipv6_prefix=%s\n' "$VPN_NET6"
+  printf 'ipv6_egress_interface=%s\n' "$(state_value egress6-interface)"
+}
+
+case "${1:-}" in
+  --network-state) machine_state; exit 0 ;;
+  *) ;;
+esac
 
 while true; do
   header
@@ -322,6 +431,7 @@ while true; do
   say " 5) Revogar cliente"
   say " 6) Usar DNS Ad Block na VPN"
   say " 7) Status"
+  say " 8) Ativar/reconciliar IPv6 dual-stack"
   say " 0) Voltar"
   say ""
   read -r -p "Opção: " opt
@@ -333,6 +443,7 @@ while true; do
     5) revoke_client ;;
     6) use_adblock_dns ;;
     7) status_server ;;
+    8) enable_ipv6_existing ;;
     0) exit 0 ;;
     *) warn "Opção inválida"; sleep 1 ;;
   esac
