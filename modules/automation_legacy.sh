@@ -333,7 +333,9 @@ legacy_remove() {
     return 2
   fi
   "$CONNECTION_MODULE" --disable "$user" >/dev/null 2>&1 || true
-  [[ -x "$SESSION_MODULE" ]] && "$SESSION_MODULE" --revoke-all "$user" >/dev/null 2>&1 || true
+  if [[ -x "$SESSION_MODULE" ]]; then
+    "$SESSION_MODULE" --revoke-all "$user" >/dev/null 2>&1 || true
+  fi
   pkill -TERM -u "$user" >/dev/null 2>&1 || true
   sleep 0.2
   pkill -KILL -u "$user" >/dev/null 2>&1 || true
