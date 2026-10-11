@@ -69,6 +69,16 @@ Uso:
   manager hive network controller bundle NODE_ID OUT
   manager hive network controller bundle-all DIR
                                   administra a topologia mesh privada da Colmeia
+  manager hive health status
+  manager hive health configure HOST PORT TLS_FP [INTERVAL]
+  manager hive health disable|send
+  manager hive health controller init|status|list
+  manager hive health controller show NODE_ID
+  manager hive health controller enable BIND_IP [PORT]
+  manager hive health controller disable
+  manager hive health controller thresholds DEGRADED OFFLINE
+  manager hive health controller rotate-tls
+                                  heartbeat assinado e saúde distribuída dos nós
   manager automation legacy status
   manager automation legacy enable [PORT]
   manager automation legacy disable
@@ -247,6 +257,31 @@ case "${1:-}" in
           *) err "Uso: manager hive network {status|init|request|accept|up|down|reconcile|controller ...}"; exit 64 ;;
         esac
         ;;
+      health)
+        case "${3:-status}" in
+          status) exec "$MANAGER_HOME/modules/hive_health.sh" --status ;;
+          configure)
+            [[ -n "${4:-}" && -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager hive health configure HOST PORT TLS_FP [INTERVAL]"; exit 64; }
+            if [[ -n "${7:-}" ]]; then exec "$MANAGER_HOME/modules/hive_health.sh" --configure "$4" "$5" "$6" "$7"; else exec "$MANAGER_HOME/modules/hive_health.sh" --configure "$4" "$5" "$6"; fi
+            ;;
+          disable) exec "$MANAGER_HOME/modules/hive_health.sh" --disable ;;
+          send) exec "$MANAGER_HOME/modules/hive_health.sh" --send ;;
+          controller)
+            case "${4:-status}" in
+              init) exec "$MANAGER_HOME/modules/hive_health.sh" --controller-init ;;
+              status) exec "$MANAGER_HOME/modules/hive_health.sh" --controller-status ;;
+              list) exec "$MANAGER_HOME/modules/hive_health.sh" --controller-list ;;
+              show) [[ -n "${5:-}" ]] || { err "Uso: manager hive health controller show NODE_ID"; exit 64; }; exec "$MANAGER_HOME/modules/hive_health.sh" --controller-show "$5" ;;
+              enable) [[ -n "${5:-}" ]] || { err "Uso: manager hive health controller enable BIND_IP [PORT]"; exit 64; }; exec "$MANAGER_HOME/modules/hive_health.sh" --controller-enable "$5" "${6:-9444}" ;;
+              disable) exec "$MANAGER_HOME/modules/hive_health.sh" --controller-disable ;;
+              thresholds) [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager hive health controller thresholds DEGRADED OFFLINE"; exit 64; }; exec "$MANAGER_HOME/modules/hive_health.sh" --controller-thresholds "$5" "$6" ;;
+              rotate-tls) exec "$MANAGER_HOME/modules/hive_health.sh" --controller-rotate-tls ;;
+              *) err "Ação de saúde do controlador inválida: ${4:-}"; exit 64 ;;
+            esac
+            ;;
+          *) err "Uso: manager hive health {status|configure|disable|send|controller ...}"; exit 64 ;;
+        esac
+        ;;
       controller)
         case "${3:-status}" in
           init) exec "$MANAGER_HOME/modules/hive_identity.sh" --controller-init ;;
@@ -260,7 +295,7 @@ case "${1:-}" in
           *) err "Ação de controlador da Colmeia inválida: ${3:-}"; exit 64 ;;
         esac
         ;;
-      *) err "Uso: manager hive {status|request|accept|network ...|controller ...}"; exit 64 ;;
+      *) err "Uso: manager hive {status|request|accept|network ...|health ...|controller ...}"; exit 64 ;;
     esac
     ;;
   automation)
@@ -360,6 +395,7 @@ while true; do
   say " ${C_WHITE}COLMEIA${C_RESET}"
   say " ${C_CYAN}39${C_RESET}) Identidade criptográfica / enrollment do nó"
   say " ${C_CYAN}40${C_RESET}) Rede WireGuard privada / mesh"
+  say " ${C_CYAN}41${C_RESET}) Heartbeat / saúde dos nós"
   say ""
   say " ${C_WHITE}MONITORAMENTO E MANUTENÇÃO${C_RESET}"
   say " ${C_CYAN}10${C_RESET}) Tráfego e conexões"
@@ -483,6 +519,20 @@ while true; do
       say " manager hive network controller approve REQUEST"
       say " manager hive network controller bundle-all /root/hive-bundles"
       say " manager hive network accept BUNDLE"
+      pause
+      ;;
+    41)
+      header
+      say "${C_WHITE}COLMEIA — HEARTBEAT / SAÚDE${C_RESET}\n"
+      "$MANAGER_HOME/modules/hive_health.sh" --status || true
+      say ""
+      "$MANAGER_HOME/modules/hive_health.sh" --controller-status 2>/dev/null || true
+      say ""
+      say "Fluxo via CLI:"
+      say " manager hive health controller enable BIND_IP [PORT]"
+      say " manager hive health configure HOST PORT SHA256:<tls-fingerprint> [INTERVAL]"
+      say " manager hive health send"
+      say " manager hive health controller list"
       pause
       ;;
     90) self_update ;;
