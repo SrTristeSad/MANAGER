@@ -4,6 +4,53 @@ Todas as mudanças relevantes do MANAGER serão registradas aqui.
 
 O projeto usa versionamento semântico (`MAJOR.MINOR.PATCH`) enquanto a API/estrutura ainda está evoluindo.
 
+## [0.6.7] - 2026-10-10
+
+### Cotas por identidade
+
+- A unidade principal de cota de revenda deixa de depender de usuário Linux e passa a ser a identidade lógica MANAGER.
+- Identidades somente WireGuard ou somente OpenVPN agora podem pertencer a revendedor/subrevendedor sem criar uma conta SSH artificial.
+- Uma identidade ocupa uma única vaga independentemente de usar SSH, WireGuard, OpenVPN ou uma combinação dos três.
+- Novos slots persistentes em `/etc/manager/access/identity-slots` representam a ocupação de cota de cada cliente lógico.
+- A reserva do slot acontece sob lock antes da gravação da identidade, impedindo duas criações concorrentes de ultrapassarem a mesma cota.
+- O uso de subrevendedores continua agregado ao limite do revendedor pai.
+- `manager --reseller-usage OWNER` mostra identidades diretas, contas SSH legadas ainda não absorvidas, uso total, cota e saldo.
+
+### Compatibilidade e lifecycle
+
+- Contas SSH antigas em `/etc/manager/access/owners` continuam contando enquanto não forem adotadas por uma identidade.
+- Ao adotar uma conta SSH legada por uma identidade MANAGER correspondente, a contagem é deduplicada para manter um cliente = uma vaga.
+- Desabilitar temporariamente uma identidade não libera sua vaga de revenda.
+- Revogação completa pelo provisionador libera o slot somente depois que os acessos técnicos foram removidos/revogados com sucesso.
+- Identidade com slot liberado precisa reservar capacidade novamente antes de ser reativada; reativação é recusada quando a cota está cheia.
+- Uma identidade ainda ativa não pode liberar o próprio slot diretamente.
+- Identidades históricas revogadas pela 0.6.6 (`disabled`, sem bindings e sem produto) são migradas com slot inativo, evitando que um upgrade faça clientes já revogados voltarem a consumir cota.
+
+### Cotas por produto
+
+- Novo `modules/reseller_product_quotas.sh` adiciona cota opcional por produto/plano para revendedor e subrevendedor.
+- `0` significa ilimitado; cotas finitas não podem ser reduzidas abaixo do uso atual.
+- Um subrevendedor pode possuir limite próprio por produto, mas continua sujeito ao limite agregado do revendedor pai.
+- `products.sh --assign` valida a cota do produto antes de alterar a atribuição, evitando contorno do limite por uma chamada administrativa direta.
+- O provisionamento unificado valida cota total e cota de produto no preflight, antes de criar identidade, usuário ou credencial VPN.
+- `manager --reseller-product-quota OWNER PRODUCT` expõe uso, cota e saldo do produto.
+- Menu principal ganhou `Cotas de produto por revendedor`.
+
+### Provisionamento, persistência e testes
+
+- `manager --provision ID PLAN OWNER PROTOCOLS` deixa de exigir `ssh` para clientes de revenda; VPN-only passa a usar a mesma reserva de identidade.
+- Rollback de provisionamento remove a identidade antes de liberar o slot, preservando a proteção que impede liberar cota de uma identidade ainda ativa.
+- O instalador passa a entregar e inicializar a nova camada de cotas sem criar banco paralelo.
+- Slots e cotas de produto permanecem sob `/etc/manager/access`, entrando no backup, uninstall preservando estado e purge já existentes.
+- Novo CI `Reseller Identity and Product Quotas` cobre clientes WG/OVPN sem SSH, hierarquia pai/subrevendedor, reativação sob cota cheia, limite por produto, adoção de SSH legado sem dupla contagem, migração de identidade revogada, preflight e persistência em uninstall/reinstall.
+- Nova documentação `docs/RESELLER_QUOTAS.md`; `docs/PROVISIONING.md`, README e roadmap foram atualizados para o novo modelo.
+
+### Limites desta etapa
+
+- Cotas ainda são autoritativas por VPS. A futura Colmeia moverá a reserva para uma autoridade global para impedir excesso distribuído entre vários nós.
+- Accounting de tráfego continua separado da cota de clientes/produtos e ainda não representa faturamento global.
+- Os próximos itens 0.6.x são IPv6 completo, metadados de nó/região, passagem automática de contexto ACL e consolidação dos contratos internos que serão usados pela Automation v2.
+
 ## [0.6.6] - 2026-10-10
 
 ### Provisionamento unificado
@@ -53,7 +100,7 @@ O projeto usa versionamento semântico (`MAJOR.MINOR.PATCH`) enquanto a API/estr
 - Novo `products.sh` cria um catálogo de produtos/planos separado das credenciais técnicas de SSH, WireGuard e OpenVPN.
 - Produtos podem restringir protocolos, duração, expiração e `max_sessions` de uma identidade MANAGER.
 - Antes da atribuição, o MANAGER preserva `base_max_sessions`, `base_protocols` e `base_expires_epoch`; ao desvincular o produto, esses valores são restaurados.
-- Protocolos do produto funcionam como interseção com a política base e nunca ampliam silenciosamente os privilégios da identidade.
+- Protocolos do produto funcionam como interseção com a política base e nunca amplia silenciosamente os privilégios da identidade.
 - Atualização de produto reaplica a política às identidades vinculadas e recusa uma alteração que deixaria uma delas sem protocolo compatível.
 - Produto desabilitado adiciona o estado efetivo `product-disabled`, reaproveitando o mesmo caminho de enforcement do Policy/Session Engine.
 
