@@ -60,7 +60,8 @@ jobs:
             exit 1
           fi
           id ci-prov
-          sudo /opt/manager/manager --identity ci-prov | grep -q '^state=active$'
+          sudo /opt/manager/manager --identity ci-prov > /tmp/duplicate-identity.log
+          grep -q '^state=active$' /tmp/duplicate-identity.log
 
       - name: Fail preflight before creating unavailable VPN resources
         shell: bash
@@ -110,4 +111,5 @@ jobs:
           sudo test -f /etc/manager/connection/identities/ci-prov.conf
           source_url="file://${GITHUB_WORKSPACE}"
           sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
-          sudo /opt/manager/manager --identity ci-prov | grep -q '^state=disabled$'
+          sudo /opt/manager/manager --identity ci-prov > /tmp/restored-revoked.log
+          grep -q '^state=disabled$' /tmp/restored-revoked.log
