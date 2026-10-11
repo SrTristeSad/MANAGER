@@ -1,0 +1,212 @@
+name: Hive Heartbeat and Health
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hive-health:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo test -x /opt/manager/modules/hive_health.sh
+          sudo manager hive health status >/tmp/hive-health-initial
+          grep -q '^contract=manager-hive-health-node-v1$' /tmp/hive-health-initial
+          grep -q '^configured=0$' /tmp/hive-health-initial
+
+      - name: Enroll an isolated node into the controller
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo rm -rf /tmp/hive-health-node /tmp/hive-health-node-data /tmp/hive-health-controller-data /tmp/hive-health-systemd-node /tmp/hive-health-systemd-controller
+          sudo mkdir -m 700 /tmp/hive-health-node /tmp/hive-health-node-data /tmp/hive-health-controller-data
+          sudo mkdir -m 755 /tmp/hive-health-systemd-node /tmp/hive-health-systemd-controller
+          sudo env MANAGER_ETC=/tmp/hive-health-node /opt/manager/modules/node_metadata.sh --init >/dev/null
+          sudo env MANAGER_ETC=/tmp/hive-health-node /opt/manager/modules/hive_identity.sh --request /tmp/hive-health-node.request.json >/tmp/node-request
+          sudo manager hive controller init >/tmp/controller-init
+          controller_fp="$(sudo manager hive controller fingerprint)"
+          printf '%s' "$controller_fp" >/tmp/hive-controller-identity-fp
+          sudo manager hive controller approve /tmp/hive-health-node.request.json /tmp/hive-health-node.bundle.json >/tmp/node-approve
+          node_id="$(awk -F= '$1=="node_id"{print $2}' /tmp/node-approve)"
+          test -n "$node_id"
+          printf '%s' "$node_id" >/tmp/hive-health-node.id
+          sudo env MANAGER_ETC=/tmp/hive-health-node /opt/manager/modules/hive_identity.sh --accept /tmp/hive-health-node.bundle.json "$controller_fp" >/tmp/node-accept
+          grep -q '^enrolled=1$' /tmp/node-accept
+          test "$(awk -F= '$1=="node_epoch"{print $2}' /tmp/node-accept)" = 1
+
+      - name: Enable controller health listener with TLS 1.3
+        shell: bash
+        run: |
+          set -euxo pipefail
+          port="$(python3 - <<'PY'
+          import socket
+          s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()
+          PY
+          )"
+          printf '%s' "$port" >/tmp/hive-health.port
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-health-systemd-controller MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-controller-data MANAGER_HIVE_HEALTH_AUDIT_FILE=/tmp/hive-health-controller-audit.jsonl /opt/manager/modules/hive_health.sh --controller-enable 127.0.0.1 "$port" >/tmp/controller-health-enable
+          grep -q '^controller_health_enabled=1$' /tmp/controller-health-enable
+          grep -q '^tls=TLSv1.3$' /tmp/controller-health-enable
+          grep -q '^firewall_auto_open=0$' /tmp/controller-health-enable
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-health-systemd-controller MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-controller-data MANAGER_HIVE_HEALTH_AUDIT_FILE=/tmp/hive-health-controller-audit.jsonl /opt/manager/modules/hive_health.sh --controller-status >/tmp/controller-health-status
+          tls_fp="$(awk -F= '$1=="tls_fingerprint"{print $2}' /tmp/controller-health-status)"
+          [[ "$tls_fp" =~ ^SHA256:[a-f0-9]{64}$ ]]
+          printf '%s' "$tls_fp" >/tmp/hive-health.tls-fp
+
+          sudo env MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-controller-data MANAGER_HIVE_HEALTH_AUDIT_FILE=/tmp/hive-health-controller-audit.jsonl /opt/manager/modules/hive_health.sh --serve-controller >/tmp/hive-health-server.log 2>&1 &
+          echo $! >/tmp/hive-health-server.pid
+          for _ in $(seq 1 40); do
+            if python3 - "$port" <<'PY'
+          import socket,sys
+          try:
+              s=socket.create_connection(('127.0.0.1',int(sys.argv[1])),timeout=.2); s.close()
+          except OSError:
+              raise SystemExit(1)
+          PY
+            then break; fi
+            sleep .1
+          done
+          kill -0 "$(cat /tmp/hive-health-server.pid)"
+
+      - name: Reject wrong TLS pin then accept signed heartbeat
+        shell: bash
+        run: |
+          set -euxo pipefail
+          port="$(cat /tmp/hive-health.port)"
+          tls_fp="$(cat /tmp/hive-health.tls-fp)"
+          wrong_fp='SHA256:0000000000000000000000000000000000000000000000000000000000000000'
+          if [[ "$tls_fp" == "$wrong_fp" ]]; then wrong_fp='SHA256:1111111111111111111111111111111111111111111111111111111111111111'; fi
+
+          sudo env GITHUB_ACTIONS=true MANAGER_ETC=/tmp/hive-health-node MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-health-systemd-node MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-node-data /opt/manager/modules/hive_health.sh --configure 127.0.0.1 "$port" "$wrong_fp" 30 >/dev/null
+          if sudo env GITHUB_ACTIONS=true MANAGER_ETC=/tmp/hive-health-node MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-health-systemd-node MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-node-data /opt/manager/modules/hive_health.sh --send; then
+            echo 'heartbeat accepted a wrong TLS fingerprint' >&2
+            exit 1
+          fi
+
+          sudo env GITHUB_ACTIONS=true MANAGER_ETC=/tmp/hive-health-node MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-health-systemd-node MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-node-data /opt/manager/modules/hive_health.sh --configure 127.0.0.1 "$port" "$tls_fp" 30 >/tmp/node-health-configure
+          grep -q '^heartbeat_configured=1$' /tmp/node-health-configure
+          sudo env GITHUB_ACTIONS=true MANAGER_ETC=/tmp/hive-health-node MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-health-systemd-node MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-node-data /opt/manager/modules/hive_health.sh --send >/tmp/heartbeat-send
+          grep -q '^heartbeat_accepted=1$' /tmp/heartbeat-send
+          grep -Eq '^state=(HEALTHY|DEGRADED)$' /tmp/heartbeat-send
+          awk -F= '$1=="rtt_ms" {exit !($2 >= 0)}' /tmp/heartbeat-send
+
+          node_id="$(cat /tmp/hive-health-node.id)"
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-health-systemd-controller MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-controller-data MANAGER_HIVE_HEALTH_AUDIT_FILE=/tmp/hive-health-controller-audit.jsonl /opt/manager/modules/hive_health.sh --controller-show "$node_id" >/tmp/controller-node-health
+          grep -Eq '^state=(HEALTHY|DEGRADED)$' /tmp/controller-node-health
+          grep -q '^last_heartbeat_epoch=' /tmp/controller-node-health
+          grep -q '^metric_cpu_percent=' /tmp/controller-node-health
+          grep -q '^metric_memory_used_percent=' /tmp/controller-node-health
+          grep -q '^metric_sessions=' /tmp/controller-node-health
+
+      - name: Reject replay and tampered heartbeat
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo env MANAGER_ETC=/tmp/hive-health-node MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-node-data /opt/manager/modules/hive_health.sh --heartbeat /tmp/heartbeat-replay.json >/dev/null
+          sudo env GITHUB_ACTIONS=true MANAGER_ETC=/tmp/hive-health-node MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-health-systemd-node MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-node-data /opt/manager/modules/hive_health.sh --send-file /tmp/heartbeat-replay.json >/tmp/replay-first
+          grep -q '^heartbeat_accepted=1$' /tmp/replay-first
+          if sudo env GITHUB_ACTIONS=true MANAGER_ETC=/tmp/hive-health-node MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-health-systemd-node MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-node-data /opt/manager/modules/hive_health.sh --send-file /tmp/heartbeat-replay.json; then
+            echo 'replayed heartbeat was accepted' >&2
+            exit 1
+          fi
+
+          sudo env MANAGER_ETC=/tmp/hive-health-node MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-node-data /opt/manager/modules/hive_health.sh --heartbeat /tmp/heartbeat-tamper.json >/dev/null
+          sudo python3 - <<'PY'
+          import json
+          p='/tmp/heartbeat-tamper.json'
+          d=json.load(open(p)); d['metrics']['sessions']=d['metrics']['sessions']+1
+          json.dump(d,open(p,'w'),sort_keys=True,separators=(',',':'))
+          PY
+          sudo chmod 600 /tmp/heartbeat-tamper.json
+          if sudo env GITHUB_ACTIONS=true MANAGER_ETC=/tmp/hive-health-node MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-health-systemd-node MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-node-data /opt/manager/modules/hive_health.sh --send-file /tmp/heartbeat-tamper.json; then
+            echo 'tampered heartbeat was accepted' >&2
+            exit 1
+          fi
+          sudo grep -q '"event":"reject"' /tmp/hive-health-controller-audit.jsonl
+
+      - name: Derive delayed and offline health from missed heartbeats
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node_id="$(cat /tmp/hive-health-node.id)"
+          obs="/tmp/hive-health-controller-data/nodes/$node_id.json"
+          sudo test -f "$obs"
+          now="$(date +%s)"
+          sudo python3 - "$obs" "$((now-100))" <<'PY'
+          import json,sys
+          p=sys.argv[1]; d=json.load(open(p)); d['received_at']=int(sys.argv[2])
+          json.dump(d,open(p,'w'),sort_keys=True,separators=(',',':'))
+          PY
+          sudo chmod 600 "$obs"
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-health-systemd-controller MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-controller-data MANAGER_HIVE_HEALTH_AUDIT_FILE=/tmp/hive-health-controller-audit.jsonl /opt/manager/modules/hive_health.sh --controller-show "$node_id" >/tmp/delayed-health
+          grep -q '^state=DEGRADED$' /tmp/delayed-health
+          grep -q '^reason=heartbeat-delayed$' /tmp/delayed-health
+
+          sudo python3 - "$obs" "$((now-300))" <<'PY'
+          import json,sys
+          p=sys.argv[1]; d=json.load(open(p)); d['received_at']=int(sys.argv[2])
+          json.dump(d,open(p,'w'),sort_keys=True,separators=(',',':'))
+          PY
+          sudo chmod 600 "$obs"
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-health-systemd-controller MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-controller-data MANAGER_HIVE_HEALTH_AUDIT_FILE=/tmp/hive-health-controller-audit.jsonl /opt/manager/modules/hive_health.sh --controller-show "$node_id" >/tmp/offline-health
+          grep -q '^state=OFFLINE$' /tmp/offline-health
+          grep -q '^reason=heartbeat-timeout$' /tmp/offline-health
+
+      - name: Report DRAINING when local node is administratively disabled
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo env MANAGER_ETC=/tmp/hive-health-node /opt/manager/modules/node_metadata.sh --set enabled 0
+          sudo env GITHUB_ACTIONS=true MANAGER_ETC=/tmp/hive-health-node MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-health-systemd-node MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-node-data /opt/manager/modules/hive_health.sh --send >/tmp/draining-send
+          grep -q '^state=DRAINING$' /tmp/draining-send
+          grep -q '^reason=node-disabled-local$' /tmp/draining-send
+          sudo env MANAGER_ETC=/tmp/hive-health-node /opt/manager/modules/node_metadata.sh --set enabled 1
+
+      - name: Fence heartbeat after controller revokes node epoch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node_id="$(cat /tmp/hive-health-node.id)"
+          sudo env MANAGER_ETC=/tmp/hive-health-node MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-node-data /opt/manager/modules/hive_health.sh --heartbeat /tmp/heartbeat-before-revoke.json >/dev/null
+          sudo manager hive controller revoke "$node_id" ci-revoke >/tmp/revoke-node
+          grep -q '^revoked=1$' /tmp/revoke-node
+          if sudo env GITHUB_ACTIONS=true MANAGER_ETC=/tmp/hive-health-node MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-health-systemd-node MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-node-data /opt/manager/modules/hive_health.sh --send-file /tmp/heartbeat-before-revoke.json; then
+            echo 'heartbeat survived authority revoke/node_epoch fencing' >&2
+            exit 1
+          fi
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-health-systemd-controller MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-controller-data MANAGER_HIVE_HEALTH_AUDIT_FILE=/tmp/hive-health-controller-audit.jsonl /opt/manager/modules/hive_health.sh --controller-show "$node_id" >/tmp/revoked-health
+          grep -q '^state=OFFLINE$' /tmp/revoked-health
+          grep -q '^reason=authority-disabled$' /tmp/revoked-health
+
+      - name: Lifecycle detaches runtime units but preserves durable health configuration
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo test -f /tmp/hive-health-node/hive/health/node.conf
+          sudo test -f /etc/manager/hive/controller/health/controller.conf
+          sudo env GITHUB_ACTIONS=true MANAGER_ETC=/tmp/hive-health-node MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-health-systemd-node MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-node-data /opt/manager/modules/hive_health.sh --install
+          sudo test -f /tmp/hive-health-systemd-node/manager-hive-heartbeat.service
+          sudo test -f /tmp/hive-health-systemd-node/manager-hive-heartbeat.timer
+          sudo env GITHUB_ACTIONS=true MANAGER_ETC=/tmp/hive-health-node MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-health-systemd-node MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-node-data /opt/manager/modules/hive_health.sh --detach
+          sudo test ! -e /tmp/hive-health-systemd-node/manager-hive-heartbeat.service
+          sudo test ! -e /tmp/hive-health-systemd-node/manager-hive-heartbeat.timer
+          sudo test -f /tmp/hive-health-node/hive/health/node.conf
+          sudo test -f /etc/manager/hive/controller/health/controller.conf
+
+      - name: Cleanup listener
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [[ -f /tmp/hive-health-server.pid ]]; then sudo kill "$(cat /tmp/hive-health-server.pid)" 2>/dev/null || true; fi
