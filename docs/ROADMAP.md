@@ -69,7 +69,7 @@ Credenciais por principal, enrollment, fingerprint, rotação, revogação e aut
 
 Documentação: `docs/AUTOMATION_V2.md`.
 
-## 0.8.x — Modo Colmeia
+## 0.8.x — Modo Colmeia 🚧
 
 A série 0.8 transforma a autoridade local existente em coordenação distribuída entre VPS, mantendo o controlador fora do caminho de dados VPN.
 
@@ -95,9 +95,35 @@ Implementado:
 - uninstall/reinstall preserva confiança; purge remove estado server-side;
 - CI `Hive Node Enrollment` cobre tamper, pin errado, revoke, reenroll, fencing e lifecycle.
 
-Limites explícitos:
+### 0.8.1 — rede privada WireGuard da Colmeia ✅
+
+Implementado:
+
+- interface privada dedicada `mgh0`, separada do `wg0` de clientes;
+- mesh direto entre VPS, sem encaminhar o tráfego VPN dos usuários pelo controlador;
+- chave WireGuard privada criada e mantida exclusivamente em cada nó;
+- network request assinado pela identidade Ed25519 enrolled do nó;
+- controlador guarda apenas chave pública WireGuard, endpoint, porta e estado de topologia;
+- IPv4/IPv6 interno único por nó;
+- bundles de topologia assinados pelo controlador;
+- `config_epoch` monotônico e fencing contra rollback/divergência de topologia;
+- enable/disable de nó na malha sem apagar sua identidade;
+- nenhuma rota default `0.0.0.0/0` ou `::/0`;
+- nenhuma abertura automática de firewall;
+- ownership explícito de `mgh0.conf`, preservando configuração externa;
+- validação com `wg-quick strip` antes de aplicar;
+- restart real da interface quando a topologia muda;
+- rollback de runtime se a aplicação falhar;
+- lifecycle seguro de uninstall/rollback por drop-in do Automation v2;
+- chave/topologia duráveis sobrevivem a uninstall/rollback normal;
+- CI `Hive Private Network` e `Hive Network Lifecycle`.
+
+Limites atuais após 0.8.1:
 
 ```text
+private_hive_network=1
+wireguard_mesh=1
+controller_user_traffic_transit=0
 heartbeat=0
 node_health=0
 scheduler=0
@@ -110,12 +136,13 @@ global_accounting=0
 
 Documentação: `docs/HIVE.md`.
 
-### 0.8.1 — heartbeat e saúde — PRÓXIMO
+### 0.8.2 — heartbeat e saúde — PRÓXIMO
 
 Planejado:
 
 - heartbeat assinado pelo nó;
 - freshness e anti-replay compatíveis com a Automation v2;
+- envio pela rede privada `mgh0` quando disponível;
 - CPU, RAM, rede e carga;
 - sessões e capacidade;
 - latência;
@@ -125,15 +152,16 @@ Planejado:
 - último heartbeat e motivo do estado auditáveis;
 - controlador continua fora do tráfego VPN.
 
-### 0.8.2 — scheduler, drain e failover
+### 0.8.3 — scheduler, drain e seleção de nó
 
 - weighted least-loaded;
 - capacidade/peso;
 - protocolo solicitado;
 - região/pool/ACL;
+- latência/health;
 - sticky session;
 - drain;
-- failover.
+- seleção determinística/auditável.
 
 Comando desejado:
 
@@ -143,7 +171,7 @@ manager hive node drain BR-SP-02
 
 Drain impede novas conexões, mas sessões existentes continuam até finalizar.
 
-### 0.8.3 — autoridade de sessões globais
+### 0.8.4 — autoridade de sessões globais
 
 - lease global por identidade/plano;
 - `max_sessions` global atômico;
@@ -161,21 +189,55 @@ max_sessions global = 1
 → pode estar conectada em apenas um deles por vez
 ```
 
-### 0.8.4 — accounting global
+### 0.8.5 — VPN allocation / login global
+
+- login/provisionamento capaz de escolher um nó elegível;
+- vínculo entre produto, região/pool, protocolo e lease global;
+- sessão criada somente no nó autorizado pelo grant atual;
+- `session_epoch`/fencing impedindo nó stale de aceitar retorno antigo;
+- suporte a SSH, WireGuard e OpenVPN conforme capacidades do nó.
+
+### 0.8.6 — quotas e accounting globais
 
 - ingestão idempotente de deltas por nó;
 - deduplicação;
 - franquia global;
 - telemetria local 0.6.11 continua não autoritativa sozinha;
-- proteção contra double counting após failover/reconnect.
+- proteção contra double counting após failover/reconnect;
+- quota e `max_sessions` permanecem autoridades distintas.
 
-### 0.8.5 — resiliência operacional
+### 0.8.7 — failover e resiliência operacional
 
 - controlador fora do caminho de dados VPN;
 - sessões existentes sobrevivem a outage sob regras de grace;
 - novos grants podem falhar fechado quando autoridade global não puder ser garantida;
 - recovery/fencing após retorno do controlador;
-- observabilidade e auditoria distribuída.
+- drain/failover sem expulsar sessão saudável desnecessariamente;
+- sticky session preservada quando possível.
+
+### 0.8.8 — comandos remotos controlados
+
+- operações remotas tipadas sobre contratos existentes;
+- nenhuma execução arbitrária de shell;
+- escopo/RBAC por nó, pool e ação;
+- audit e idempotência;
+- integração futura com Telegram sem criar uma segunda autoridade paralela.
+
+### 0.8.9 — rotação de chaves e anti-replay distribuído
+
+- rotação de identidade do nó/controlador com transição explícita;
+- rotação de material da malha WireGuard;
+- nonce/timestamp/freshness para mensagens distribuídas;
+- revogação e fencing durante rotação;
+- nenhuma criptografia própria.
+
+### 0.8.10 — observabilidade distribuída
+
+- visão de saúde/capacidade por nó;
+- histórico de decisões do scheduler;
+- leases/grants globais auditáveis;
+- métricas de failover, drain e latência;
+- retenção operacional sem persistir segredos.
 
 ## 0.9.x — Telegram Bot + Mini App
 
