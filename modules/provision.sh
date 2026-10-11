@@ -113,7 +113,10 @@ resource_conflict() {
 preflight_protocols() {
   local protocols="$1"
   if protocol_list_has "$protocols" ssh; then
-    command_exists useradd && command_exists chpasswd && command_exists userdel || { err "Ferramentas de usuário Linux ausentes"; return 69; }
+    if ! command_exists useradd || ! command_exists chpasswd || ! command_exists userdel; then
+      err "Ferramentas de usuário Linux ausentes"
+      return 69
+    fi
   fi
   if protocol_list_has "$protocols" wireguard; then
     command_exists wg || { err "wireguard-tools não está instalado"; return 69; }
