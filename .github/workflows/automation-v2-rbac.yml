@@ -23,10 +23,11 @@ jobs:
           sudo systemctl is-active --quiet manager-automation-v2.service
           sudo test -f /etc/manager/automation/v2/principals/local-root.conf
           test "$(sudo stat -c '%a' /etc/manager/automation/v2/principals/local-root.conf)" = 600
-          sudo manager automation v2 status | grep -q '^rbac=1$'
-          sudo manager automation v2 status | grep -q '^cryptographic_auth=1$'
-          sudo manager automation v2 status | grep -q '^nonlocal_signature_required=1$'
-          sudo manager automation v2 status | grep -q '^anti_replay=1$'
+          sudo manager automation v2 status > /tmp/automation-v2-status
+          grep -q '^rbac=1$' /tmp/automation-v2-status
+          grep -q '^cryptographic_auth=1$' /tmp/automation-v2-status
+          grep -q '^nonlocal_signature_required=1$' /tmp/automation-v2-status
+          grep -q '^anti_replay=1$' /tmp/automation-v2-status
 
       - name: Build authority objects
         shell: bash
