@@ -1,0 +1,84 @@
+name: Node Identity and Metadata
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  node-metadata:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo test -x /opt/manager/modules/node_metadata.sh
+          sudo test -f /etc/manager/connection/node/node.conf
+
+      - name: Keep a stable node identity
+        shell: bash
+        run: |
+          set -euxo pipefail
+          first="$(sudo /opt/manager/modules/node_metadata.sh --context | awk -F= '$1=="node" {print $2}')"
+          test -n "$first"
+          case "$first" in node-*) ;; *) exit 1 ;; esac
+          sudo /opt/manager/modules/node_metadata.sh --init >/dev/null
+          second="$(sudo /opt/manager/modules/node_metadata.sh --context | awk -F= '$1=="node" {print $2}')"
+          test "$first" = "$second"
+
+      - name: Validate scheduling metadata and context
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/manager --node-set country br
+          sudo /opt/manager/manager --node-set region BR-SP
+          sudo /opt/manager/manager --node-set pool BRASIL-PREMIUM
+          sudo /opt/manager/manager --node-set provider provider-ci
+          sudo /opt/manager/manager --node-set city sao-paulo
+          sudo /opt/manager/manager --node-set capacity 8
+          sudo /opt/manager/manager --node-set weight 3
+          sudo /opt/manager/manager --node-set max_sessions 500
+
+          sudo /opt/manager/manager --node-context > /tmp/node-context.log
+          grep -q '^country=BR$' /tmp/node-context.log
+          grep -q '^region=BR-SP$' /tmp/node-context.log
+          grep -q '^pool=BRASIL-PREMIUM$' /tmp/node-context.log
+          grep -q '^node=node-' /tmp/node-context.log
+
+          sudo /opt/manager/manager --node > /tmp/node-show.log
+          grep -q '^capacity=8$' /tmp/node-show.log
+          grep -q '^weight=3$' /tmp/node-show.log
+          grep -q '^max_sessions=500$' /tmp/node-show.log
+
+      - name: Reject invalid or immutable metadata
+        shell: bash
+        run: |
+          set -euxo pipefail
+          before="$(sudo sha256sum /etc/manager/connection/node/node.conf | awk '{print $1}')"
+          if sudo /opt/manager/manager --node-set country BRA; then exit 1; fi
+          if sudo /opt/manager/manager --node-set capacity 0; then exit 1; fi
+          if sudo /opt/manager/manager --node-set weight nope; then exit 1; fi
+          if sudo /opt/manager/manager --node-set node_id node-forged; then exit 1; fi
+          after="$(sudo sha256sum /etc/manager/connection/node/node.conf | awk '{print $1}')"
+          test "$before" = "$after"
+
+      - name: Preserve node identity through uninstall and reinstall
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          node_before="$(sudo /opt/manager/modules/node_metadata.sh --context | awk -F= '$1=="node" {print $2}')"
+          sudo /opt/manager/uninstall.sh
+          sudo test -f /etc/manager/connection/node/node.conf
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          node_after="$(sudo /opt/manager/modules/node_metadata.sh --context | awk -F= '$1=="node" {print $2}')"
+          test "$node_before" = "$node_after"
+          sudo /opt/manager/manager --node-context | grep -q '^region=BR-SP$'
