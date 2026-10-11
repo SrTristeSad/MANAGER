@@ -1,0 +1,169 @@
+name: Automation Legacy v1
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  legacy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo test -x /opt/manager/modules/automation_legacy.sh
+
+      - name: Verify disabled-by-default contract
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager automation legacy status > /tmp/legacy-status
+          grep -q '^contract=manager-automation-legacy-v1$' /tmp/legacy-status
+          grep -q '^enabled=0$' /tmp/legacy-status
+          grep -q '^service=inactive$' /tmp/legacy-status
+          grep -q '^port_listening=0$' /tmp/legacy-status
+          grep -q '^root_login=0$' /tmp/legacy-status
+          grep -q '^arbitrary_shell=0$' /tmp/legacy-status
+          grep -q '^plaintext_password_storage=0$' /tmp/legacy-status
+          test ! -e /etc/systemd/system/manager-automation-legacy.service
+
+      - name: Enable and validate privilege boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo manager automation legacy enable 22079 > /tmp/legacy-enable
+          integration_secret="$(awk -F= '$1=="senha"{print $2; exit}' /tmp/legacy-enable)"
+          test "${#integration_secret}" -ge 24
+
+          sudo manager automation legacy status > /tmp/legacy-enabled-status
+          grep -q '^enabled=1$' /tmp/legacy-enabled-status
+          grep -q '^service=active$' /tmp/legacy-enabled-status
+          grep -q '^porta=22079$' /tmp/legacy-enabled-status
+          grep -q '^port_listening=1$' /tmp/legacy-enabled-status
+          grep -q '^account_locked=0$' /tmp/legacy-enabled-status
+          sudo sshd -t -f /etc/manager/automation/legacy/sshd_config
+          sudo sshd -t
+          grep -q '^ForceCommand /usr/bin/sudo -n /opt/manager/modules/automation_legacy.sh --forced-command$' /etc/manager/automation/legacy/sshd_config
+          grep -q '^PermitRootLogin no$' /etc/manager/automation/legacy/sshd_config
+          grep -q '^AllowTcpForwarding no$' /etc/manager/automation/legacy/sshd_config
+          grep -q '^Match User manager-legacy$' /etc/ssh/sshd_config.d/64-manager-automation-legacy.conf
+          grep -q '^Match all$' /etc/ssh/sshd_config.d/64-manager-automation-legacy.conf
+          sudo test -f /etc/sudoers.d/manager-automation-legacy
+          sudo visudo -cf /etc/sudoers.d/manager-automation-legacy
+          sudo grep -Fq 'manager-legacy ALL=(root) NOPASSWD: /opt/manager/modules/automation_legacy.sh --forced-command' /etc/sudoers.d/manager-automation-legacy
+
+          if sudo grep -R -Fq -- "$integration_secret" /etc/manager /var/log/manager 2>/dev/null; then
+            echo 'Legacy integration secret leaked into MANAGER state/logs.' >&2
+            exit 1
+          fi
+
+      - name: Exercise historical commands through the restricted sudo command
+        shell: bash
+        run: |
+          set -euo pipefail
+          client_secret="$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"
+
+          legacy_call() {
+            local command="$1"
+            sudo -u manager-legacy env SSH_ORIGINAL_COMMAND="$command" sudo -n /opt/manager/modules/automation_legacy.sh --forced-command
+          }
+
+          create_out="$(legacy_call "criarusuario.sh legacyci $client_secret 2 1")"
+          test "$create_out" = '13'
+          sudo id legacyci >/dev/null
+          sudo /opt/manager/modules/connection_engine.sh --show legacyci > /tmp/legacy-identity
+          grep -q '^enabled=1$' /tmp/legacy-identity
+          grep -q '^max_sessions=1$' /tmp/legacy-identity
+          grep -q '^ssh_user=legacyci$' /tmp/legacy-identity
+
+          limit_out="$(legacy_call 'alterarlimite.sh legacyci 2')"
+          test "$limit_out" = '4'
+          sudo /opt/manager/modules/connection_engine.sh --show legacyci > /tmp/legacy-after-limit
+          grep -q '^max_sessions=2$' /tmp/legacy-after-limit
+
+          date_out="$(legacy_call 'AlterarData.sh legacyci 3')"
+          test "$date_out" = '1'
+          new_secret="$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"
+          password_out="$(legacy_call "AlterarSenha.sh legacyci $new_secret")"
+          test "$password_out" = '1'
+
+          monitor_out="$(legacy_call 'sshmonitor.sh')"
+          grep -q '^legacyci,[0-9][0-9]*,$' <<< "$monitor_out"
+
+          if legacy_call 'id' > /tmp/legacy-denied 2>/dev/null; then
+            echo 'Legacy dispatcher accepted a non-allowlisted command.' >&2
+            exit 1
+          fi
+          grep -q '^0$' /tmp/legacy-denied
+
+          for secret in "$client_secret" "$new_secret"; do
+            if sudo grep -R -Fq -- "$secret" /etc/manager /var/log/manager 2>/dev/null; then
+              echo 'A managed SSH secret leaked into MANAGER state/logs.' >&2
+              exit 1
+            fi
+          done
+          sudo test ! -e /root/usuarios.db
+          sudo test ! -e /etc/SSHPlus/senha/legacyci
+
+          remove_out="$(legacy_call 'remover.sh legacyci')"
+          test "$remove_out" = '1'
+          if sudo id legacyci >/dev/null 2>&1; then
+            echo 'Legacy remove left the Linux account behind.' >&2
+            exit 1
+          fi
+          sudo /opt/manager/modules/connection_engine.sh --show legacyci > /tmp/legacy-removed-identity
+          grep -q '^enabled=0$' /tmp/legacy-removed-identity
+          grep -q '^ssh_user=$' /tmp/legacy-removed-identity
+
+      - name: Disable closes the listener
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager automation legacy disable
+          sudo manager automation legacy status > /tmp/legacy-disabled
+          grep -q '^enabled=0$' /tmp/legacy-disabled
+          grep -q '^service=inactive$' /tmp/legacy-disabled
+          grep -q '^port_listening=0$' /tmp/legacy-disabled
+          grep -q '^account_locked=1$' /tmp/legacy-disabled
+          sudo test ! -e /etc/sudoers.d/manager-automation-legacy
+          ! sudo systemctl is-active --quiet manager-automation-legacy.service
+
+      - name: Preserve disabled state through uninstall and reinstall
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/uninstall.sh
+          sudo test -f /etc/manager/automation/legacy/config
+          sudo grep -q '^enabled=0$' /etc/manager/automation/legacy/config
+          sudo test ! -e /etc/systemd/system/manager-automation-legacy.service
+          sudo test ! -e /etc/ssh/sshd_config.d/64-manager-automation-legacy.conf
+          sudo test ! -e /etc/sudoers.d/manager-automation-legacy
+          sudo passwd -S manager-legacy | awk '{print $2}' | grep -Eq '^(L|LK)$'
+
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo manager automation legacy status > /tmp/legacy-reinstalled
+          grep -q '^enabled=0$' /tmp/legacy-reinstalled
+          grep -q '^service=inactive$' /tmp/legacy-reinstalled
+          grep -q '^port_listening=0$' /tmp/legacy-reinstalled
+
+      - name: Purge removes Legacy state and account
+        shell: bash
+        run: |
+          set -euxo pipefail
+          printf 'PURGAR\n' | sudo /opt/manager/uninstall.sh --purge
+          test ! -e /etc/manager
+          if id manager-legacy >/dev/null 2>&1; then
+            echo 'Purge left manager-legacy account behind.' >&2
+            exit 1
+          fi
+          test ! -e /var/lib/manager-legacy
