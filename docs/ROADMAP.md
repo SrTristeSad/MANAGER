@@ -91,16 +91,35 @@ Concluído:
 - rollback/uninstall conscientes de hooks externos ao `/opt/manager`;
 - CI cobrindo limite `1/1`, release e lifecycle completo do bridge.
 
+### 0.6.4 — Identity Usage Accounting
+
+Concluído:
+
+- camada comum de tráfego e atividade por identidade;
+- bytes reais de WireGuard e OpenVPN consolidados por identidade;
+- primeira leitura usada como baseline, evitando contabilizar tráfego anterior à ativação do coletor;
+- tratamento de reset/restart dos contadores absolutos sem zerar o acumulado da identidade;
+- última atividade/protocolo/recurso alimentados pelas leases reais;
+- SSH participa de sessão e atividade, mas bytes ficam explicitamente não medidos para evitar números falsos derivados de tráfego genérico do UID;
+- indicador `traffic_complete` diferencia totals completos de medições parciais;
+- estado persistente em `/var/lib/manager/identity-usage` e snapshots de origem separados;
+- `manager --usage [ID]`, menu próprio e integração com `Tráfego e conexões`;
+- coleta periódica por systemd;
+- backup transporta somente os acumulados consolidados, não baselines de outro nó;
+- uninstall normal preserva o histórico e `--purge` remove explicitamente;
+- CI dedicado cobre baseline, delta, reset, vínculo, persistência e purge.
+
 ### Próximos itens 0.6.x
 
 Antes da Automation v2, a base comum ainda deve ganhar:
 
-1. registro comum de tráfego/estado por identidade e protocolo;
-2. ACL/políticas independentes do protocolo;
+1. ACL/políticas independentes do protocolo;
+2. produto/plano e cotas baseadas em **identidade**, incluindo períodos/franquias de tráfego quando configurados;
 3. provisionamento/revogação de SSH, WireGuard e OpenVPN pelo próprio Connection Engine;
 4. cotas de revenda baseadas em **produto/identidade**, não somente usuário Linux;
 5. IPv6 completo;
-6. metadados de endpoint/nó/região que serão consumidos pela Colmeia.
+6. metadados de endpoint/nó/região que serão consumidos pela Colmeia;
+7. agregação futura de uso por nó sem tratar o accounting local da 0.6.4 como faturamento global.
 
 ## 0.7.0 — Automation Engine
 
@@ -139,7 +158,7 @@ Novo protocolo oficial para integrações futuras:
 - `managerd`/`managerctl` ou mecanismo equivalente;
 - nenhuma execução remota de shell arbitrário.
 
-O Protocol Lease Bridge da 0.6.3 deve continuar sendo a fronteira entre daemons de conexão e a autoridade de sessão, permitindo trocar a autoridade local por Automation/Colmeia sem reescrever os protocolos.
+O Protocol Lease Bridge da 0.6.3 continua sendo a fronteira entre daemons de conexão e a autoridade de sessão. O Identity Usage da 0.6.4 fornece a visão comum de consumo/atividade. Assim, Automation/Colmeia podem trocar a autoridade e agregar nós sem reescrever os protocolos.
 
 ## 0.8.0 — Modo Colmeia
 
@@ -204,9 +223,11 @@ TTL
 heartbeat
 session_epoch
 fencing
+usage counters
+last activity
 ```
 
-A diferença será a autoridade: o lock deixa de ser local e passa a ser global no Hub.
+A diferença será a autoridade: o lock deixa de ser local e passa a ser global no Hub; o uso local de cada nó será agregado sem alterar os contadores originais.
 
 ### Segurança da Colmeia
 
