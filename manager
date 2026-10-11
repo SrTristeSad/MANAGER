@@ -76,6 +76,13 @@ run_module() {
   fi
 }
 
+run_provision_transaction() {
+  local rc=0
+  MANAGER_DEFER_POLICY_SIGNAL=1 "$MANAGER_HOME/modules/provision.sh" "$@" || rc=$?
+  touch "$MANAGER_ETC/connection/.changed" 2>/dev/null || true
+  return "$rc"
+}
+
 self_update() {
   header
   say "${C_WHITE}ATUALIZAÇÃO DO MANAGER${C_RESET}\n"
@@ -150,11 +157,13 @@ case "${1:-}" in
     ;;
   --provision)
     [[ -n "${2:-}" && -n "${3:-}" ]] || { err "Uso: manager --provision ID PLAN [OWNER] [PROTOCOLS]"; exit 64; }
-    exec "$MANAGER_HOME/modules/provision.sh" --create "$2" "$3" "${4:-}" "${5:-}"
+    run_provision_transaction --create "$2" "$3" "${4:-}" "${5:-}"
+    exit $?
     ;;
   --revoke-identity)
     [[ -n "${2:-}" ]] || { err "Informe o ID da identidade"; exit 64; }
-    exec "$MANAGER_HOME/modules/provision.sh" --revoke "$2"
+    run_provision_transaction --revoke "$2"
+    exit $?
     ;;
   --identity-sessions) exec "$MANAGER_HOME/modules/policy_engine.sh" --sessions "${2:-}" ;;
   --leases) exec "$MANAGER_HOME/modules/session_engine.sh" --list "${2:-}" ;;
