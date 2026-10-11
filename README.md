@@ -4,7 +4,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 > O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva capacidades úteis, substitui implementações inseguras/obsoletas e prepara uma arquitetura própria para Automation v2, Telegram e Modo Colmeia.
 
-Versão atual: **0.6.5**.
+Versão atual: **0.6.6**.
 
 ## Princípios
 
@@ -432,6 +432,42 @@ manager-product-policy.service
 
 Documentação: [`docs/PRODUCTS.md`](docs/PRODUCTS.md).
 
+## Provisionamento Unificado — 0.6.6
+
+A 0.6.6 liga identidade, produto e recursos técnicos numa única operação controlada.
+
+```bash
+manager --provision maria brasil-premium
+manager --provision maria brasil-premium '' wireguard,openvpn
+manager --provision cliente01 plano-ssh revenda01 ssh
+```
+
+O provisionador faz preflight antes de alterar o sistema, cria a identidade, aplica o produto, materializa somente os protocolos selecionados, cria os bindings e reconcilia as políticas. Se uma etapa falhar, desfaz os recursos criados naquela tentativa.
+
+No SSH, a senha aleatória é mantida bloqueada enquanto a transação está incompleta e só é liberada após o commit. A senha é mostrada uma única vez na saída e não entra no log de eventos.
+
+WireGuard cria somente o peer/perfil correspondente. OpenVPN reutiliza a PKI Easy-RSA existente; se um certificado tiver sido emitido e o provisionamento falhar depois, ele é revogado e a CRL é atualizada.
+
+Revogação completa:
+
+```bash
+manager --revoke-identity maria
+```
+
+A revogação desativa primeiro a identidade, invalida leases, remove/revoga os recursos técnicos e limpa os bindings. A identidade lógica permanece `disabled` para histórico e auditoria.
+
+Eventos operacionais ficam em:
+
+```text
+/var/log/manager/provision-events.log
+```
+
+O log não contém senhas nem chaves privadas.
+
+Enquanto a cota antiga de revenda ainda contar usuários Linux, provisionamentos com `OWNER` exigem `ssh`. A próxima migração removerá essa dependência e permitirá planos de revenda VPN-only baseados diretamente em produto/identidade.
+
+Documentação: [`docs/PROVISIONING.md`](docs/PROVISIONING.md).
+
 ## O limite que prepara a Colmeia
 
 Hoje a autoridade de lease, produto e accounting ainda é local na VPS. O modelo, porém, já representa o comportamento planejado para a Colmeia:
@@ -537,6 +573,7 @@ O detector de legado reconhece estruturas como:
 - OpenVPN não recebe acesso root ao Lease Engine;
 - hooks externos são removidos antes de uninstall/rollback;
 - franquia SSH não é bloqueada com dados incompletos;
+- provisionamento não registra senha/chaves privadas no audit log;
 - self-update baixa e valida o instalador antes da execução.
 
 ## CLI
@@ -553,6 +590,9 @@ manager --identity ID             detalhes da identidade
 manager --products                produtos/planos
 manager --product ID              detalhes do produto
 manager --product-assignment ID   produto/franquia da identidade
+manager --provision ID PLAN [OWNER] [PROTOCOLS]
+                                  provisiona identidade + plano + acessos
+manager --revoke-identity ID      revoga acessos e preserva identidade desativada
 manager --identity-sessions [ID]  sessões reais observadas
 manager --leases [ID]             leases autorizadas
 manager --usage [ID]              tráfego/atividade consolidada
@@ -633,7 +673,7 @@ Plano detalhado: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ```text
 0.5.x  paridade SSHPlus útil
-0.6.x  Connection Engine, políticas, leases, accounting, produtos e ACL
+0.6.x  Connection Engine, políticas, leases, accounting, produtos, ACL e provisionamento
 0.7.0  Legacy v1 + Automation v2
 0.8.0  Modo Colmeia
 0.9.0  Telegram Bot + Mini App
@@ -682,7 +722,8 @@ O CI cobre:
 - Session Engine: acquire, retry, heartbeat, TTL, switch e fencing;
 - Protocol Lease Bridge: instalação de hooks/unidades, admissão de sessão, limite `1/1`, release e cleanup de lifecycle;
 - Identity Usage: baseline inicial, deltas, reset de contador, vínculo obrigatório, persistência em uninstall/reinstall e remoção por purge;
-- Product Policy: ACL, `max_sessions`, franquia, `warn/block`, SSH parcial, restauração da política base, persistência e purge.
+- Product Policy: ACL, `max_sessions`, franquia, `warn/block`, SSH parcial, restauração da política base, persistência e purge;
+- Unified Provisioning: preflight, criação SSH por produto, validade, limite de sessões, duplicata, falha limpa de VPN ausente, revogação e persistência da identidade lógica após reinstalação.
 
 ## Origem
 
