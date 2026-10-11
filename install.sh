@@ -63,7 +63,7 @@ esac
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y curl ca-certificates iproute2 iputils-ping procps passwd login coreutils gawk sed grep tar util-linux dnsutils openssh-client
+apt-get install -y curl ca-certificates iproute2 iputils-ping procps passwd login coreutils gawk sed grep tar util-linux dnsutils openssh-client libpam-modules
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -85,6 +85,7 @@ FILES=(
   "modules/connection_engine.sh"
   "modules/policy_engine.sh"
   "modules/session_engine.sh"
+  "modules/protocol_leases.sh"
   "modules/proxy_hosts.sh"
   "modules/proxies.sh"
   "modules/banner.sh"
@@ -192,6 +193,9 @@ if [[ ! -d "$session_runtime/active" ]]; then
 fi
 "$INSTALL_DIR/modules/policy_engine.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O motor de políticas foi instalado, mas a reconciliação inicial encontrou uma inconsistência." >&2
+}
+"$INSTALL_DIR/modules/protocol_leases.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] O bridge de leases por protocolo foi instalado parcialmente. Revise PAM/systemd antes de depender do limite de sessões." >&2
 }
 if [[ -d "$ETC_DIR/proxy" ]]; then
   "$INSTALL_DIR/modules/proxies.sh" --reconcile >/dev/null 2>&1 || true
