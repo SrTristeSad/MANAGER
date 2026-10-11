@@ -45,7 +45,11 @@ state_read() {
 state_number() {
   local id="$1" key="$2" value
   value="$(state_read "$id" "$key")"
-  if valid_counter "$value"; then printf '%s\n' "$value"; else printf '0\n'; fi
+  if valid_counter "$value"; then
+    printf '%s\n' "$value"
+  else
+    printf '0\n'
+  fi
 }
 
 source_hash() {
@@ -131,7 +135,9 @@ validate_counter_binding() {
 
 add_usage_locked() {
   local id="$1" protocol="$2" resource="$3" upload_delta="$4" download_delta="$5" activity_epoch="$6"
-  local download upload wg_download wg_upload ovpn_download ovpn_upload last_activity last_protocol last_resource tracking now
+  local download upload wg_download wg_upload ovpn_download ovpn_upload
+  local last_activity last_protocol last_resource tracking now
+
   ensure_state "$id"
   download="$(state_number "$id" download_bytes)"
   upload="$(state_number "$id" upload_bytes)"
@@ -170,13 +176,16 @@ add_usage_locked() {
 
 touch_activity_locked() {
   local id="$1" protocol="$2" resource="$3" activity_epoch="$4"
-  local download upload wg_download wg_upload ovpn_download ovpn_upload last_activity last_protocol last_resource tracking now
+  local download upload wg_download wg_upload ovpn_download ovpn_upload
+  local last_activity last_protocol last_resource tracking now
+
   identity_valid_id "$id" || return 0
   identity_exists "$id" || return 0
   valid_counter "$activity_epoch" || return 0
   ensure_state "$id"
   last_activity="$(state_number "$id" last_activity_epoch)"
   (( activity_epoch > last_activity )) || return 0
+
   download="$(state_number "$id" download_bytes)"
   upload="$(state_number "$id" upload_bytes)"
   wg_download="$(state_number "$id" wireguard_download_bytes)"
@@ -211,6 +220,7 @@ write_source_snapshot() {
 ingest_counter_locked() {
   local identity="$1" protocol="$2" resource="$3" source_key="$4" received="$5" sent="$6"
   local file prev_received prev_sent upload_delta=0 download_delta=0 now baseline=0
+
   validate_counter_binding "$identity" "$protocol" "$resource" || return $?
   valid_source_key "$source_key" || return 64
   valid_counter "$received" || return 64
@@ -227,8 +237,16 @@ ingest_counter_locked() {
     prev_sent="$(source_read "$file" sent_bytes)"
     valid_counter "$prev_received" || prev_received=0
     valid_counter "$prev_sent" || prev_sent=0
-    if (( received >= prev_received )); then upload_delta=$((received - prev_received)); else upload_delta="$received"; fi
-    if (( sent >= prev_sent )); then download_delta=$((sent - prev_sent)); else download_delta="$sent"; fi
+    if (( received >= prev_received )); then
+      upload_delta=$((received - prev_received))
+    else
+      upload_delta="$received"
+    fi
+    if (( sent >= prev_sent )); then
+      download_delta=$((sent - prev_sent))
+    else
+      download_delta="$sent"
+    fi
   else
     baseline=1
   fi
@@ -245,6 +263,7 @@ collect_wireguard_locked() {
   wg show wg0 >/dev/null 2>&1 || return 0
   transfers="$(wg show wg0 transfer 2>/dev/null || true)"
   [[ -n "$transfers" ]] || return 0
+
   for file in "$IDENTITY_DIR"/*.conf; do
     [[ -f "$file" ]] || continue
     id="${file##*/}"
@@ -294,14 +313,28 @@ collect_openvpn_locked() {
 }
 
 collect_session_activity_locked() {
-  local identity session epoch_field protocol_field resource_field device_field heartbeat_field expires_field remaining_field
-  local protocol resource heartbeat
+  local line identity session protocol resource heartbeat field
+  local -a fields=()
+
   [[ -x "$SESSION_ENGINE" ]] || return 0
-  while IFS=$'\t' read -r identity session epoch_field protocol_field resource_field device_field heartbeat_field expires_field remaining_field; do
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    IFS=$'\t' read -r -a fields <<< "$line"
+    identity="${fields[0]:-}"
+    session="${fields[1]:-}"
     [[ -n "$identity" && -n "$session" ]] || continue
-    protocol="${protocol_field#protocol=}"
-    resource="${resource_field#resource=}"
-    heartbeat="${heartbeat_field#heartbeat=}"
+
+    protocol=""
+    resource=""
+    heartbeat=""
+    for field in "${fields[@]:2}"; do
+      case "$field" in
+        protocol=*) protocol="${field#protocol=}" ;;
+        resource=*) resource="${field#resource=}" ;;
+        heartbeat=*) heartbeat="${field#heartbeat=}" ;;
+      esac
+    done
+
     case "$protocol" in ssh|wireguard|openvpn) ;; *) continue ;; esac
     valid_resource "$resource" || continue
     valid_counter "$heartbeat" || continue
@@ -387,6 +420,7 @@ show_machine_locked() {
   last_resource="$(state_read "$id" last_resource)"
   updated="$(state_number "$id" updated_epoch)"
   complete="$(traffic_complete "$id")"
+
   printf 'id=%s\n' "$id"
   printf 'state=%s\n' "$(identity_effective_state "$id")"
   printf 'sessions=%s\n' "$sessions"
@@ -449,6 +483,7 @@ table_locked() {
   refresh_lease_cache
   printf '%-18s %-10s %-10s %-22s %12s %12s %12s %-8s %-19s\n' \
     "IDENTIDADE" "ESTADO" "SESSÕES" "ATIVO" "DOWNLOAD" "UPLOAD" "TOTAL" "MEDIÇÃO" "ÚLTIMA ATIVIDADE"
+
   for file in "$IDENTITY_DIR"/*.conf; do
     [[ -f "$file" ]] || continue
     found=1
@@ -461,7 +496,11 @@ table_locked() {
     total=$((download + upload))
     last_activity="$(state_number "$id" last_activity_epoch)"
     complete="$(traffic_complete "$id")"
-    if [[ "$complete" == 1 ]]; then complete="completa"; else complete="parcial"; fi
+    if [[ "$complete" == 1 ]]; then
+      complete="completa"
+    else
+      complete="parcial"
+    fi
     printf '%-18s %-10s %-10s %-22s %12s %12s %12s %-8s %-19s\n' \
       "$id" "$(identity_effective_state "$id")" "$sessions/$(identity_read "$id" max_sessions)" "${active:--}" \
       "$(format_bytes "$download")" "$(format_bytes "$upload")" "$(format_bytes "$total")" "$complete" "$(format_epoch "$last_activity")"
@@ -483,6 +522,7 @@ show_human_locked() {
   last_activity="$(state_number "$id" last_activity_epoch)"
   last_protocol="$(state_read "$id" last_protocol)"
   last_resource="$(state_read "$id" last_resource)"
+
   printf 'Identidade:          %s\n' "$id"
   printf 'Estado:              %s\n' "$(identity_effective_state "$id")"
   printf 'Sessões:             %s/%s\n' "$sessions" "$(identity_read "$id" max_sessions)"
