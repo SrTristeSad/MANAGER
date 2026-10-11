@@ -1,122 +1,127 @@
 # MANAGER Roadmap
 
-Este documento registra a direção técnica do MANAGER até a versão 1.0. A ordem das fases é intencional: primeiro estabilizar identidade/política/sessão, depois automação, depois distribuição multi-servidor e, por fim, as interfaces de administração.
+Este documento registra a direção técnica do MANAGER até a versão 1.0. O objetivo é preservar as capacidades úteis do ecossistema SSHPlus, modernizar a implementação e adicionar automação segura e operação multi-servidor sem copiar fragilidades históricas.
 
 ## Princípios
 
-- o MANAGER novo não deve ser funcionalmente capado em relação ao SSHPlus útil;
-- compatibilidade não significa copiar práticas inseguras do legado;
-- operações privilegiadas passam por ações conhecidas, versionadas e auditáveis;
-- integrações nunca recebem shell arbitrário;
-- nenhum módulo deve limpar firewall global ou sobrescrever configuração SSH inteira;
-- segredos gerados não são mantidos em texto claro para permitir replay posterior;
-- Colmeia não deve ser antecipada antes da superfície de Automation estar estabilizada;
-- administração futura continua centrada em Telegram Bot + Mini App, sem painel web administrativo obrigatório.
+- O MANAGER novo não deve ser funcionalmente capado em relação ao SSHPlus útil.
+- Compatibilidade não significa copiar práticas inseguras do legado.
+- Operações privilegiadas passam por ações conhecidas e auditáveis; integrações nunca recebem shell arbitrário.
+- Nenhum módulo deve limpar o firewall global, sobrescrever todo o SSH ou usar permissões `777`.
+- Estado durável de identidade, fencing e autoridade é preservado em update/rollback/uninstall normal.
+- Administração remota futura será centrada em Telegram Bot + Telegram Mini App, sem depender de painel web administrativo convencional.
+- A Colmeia só começa depois que autenticação e autorização da Automation v2 estiverem estabilizadas.
 
 ## 0.4.x — Fundação ✅
 
 Concluído:
 
-- health check e diagnóstico;
-- manutenção;
+- health check e manutenção;
 - CLI não interativa;
-- update/rollback conservadores;
+- atualização/rollback conservadores;
 - CI com Bash syntax, ShellCheck e regressões de segurança;
-- política segura de download/instalação.
+- política segura de fontes/downloads.
 
 ## 0.5.x — Paridade SSHPlus útil ✅
 
 Concluído:
 
-- usuários SSH, testes temporários e expirados;
-- backup/migração segura;
-- banner e monitor de sessões;
-- revendedor/subrevendedor;
-- proxies/túneis opcionais;
-- WireGuard/OpenVPN;
-- serviços, firewall, Fail2ban, TLS, DNS e diagnóstico.
+- contas SSH, contas teste, expirados e monitor de sessões;
+- backup/migração segura de usuários;
+- banner, speedtest e serviços;
+- hosts de proxy, Squid privado, TCP, WebSocket e TLS;
+- revendedores/subrevendedores, cotas e propriedade;
+- criação vinculada à revenda sob lock.
 
-O MANAGER preserva capacidades úteis, não implementações inseguras do legado.
+Recursos antigos dependentes de técnicas inseguras recebem implementação moderna equivalente, não cópia literal.
 
 ## 0.6.x — Connection / Policy / Session Engine ✅
 
-**Série encerrada em 0.6.11.**
+### 0.6.0 — identidade comum
 
-### 0.6.0 — identidade comum ✅
+- identidade MANAGER independente de `/etc/passwd`;
+- SSH/WireGuard/OpenVPN por identidade;
+- owner, expiração, protocolos e `max_sessions`;
+- bindings para recursos técnicos.
 
-- identidade MANAGER independente do usuário Linux;
-- bindings SSH/WireGuard/OpenVPN;
-- owner, validade, protocolos e `max_sessions`.
+### 0.6.1 — enforcement
 
-### 0.6.1 — Policy Enforcement ✅
+- estado efetivo aplicado aos protocolos;
+- `DenyUsers`/limites SSH sem substituir `sshd_config`;
+- WireGuard removido/restaurado somente em runtime;
+- OpenVPN bloqueável de forma reversível;
+- reconciliação automática.
 
-- estado efetivo aplicado a SSH, WireGuard e OpenVPN;
-- reconciliação automática;
-- bloqueio reversível sem destruir credenciais persistentes.
-
-### 0.6.2 — Session / Lease Engine ✅
+### 0.6.2 — Session / Lease Engine
 
 - `session_id`, TTL, heartbeat e release;
-- aquisição idempotente e limite atômico;
-- `session_epoch`, fencing, switch e revoke.
+- aquisição idempotente;
+- limite local atômico sob lock;
+- `session_epoch`, fencing, switch e revoke-all;
+- leases separadas da visão de sessões observadas.
 
-### 0.6.3 — Protocol Lease Bridge ✅
+### 0.6.3 — Protocol Lease Bridge
 
-- SSH via PAM;
-- OpenVPN por fila privilegiada controlada;
-- WireGuard por handshake recente + gate do peer;
-- lifecycle de hooks em update/rollback/uninstall.
+- SSH via PAM `open_session/close_session`;
+- OpenVPN via fila runtime privilegiada e allowlisted;
+- WireGuard via handshake recente + gate específico do peer;
+- reconciliação, heartbeat e adoção de sessões existentes;
+- lifecycle seguro de hooks em update/rollback/uninstall.
 
-### 0.6.4 — Identity Usage ✅
+### 0.6.4 — Identity Usage
 
-- accounting real de WireGuard/OpenVPN por identidade;
-- baseline/deltas e reset de contador;
-- atividade/sessão SSH sem inventar bytes;
-- persistência em `/var/lib/manager/identity-usage`.
+- atividade e accounting comum por identidade;
+- bytes reais de WireGuard/OpenVPN por delta;
+- reset/restart de contador sem perder acumulado;
+- SSH marcado explicitamente como cobertura parcial de bytes;
+- estado durável e coleta periódica.
 
-### 0.6.5 — Produtos, ACL e franquias ✅
+### 0.6.5 — produtos, ACL e franquias
 
-- catálogo de planos;
-- protocolos, `max_sessions`, validade e franquia;
+- catálogo de planos separado das credenciais;
+- restrição de protocolos/sessões/validade;
+- franquia `monthly`/`lifetime`, `warn`/`block`;
 - ACL de região/pool/nó;
-- `warn/block` e integração com Policy/Session Engine.
+- produto restringe e nunca amplia silenciosamente a política base.
 
-### 0.6.6 — Provisionamento unificado ✅
+### 0.6.6 — provisionamento unificado
 
-- preflight + create + bindings + policy em operação transacional;
-- rollback de recursos criados na tentativa;
+- `manager --provision ID PLAN [OWNER] [PROTOCOLS]`;
+- preflight;
+- identidade + produto + recursos + bindings numa transação;
+- rollback de falha intermediária;
 - senha SSH one-shot;
 - revogação centralizada.
 
-### 0.6.7 — Cotas de revenda por identidade/produto ✅
+### 0.6.7 — cotas de revenda por identidade/produto
 
-- identidade lógica como unidade de cota;
-- VPN-only sem usuário Linux;
-- hierarquia pai/subrevendedor;
-- cotas opcionais por produto;
-- deduplicação de propriedade SSH legada.
+- unidade de cota = identidade lógica;
+- VPN-only pode pertencer à revenda;
+- slots sob lock;
+- pai inclui subrevendedor;
+- cota opcional por produto;
+- deduplicação de conta SSH legada absorvida por identidade.
 
-### 0.6.8 — IPv6 dual-stack ✅
+### 0.6.8 — IPv6 / dual-stack
 
-- WireGuard/OpenVPN dual-stack quando o host suporta IPv6 real;
-- ULA + NAT66 portátil;
-- IPv6 Guard ligado ao mesmo Policy/Session Engine;
-- lifecycle seguro sem flush global.
+- WireGuard/OpenVPN dual-stack somente com egress IPv6 real;
+- IPv6 Guard ligado à mesma autoridade Policy/Session;
+- regras específicas sem flush global;
+- ULA + NAT66 como modo portátil atual.
 
-### 0.6.9 — identidade e metadados do nó ✅
+### 0.6.9 — identidade/metadados do nó
 
 - `node_id` persistente;
-- país, região, pool, provedor, cidade, capacidade, peso e limite declarado;
-- protocolos/IPv6 detectados localmente;
-- estado dentro do Connection Engine.
+- country/region/pool/provider/city/capacity/weight/max_sessions/enabled;
+- contexto local consumível por ACL e futura Colmeia.
 
-### 0.6.10 — ACL automática pelo nó ✅
+### 0.6.10 — ACL automática pelo nó
 
-- Product Policy resolve `region`, `pool` e `node_id` automaticamente;
-- fail-closed quando metadado obrigatório falta;
-- Session Engine recusa lease em nó fora da ACL.
+- Product Policy resolve região/pool/node local automaticamente;
+- ACL restrita falha fechada;
+- Session Engine usa a mesma autorização.
 
-### 0.6.11 — fechamento do Connection Engine ✅
+### 0.6.11 — fechamento da série 0.6
 
 - `manager-connection-actions-v1`: `preflight/create/status/revoke/describe` allowlisted;
 - `manager-node-usage-v1`: telemetria local por nó;
@@ -132,13 +137,12 @@ A série 0.7 cria a superfície oficial de integração. Ela deve estar estabili
 Compatibilidade controlada com `syncpainel` e painéis antigos:
 
 - desligado por padrão;
-- `manager automation legacy status|enable|disable|restart|rotate-password`;
 - listener OpenSSH dedicado;
 - conta não-root `manager-legacy`;
 - `ForceCommand`, sudoers exato e allowlist;
 - comandos históricos suportados sem `eval`;
-- senha de integração one-shot, sem armazenamento em texto claro;
-- lifecycle completo e CI próprio.
+- senha de integração one-shot;
+- lifecycle e CI próprios.
 
 Documentação: `docs/AUTOMATION_LEGACY.md`.
 
@@ -148,56 +152,86 @@ Implementado:
 
 - `managerd` + `managerctl`;
 - socket Unix `/run/manager-automation-v2/manager.sock`;
-- runtime `0700`, socket `0600` e validação do peer com `SO_PEERCRED`;
+- runtime `0700`, socket `0600`, `SO_PEERCRED`;
 - contrato `manager-automation-v2-local-v1`;
 - envelope JSON versionado;
 - `request_id`, `action_id` e códigos estáveis;
-- allowlist inicial `system.describe`, `node.usage` e lifecycle `connection.*`;
+- allowlist de `system.describe`, `node.usage` e lifecycle `connection.*`;
 - nenhuma ação de shell/comando/caminho arbitrário;
-- idempotência persistente com conflito para reutilização de `request_id` com payload diferente;
-- respostas persistidas são sanitizadas: segredos são one-shot e não podem ser recuperados por replay;
-- audit JSONL sem stdout/senha/chaves privadas;
-- install espera o socket realmente ficar pronto antes de retornar sucesso;
-- rollback/uninstall conhecem daemon, socket, aliases e estado persistente;
-- CI cobre allowlist, create/replay/conflito/revoke, segredo fora do cache/audit e reinstall.
+- idempotência persistente;
+- segredo one-shot fora do cache;
+- audit JSONL sem senha/chaves privadas;
+- lifecycle install/update/rollback/uninstall/reinstall.
+
+### 0.7.2 — Principals e RBAC ✅
+
+Implementado:
+
+- registry root-only em `/etc/manager/automation/v2/principals`;
+- principal reservado `local-root` para compatibilidade local;
+- roles `admin`, `reseller`, `subreseller` e `user`;
+- principals de revenda reutilizam `/etc/manager/access/resellers`, sem duplicar a hierarquia;
+- principal `user` é ligado a uma identidade real do Connection Engine;
+- escopo por owner, identidade e produto;
+- `node.usage` admin-only;
+- reseller acessa sua árvore e subrevendedores filhos diretos;
+- subreseller fica limitado ao próprio owner;
+- user consulta somente sua identidade e não revoga;
+- `owner` omitido em create/preflight de revenda é forçado pelo daemon;
+- tentativa de cruzar para outra revenda é recusada;
+- autorização ocorre antes do cache idempotente;
+- `principal_id` entra no hash de idempotência;
+- desabilitar principal corta retries já cacheados;
+- audit registra principal, papel, decisão `allow/deny` e razão;
+- arquivos de principal precisam ser root-owned e sem permissões de grupo/mundo;
+- principals são preservados por uninstall/reinstall normal;
+- CI dedicado cobre isolamento, produto, owner forçado, replay, audit e lifecycle.
+
+Limite de confiança desta etapa:
+
+```text
+rbac=1
+principal_assertion=root-local
+cryptographic_auth=0
+anti_replay=0
+rate_limit=0
+remote_transport=0
+```
+
+Ou seja: `managerctl --principal X` ainda é uma asserção de um chamador que já é root local no socket `0600`; não é autenticação de uma integração remota.
 
 Documentação: `docs/AUTOMATION_V2.md`.
 
-### 0.7.2 — Principals e RBAC — próximo
+### 0.7.3 — autenticação criptográfica e enrollment — PRÓXIMO
 
-Objetivo: deixar de ter apenas `UID 0` como único principal local e introduzir uma identidade explícita de automação.
-
-Planejado:
-
-- principals internos estáveis;
-- papéis `admin`, `revendedor`, `subrevendedor` e `user`;
-- escopo por owner/identidade/produto;
-- matriz `action_id -> papel/escopo`;
-- autorização antes do dispatcher privilegiado;
-- auditoria com principal efetivo e decisão RBAC;
-- sem ampliar a allowlist de forma implícita.
-
-### 0.7.3 — autenticação criptográfica e enrollment
+Objetivo: transformar o principal lógico já autorizado em uma identidade comprovável criptograficamente.
 
 Planejado:
 
-- identidade criptográfica das integrações;
-- enrollment/revogação;
-- rotação de chaves;
-- fingerprints e armazenamento root-only;
-- nenhuma senha compartilhada em texto claro.
+- par de chaves/identidade por integração;
+- enrollment explícito de uma chave em um `principal_id` existente;
+- fingerprint estável;
+- armazenamento root-only;
+- rotação de chave sem recriar o principal;
+- revogação de credencial independente da política RBAC;
+- associação inequívoca `chave autenticada -> principal_id`;
+- nenhuma senha compartilhada em texto claro;
+- formato versionado para futura autenticação de Telegram gateway, Colmeia e outras integrações.
+
+Nesta etapa ainda não é necessário expor TCP público: a autenticação pode ser construída/testada sobre a fronteira local antes do transporte remoto.
 
 ### 0.7.4 — anti-replay, rate limiting e transporte remoto estruturado
 
 Planejado:
 
-- timestamp/nonce;
+- timestamp e nonce;
 - janela de validade;
 - cache de replay;
 - limites por principal/ação;
+- quotas de chamadas e proteção contra burst;
 - transporte remoto autenticado e criptografado;
-- o Unix socket continua sendo a fronteira privilegiada local;
-- sem shell remoto arbitrário.
+- Unix socket continua como fronteira privilegiada local;
+- nenhum shell remoto arbitrário.
 
 **A série 0.7 só é considerada concluída quando RBAC, autenticação, anti-replay e rate limiting estiverem estabilizados.**
 
@@ -205,14 +239,9 @@ Planejado:
 
 Só começa depois da Automation v2 estar pronta para autenticar e autorizar integrações/nós.
 
-Planejado:
+### Enrollment dos nós
 
-### Enrollment e confiança dos nós
-
-- identidade criptográfica por servidor;
-- troca/rotação de chaves;
-- comunicação autenticada e criptografada;
-- integração com `node_id`, região e pool existentes.
+A Colmeia reutilizará a identidade criptográfica da Automation, integrada ao `node_id`, região e pool.
 
 ### Heartbeat e saúde
 
@@ -220,7 +249,7 @@ Planejado:
 - sessões/capacidade;
 - latência;
 - protocolos/serviços;
-- `HEALTHY`, `DEGRADED`, `DRAINING`, `OFFLINE`.
+- estados `HEALTHY`, `DEGRADED`, `DRAINING`, `OFFLINE`.
 
 ### Scheduler
 
@@ -236,8 +265,11 @@ Planejado:
 - lease global por identidade/plano;
 - `max_sessions` global atômico;
 - fencing distribuído;
+- `session_epoch` para impedir retorno de autoridade antiga;
 - troca de servidor sem sessão fantasma;
-- grace controlado durante falha temporária do Hub.
+- grace controlado durante falha temporária do controlador.
+
+O tráfego VPN real não deve passar pelo controlador da Colmeia; o controlador coordena autoridade e seleção de nó.
 
 ### Accounting global
 
@@ -250,10 +282,10 @@ Planejado:
 
 Planejado depois da Automation/Colmeia:
 
-- identidade pelo `user.id` numérico do Telegram;
+- identidade pelo `user.id` numérico imutável do Telegram;
 - admin, revendedor, subrevendedor e usuário;
-- Mini App consumindo operações estruturadas;
-- sessões, usuários, produtos, cotas, nós e diagnósticos;
+- Bot + Mini App consumindo ações estruturadas;
+- sessões, clientes, produtos, cotas, nós e diagnósticos;
 - nenhuma execução arbitrária de shell.
 
 ## 0.9.5 — Migração e escala
