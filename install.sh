@@ -86,6 +86,7 @@ FILES=(
   "modules/policy_engine.sh"
   "modules/session_engine.sh"
   "modules/protocol_leases.sh"
+  "modules/identity_usage.sh"
   "modules/proxy_hosts.sh"
   "modules/proxies.sh"
   "modules/banner.sh"
@@ -197,6 +198,9 @@ fi
 "$INSTALL_DIR/modules/protocol_leases.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O bridge de leases por protocolo foi instalado parcialmente. Revise PAM/systemd antes de depender do limite de sessões." >&2
 }
+"$INSTALL_DIR/modules/identity_usage.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] O coletor de uso por identidade foi instalado parcialmente. Os protocolos continuam funcionando, mas os contadores podem não ser atualizados." >&2
+}
 if [[ -d "$ETC_DIR/proxy" ]]; then
   "$INSTALL_DIR/modules/proxies.sh" --reconcile >/dev/null 2>&1 || true
 fi
@@ -214,6 +218,7 @@ echo "Proxies:     manager --proxy-status"
 echo "Identidades: manager --identities"
 echo "Sessões ID:  manager --identity-sessions"
 echo "Leases:      manager --leases"
+echo "Uso ID:      manager --usage"
 echo "Rollback:    manager-rollback"
 echo "Remover:     manager-uninstall"
 [[ -d "$ROLLBACK_DIR" ]] && echo "Código anterior preservado em: $ROLLBACK_DIR"
