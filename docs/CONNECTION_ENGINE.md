@@ -57,7 +57,25 @@ A identidade pode aparecer como:
 - `disabled`: desabilitada administrativamente;
 - `expired`: validade global encerrada.
 
-A partir da 0.6.1 esse estado deixa de ser somente informativo e passa a ser aplicado pelo `policy_engine.sh`.
+A partir da 0.6.1 esse estado é aplicado pelo `policy_engine.sh`. A partir da 0.6.2 mudanças que tornam uma lease incompatível também invalidam a geração de sessão pelo `session_engine.sh`.
+
+## Três camadas distintas
+
+Na série 0.6 o MANAGER separa:
+
+```text
+Connection Engine  -> quem é a identidade e o que ela pode usar
+Policy Engine      -> o que está realmente conectado/permitido no protocolo
+Session Engine     -> quem possui uma vaga de sessão reservada
+```
+
+Essa separação é importante para a Colmeia: uma pessoa pode possuir vários endpoints disponíveis sem possuir uma sessão simultânea independente em cada VPS.
+
+Documentação do Lease Engine:
+
+```text
+docs/SESSION_ENGINE.md
+```
 
 ## Enforcement local
 
@@ -83,7 +101,7 @@ O valor disponível para SSH desconta sessões observadas nos outros protocolos 
 
 Desativar/expirar uma identidade não apaga chaves nem configuração do cliente. O peer é removido somente do runtime da interface `wg0`. Quando a identidade volta a ficar elegível, o peer é reconstruído no runtime usando o estado já existente.
 
-Uma sessão WireGuard é considerada ativa quando o peer teve handshake recente. Nesta etapa local, o Connection Engine trata cada peer vinculado como no máximo uma sessão observada.
+Uma sessão WireGuard é considerada ativa quando o peer teve handshake recente. Nesta etapa local, cada peer vinculado representa no máximo uma sessão observada.
 
 ### OpenVPN
 
@@ -93,7 +111,7 @@ Quando uma identidade OpenVPN é desativada enquanto está conectada, o MANAGER 
 
 Se o hook ainda precisa ser ativado mas existem clientes conectados, o MANAGER adia o restart do OpenVPN e tenta novamente quando não houver clientes, evitando interromper sessões válidas apenas para instalar o hook.
 
-## Sessões consolidadas
+## Sessões observadas
 
 Consulta geral:
 
@@ -115,20 +133,56 @@ SSH + WireGuard + OpenVPN = total observado
 
 junto ao `max_sessions` da identidade.
 
-## Como `max_sessions` funciona na 0.6.1
+Isso descreve o que os daemons estão vendo; não é o mesmo que uma lease autorizada.
 
-A aplicação local é conservadora:
+## Leases locais — 0.6.2
 
-- SSH recebe um `maxlogins` calculado conforme as vagas restantes;
-- OpenVPN recusa nova conexão vinculada quando o total local já atingiu o limite;
-- WireGuard não é restaurado para iniciar uma nova sessão quando outras sessões já ocupam todas as vagas;
-- sessões já estabelecidas não são arbitrariamente derrubadas apenas por uma corrida de limite, exceto quando a identidade fica `disabled`/`expired`.
+Consulta geral:
 
-Ainda existe uma pequena janela de corrida entre protocolos porque SSH, WireGuard e OpenVPN são daemons independentes. A solução definitiva para múltiplos servidores será o **lease atômico da Colmeia**, não polling local.
+```bash
+manager --leases
+```
+
+Uma identidade:
+
+```bash
+manager --leases maria
+```
+
+Leases ativas ficam somente em runtime:
+
+```text
+/run/manager-session-leases/active/
+```
+
+O fencing token persistente fica em:
+
+```text
+/etc/manager/connection/session-epochs/<id>.epoch
+```
+
+Cada lease possui `session_id`, protocolo, recurso, dispositivo, `session_epoch`, heartbeat e TTL.
+
+Aquisição normal respeita `max_sessions` sob lock local. Repetir o mesmo pedido para o mesmo dispositivo na mesma geração é idempotente e renova a lease existente em vez de consumir outra vaga.
+
+Operações de troca/revogação avançam o `session_epoch`, impedindo uma lease antiga de recuperar autoridade depois de uma mudança.
+
+Mudanças de política também reconciliam leases. Se a identidade for desabilitada/expirar, perder o protocolo ou trocar o recurso vinculado, as leases incompatíveis são revogadas e a geração anterior é cercada por fencing.
+
+## Como `max_sessions` funciona hoje
+
+Existem duas proteções complementares:
+
+1. o Policy Engine continua aplicando limites conservadores nos protocolos reais;
+2. o Session Engine aplica a cota de leases atomicamente dentro da VPS.
+
+Ainda existe compatibilidade com caminhos antigos que não exigem lease obrigatoriamente. Isso evita quebrar clientes existentes durante a migração.
+
+A garantia definitiva para várias VPS será o **lease atômico da Colmeia**, onde o hub será a autoridade da reserva global.
 
 ## Reconciliação
 
-O enforcement usa:
+Policy Engine:
 
 ```text
 manager-policy-reconcile.path
@@ -136,12 +190,21 @@ manager-policy-reconcile.timer
 manager-policy-reconcile.service
 ```
 
-O path reage a mudanças de estado e o timer de 30 segundos cobre expiração, handshakes e mudanças de sessão que não alteram arquivos de identidade.
+Session Engine:
+
+```text
+manager-session-reconcile.path
+manager-session-cleanup.timer
+manager-session-cleanup.service
+```
+
+Os watchers reagem ao marcador de mudança da identidade. Os timers cobrem expiração, heartbeat e mudanças de estado que não dependem apenas de eventos de arquivo.
 
 Reconciliação manual:
 
 ```bash
 /opt/manager/modules/policy_engine.sh --reconcile
+/opt/manager/modules/session_engine.sh --reconcile
 ```
 
 ## CLI pública
@@ -151,9 +214,11 @@ manager --identities
 manager --identity maria
 manager --identity-sessions
 manager --identity-sessions maria
+manager --leases
+manager --leases maria
 ```
 
-## Contratos internos
+## Contratos internos do Connection Engine
 
 Inicializar:
 
@@ -195,7 +260,43 @@ Autorização interna de um recurso:
 /opt/manager/modules/policy_engine.sh --authorize openvpn maria
 ```
 
-Esses contratos são intencionalmente simples para poderem ser reutilizados mais tarde pela Automation v2/`managerd`, sem fazer a integração remota manipular arquivos diretamente.
+## Contratos internos do Session Engine
+
+Reservar uma vaga:
+
+```bash
+/opt/manager/modules/session_engine.sh \
+  --acquire maria wireguard maria celular-maria 90
+```
+
+Heartbeat:
+
+```bash
+/opt/manager/modules/session_engine.sh \
+  --heartbeat <session_id> <epoch> 90
+```
+
+Liberar:
+
+```bash
+/opt/manager/modules/session_engine.sh \
+  --release <session_id> <epoch>
+```
+
+Trocar e invalidar a geração anterior:
+
+```bash
+/opt/manager/modules/session_engine.sh \
+  --switch maria wireguard maria celular-maria 90
+```
+
+Revogar todas as leases:
+
+```bash
+/opt/manager/modules/session_engine.sh --revoke-all maria admin
+```
+
+Esses contratos são estruturados para que Automation v2/`managerd` não precise manipular arquivos diretamente nem receber shell arbitrário.
 
 ## Compatibilidade com revenda
 
@@ -205,16 +306,18 @@ A estrutura de cotas da série 0.5/0.6 ainda conta principalmente usuários SSH.
 
 ## Próximas etapas 0.6.x
 
-1. Registro comum de sessão/lease local com IDs estáveis.
+1. Ligar eventos reais de conexão ao acquire/heartbeat/release de leases de forma compatível com clientes existentes.
 2. Registro comum de tráfego/estado.
 3. Políticas/ACL independentes do protocolo.
-4. Provisionamento e revogação dos recursos de SSH/WireGuard/OpenVPN pelo próprio Connection Engine.
+4. Provisionamento e revogação de SSH/WireGuard/OpenVPN pelo próprio Connection Engine.
 5. Cotas de revenda baseadas em identidades/produtos, não apenas usuários Linux.
 6. IPv6 e metadados necessários para Colmeia.
 
+Depois disso a Automation v2 poderá consumir a mesma superfície estruturada e a Colmeia poderá mover a autoridade de lease da VPS local para o hub.
+
 ## Relação com Automation e Colmeia
 
-O objetivo final é:
+O objetivo é:
 
 ```text
 Telegram / projeto antigo / projeto novo
@@ -222,6 +325,8 @@ Telegram / projeto antigo / projeto novo
            Automation Engine
                  ↓
           Connection Engine
+                 ↓
+          Session Engine
                  ↓
       identidade MANAGER (Maria)
         ┌────────┼─────────┐
