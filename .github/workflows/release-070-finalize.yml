@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - .github/workflows/release-070-finalize.yml
+  workflow_dispatch:
 
 permissions:
   contents: write
