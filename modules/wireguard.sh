@@ -220,7 +220,7 @@ upgrade_existing_clients_ipv6() {
     ip6="$WG_NET6$octet"
     conf="$CLIENT_DIR/$name.conf"
     if [[ -f "$conf" ]]; then
-      sed -i -E "s#^Address = ${ip4//./\.}/32(, .*)?$#Address = $ip4/32, $ip6/128#" "$conf"
+      sed -i -E "s#^Address = ${ip4//./\.}/32(, .*)?\$#Address = $ip4/32, $ip6/128#" "$conf"
       sed -i -E 's#^AllowedIPs = 0\.0\.0\.0/0$#AllowedIPs = 0.0.0.0/0, ::/0#' "$conf"
     fi
     write_client_meta "$name" "$ip4" "$ip6" "$pub"
@@ -251,7 +251,7 @@ enable_ipv6_existing() {
   backup="$(mktemp)"
   cp -a "$WG_CONF" "$backup"
 
-  sed -i -E "s#^Address = $WG_SERVER_IP/24$#Address = $WG_SERVER_IP/24, $WG_SERVER_IP6/64#" "$WG_CONF"
+  sed -i -E "s#^Address = $WG_SERVER_IP/24\$#Address = $WG_SERVER_IP/24, $WG_SERVER_IP6/64#" "$WG_CONF"
   sed -i "/^PostUp = / s#\$#; ip6tables -C FORWARD -i %i -j ACCEPT 2>/dev/null || ip6tables -I FORWARD 1 -i %i -j ACCEPT; ip6tables -C FORWARD -o %i -j ACCEPT 2>/dev/null || ip6tables -I FORWARD 1 -o %i -j ACCEPT; ip6tables -t nat -C POSTROUTING -s $WG_NET6/64 -o $iface6 -j MASQUERADE 2>/dev/null || ip6tables -t nat -A POSTROUTING -s $WG_NET6/64 -o $iface6 -j MASQUERADE#" "$WG_CONF"
   sed -i "/^PostDown = / s#\$#; ip6tables -D FORWARD -i %i -j ACCEPT 2>/dev/null || true; ip6tables -D FORWARD -o %i -j ACCEPT 2>/dev/null || true; ip6tables -t nat -D POSTROUTING -s $WG_NET6/64 -o $iface6 -j MASQUERADE 2>/dev/null || true#" "$WG_CONF"
   upgrade_existing_clients_ipv6
