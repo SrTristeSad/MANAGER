@@ -1,0 +1,187 @@
+name: Hive Scheduler and Drain
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hive-scheduler:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo test -x /opt/manager/modules/hive_scheduler.sh
+          out="$(sudo /opt/manager/modules/hive_scheduler.sh --status)"
+          grep -q '^contract=manager-hive-scheduler-v1$' <<<"$out"
+          grep -q '^scheduler=weighted-least-loaded$' <<<"$out"
+          grep -q '^drain_runtime=1$' <<<"$out"
+          grep -q '^global_lease_authority=0$' <<<"$out"
+
+      - name: Build isolated controller observations
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo rm -rf /tmp/hive-scheduler-etc /tmp/hive-scheduler-health /tmp/hive-scheduler-runtime
+          sudo rm -f /tmp/hive-scheduler-audit.jsonl
+          sudo mkdir -p /tmp/hive-scheduler-etc/hive/controller/nodes
+          sudo mkdir -p /tmp/hive-scheduler-etc/hive/controller/health
+          sudo mkdir -p /tmp/hive-scheduler-health/nodes
+          sudo chmod -R 700 /tmp/hive-scheduler-etc /tmp/hive-scheduler-health
+          cat <<'EOF' | sudo tee /tmp/hive-scheduler-etc/hive/controller/health/controller.conf >/dev/null
+          version=1
+          degraded_after_seconds=75
+          offline_after_seconds=180
+          EOF
+          now="$(date +%s)"
+          for spec in \
+            'node-1111111111111111 1' \
+            'node-2222222222222222 1' \
+            'node-3333333333333333 1'; do
+            set -- $spec
+            node="$1" epoch="$2"
+            cat <<EOF | sudo tee "/tmp/hive-scheduler-etc/hive/controller/nodes/$node.conf" >/dev/null
+          version=1
+          node_id=$node
+          algorithm=ed25519
+          key_id=test
+          fingerprint=test
+          enabled=1
+          node_epoch=$epoch
+          created_epoch=$now
+          updated_epoch=$now
+          revoked_epoch=0
+          revocation_reason=
+          EOF
+          done
+
+          sudo python3 - "$now" <<'PY'
+          import json, os, sys
+          now=int(sys.argv[1]); root='/tmp/hive-scheduler-health/nodes'
+          data={
+            'node-1111111111111111': dict(sessions=8,max_sessions=100,capacity=10,weight=1,rtt=20,protocols=['wireguard','ssh']),
+            'node-2222222222222222': dict(sessions=2,max_sessions=100,capacity=10,weight=2,rtt=50,protocols=['wireguard','ssh']),
+            'node-3333333333333333': dict(sessions=0,max_sessions=100,capacity=10,weight=5,rtt=10,protocols=['wireguard']),
+          }
+          for node,x in data.items():
+              metrics={
+                'sessions':x['sessions'],'max_sessions':x['max_sessions'],'capacity':x['capacity'],'weight':x['weight'],
+                'previous_rtt_ms':x['rtt'],'protocols':x['protocols'],
+                'service_ssh':'active' if 'ssh' in x['protocols'] else 'unavailable',
+                'service_wireguard':'active','service_openvpn':'unavailable'
+              }
+              obs={'version':1,'node_id':node,'node_epoch':1,'issued_at':now,'received_at':now,'source':'ci',
+                   'base_state':'HEALTHY','base_reason':'ok','metrics':metrics}
+              with open(os.path.join(root,node+'.json'),'w') as f: json.dump(obs,f,sort_keys=True,separators=(',',':'))
+          PY
+          sudo chmod 600 /tmp/hive-scheduler-health/nodes/*.json
+
+      - name: Configure controller-authoritative placement
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sched='sudo env MANAGER_ETC=/tmp/hive-scheduler-etc MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-scheduler-health MANAGER_HIVE_SCHEDULER_DATA_DIR=/tmp/hive-scheduler-runtime MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-scheduler-audit.jsonl /opt/manager/modules/hive_scheduler.sh'
+          eval "$sched --placement node-1111111111111111 BR-SP-01 BR BR-SP PREMIUM" | grep -q '^placement_updated=1$'
+          eval "$sched --placement node-2222222222222222 BR-SP-02 BR BR-SP PREMIUM" | grep -q '^placement_updated=1$'
+          eval "$sched --placement node-3333333333333333 US-NY-01 US US-NY PREMIUM" | grep -q '^placement_updated=1$'
+          list="$(eval "$sched --list")"
+          grep -q 'node-1111111111111111|BR-SP-01|BR|BR-SP|PREMIUM|0|HEALTHY' <<<"$list"
+          grep -q 'node-2222222222222222|BR-SP-02|BR|BR-SP|PREMIUM|0|HEALTHY' <<<"$list"
+
+      - name: Weighted least-loaded selection and sticky affinity
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sched='sudo env MANAGER_ETC=/tmp/hive-scheduler-etc MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-scheduler-health MANAGER_HIVE_SCHEDULER_DATA_DIR=/tmp/hive-scheduler-runtime MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-scheduler-audit.jsonl /opt/manager/modules/hive_scheduler.sh'
+          first="$(eval "$sched --select wireguard BR-SP PREMIUM customer-A '*'")"
+          grep -q '^selected_node=node-2222222222222222$' <<<"$first"
+          grep -q '^selection_reason=weighted-least-loaded$' <<<"$first"
+          grep -q '^sticky=1$' <<<"$first"
+          grep -q '^global_lease_authority=0$' <<<"$first"
+
+          sudo python3 - <<'PY'
+          import json
+          p='/tmp/hive-scheduler-health/nodes/node-1111111111111111.json'
+          d=json.load(open(p)); d['metrics']['sessions']=0
+          json.dump(d,open(p,'w'),sort_keys=True,separators=(',',':'))
+          PY
+          second="$(eval "$sched --select wireguard BR-SP PREMIUM customer-A '*'")"
+          grep -q '^selected_node=node-2222222222222222$' <<<"$second"
+          grep -q '^selection_reason=sticky-eligible$' <<<"$second"
+          grep -q '^sticky_hit=1$' <<<"$second"
+
+      - name: Drain by friendly node name without touching existing sessions
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sched='sudo env MANAGER_ETC=/tmp/hive-scheduler-etc MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-scheduler-health MANAGER_HIVE_SCHEDULER_DATA_DIR=/tmp/hive-scheduler-runtime MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-scheduler-audit.jsonl /opt/manager/modules/hive_scheduler.sh'
+          before="$(python3 -c "import json; print(json.load(open('/tmp/hive-scheduler-health/nodes/node-2222222222222222.json'))['metrics']['sessions'])")"
+          drained="$(eval "$sched --drain BR-SP-02 maintenance")"
+          grep -q '^draining=1$' <<<"$drained"
+          grep -q '^existing_sessions_terminated=0$' <<<"$drained"
+          grep -q '^new_allocations_allowed=0$' <<<"$drained"
+          after="$(python3 -c "import json; print(json.load(open('/tmp/hive-scheduler-health/nodes/node-2222222222222222.json'))['metrics']['sessions'])")"
+          test "$before" = "$after"
+
+          failover="$(eval "$sched --select wireguard BR-SP PREMIUM customer-A '*'")"
+          grep -q '^selected_node=node-1111111111111111$' <<<"$failover"
+          grep -q '^selection_reason=sticky-failover$' <<<"$failover"
+          grep -q '^sticky_hit=0$' <<<"$failover"
+
+      - name: Undrain and fence unhealthy nodes from new allocations
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sched='sudo env MANAGER_ETC=/tmp/hive-scheduler-etc MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-scheduler-health MANAGER_HIVE_SCHEDULER_DATA_DIR=/tmp/hive-scheduler-runtime MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-scheduler-audit.jsonl /opt/manager/modules/hive_scheduler.sh'
+          eval "$sched --undrain BR-SP-02" | grep -q '^draining=0$'
+          now="$(date +%s)"
+          sudo python3 - "$((now-100))" <<'PY'
+          import json,sys
+          p='/tmp/hive-scheduler-health/nodes/node-2222222222222222.json'
+          d=json.load(open(p)); d['received_at']=int(sys.argv[1])
+          json.dump(d,open(p,'w'),sort_keys=True,separators=(',',':'))
+          PY
+          out="$(eval "$sched --select wireguard BR-SP PREMIUM customer-B '*'")"
+          grep -q '^selected_node=node-1111111111111111$' <<<"$out"
+
+      - name: Enforce protocol region pool and node scope
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sched='sudo env MANAGER_ETC=/tmp/hive-scheduler-etc MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-scheduler-health MANAGER_HIVE_SCHEDULER_DATA_DIR=/tmp/hive-scheduler-runtime MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-scheduler-audit.jsonl /opt/manager/modules/hive_scheduler.sh'
+          scoped="$(eval "$sched --select ssh BR-SP PREMIUM '' node-1111111111111111")"
+          grep -q '^selected_node=node-1111111111111111$' <<<"$scoped"
+          if eval "$sched --select openvpn BR-SP PREMIUM '' '*'"; then
+            echo 'scheduler selected a node without requested protocol' >&2
+            exit 1
+          fi
+          if eval "$sched --select wireguard EU-DE PREMIUM '' '*'"; then
+            echo 'scheduler ignored region filter' >&2
+            exit 1
+          fi
+          if eval "$sched --select wireguard BR-SP BASIC '' '*'"; then
+            echo 'scheduler ignored pool filter' >&2
+            exit 1
+          fi
+
+      - name: Audit decisions and preserve controller placement state
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo grep -q '"event":"select"' /tmp/hive-scheduler-audit.jsonl
+          sudo grep -q '"event":"drain"' /tmp/hive-scheduler-audit.jsonl
+          sudo grep -q '"event":"undrain"' /tmp/hive-scheduler-audit.jsonl
+          sudo test -f /tmp/hive-scheduler-etc/hive/controller/scheduler/nodes/node-2222222222222222.conf
+          status="$(sudo env MANAGER_ETC=/tmp/hive-scheduler-etc MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-scheduler-health MANAGER_HIVE_SCHEDULER_DATA_DIR=/tmp/hive-scheduler-runtime MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-scheduler-audit.jsonl /opt/manager/modules/hive_scheduler.sh --status)"
+          grep -q '^drain_runtime=1$' <<<"$status"
+          grep -q '^selection_failover=1$' <<<"$status"
+          grep -q '^controller_in_user_vpn_path=0$' <<<"$status"
