@@ -1,0 +1,134 @@
+name: Connection Engine 0.6 Completion
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  completion:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo test -x /opt/manager/modules/connection_actions.sh
+          sudo test -x /opt/manager/modules/node_usage.sh
+
+      - name: Verify strict allowlisted connection contract
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/connection_actions.sh --describe > /tmp/contract.log
+          grep -q '^contract=manager-connection-actions-v1$' /tmp/contract.log
+          grep -q '^actions=preflight,create,revoke,status,describe$' /tmp/contract.log
+          grep -q '^arbitrary_shell=0$' /tmp/contract.log
+          grep -q '^arbitrary_command=0$' /tmp/contract.log
+          grep -q '^arbitrary_path=0$' /tmp/contract.log
+          if sudo /opt/manager/modules/connection_actions.sh --exec id; then
+            echo 'Allowlisted contract accepted an arbitrary action.' >&2
+            exit 1
+          fi
+
+      - name: Create through common lifecycle surface
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/products.sh --create ci-ssh 'CI SSH' 1 0 1 ssh 0 lifetime warn '*' '*' '*'
+          sudo /opt/manager/modules/connection_actions.sh --preflight ci-client ci-ssh '' ssh > /tmp/preflight.log
+          grep -q '^status=ready$' /tmp/preflight.log
+
+          sudo /opt/manager/modules/connection_actions.sh --create ci-client ci-ssh '' ssh > /tmp/create.log
+          grep -q '^status=ok$' /tmp/create.log
+          grep -q '^identity_id=ci-client$' /tmp/create.log
+          grep -q '^protocols=ssh$' /tmp/create.log
+          password="$(awk -F= '$1=="ssh_password"{print $2; exit}' /tmp/create.log)"
+          test "${#password}" -ge 16
+          sudo id ci-client >/dev/null
+          if sudo grep -Fq "$password" /var/log/manager/provision-events.log; then
+            echo 'Provisioning log leaked the generated SSH password.' >&2
+            exit 1
+          fi
+
+          sudo /opt/manager/modules/connection_actions.sh --status ci-client > /tmp/status.log
+          grep -q '^contract=manager-connection-actions-v1$' /tmp/status.log
+          grep -q '^state=active$' /tmp/status.log
+          grep -q '^ssh_allowed=1$' /tmp/status.log
+          grep -q '^ssh_resource=ci-client$' /tmp/status.log
+          grep -q '^ssh_status=present$' /tmp/status.log
+          grep -q '^wireguard_allowed=0$' /tmp/status.log
+
+      - name: Aggregate local usage by node
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/node_metadata.sh --set country BR
+          sudo /opt/manager/modules/node_metadata.sh --set region BR-SP
+          sudo /opt/manager/modules/node_metadata.sh --set pool CI-POOL
+
+          sudo install -d -m 0700 /etc/manager/wireguard/clients
+          printf 'name=ciwg\nip=10.66.66.210\npublic_key=ci-node-public-key\n' | sudo tee /etc/manager/wireguard/clients/ciwg.meta >/dev/null
+          printf '[Interface]\nPrivateKey = ci-placeholder\nAddress = 10.66.66.210/32\n' | sudo tee /etc/manager/wireguard/clients/ciwg.conf >/dev/null
+          sudo chmod 0600 /etc/manager/wireguard/clients/ciwg.meta /etc/manager/wireguard/clients/ciwg.conf
+
+          sudo /opt/manager/modules/connection_engine.sh --create ciwg '' 0 2 wireguard
+          sudo /opt/manager/modules/connection_engine.sh --bind ciwg wireguard ciwg
+
+          # Primeira leitura é baseline. A segunda adiciona +200 upload e +500 download.
+          sudo /opt/manager/modules/identity_usage.sh --ingest-counter ciwg wireguard ciwg peer-ci 100 200
+          sudo /opt/manager/modules/identity_usage.sh --ingest-counter ciwg wireguard ciwg peer-ci 300 700
+
+          lease="$(sudo /opt/manager/modules/session_engine.sh --acquire ciwg wireguard ciwg node-usage-device 60)"
+          test -n "$lease"
+
+          sudo /opt/manager/modules/node_usage.sh --show > /tmp/node-usage.log
+          grep -q '^contract=manager-node-usage-v1$' /tmp/node-usage.log
+          grep -q '^usage_scope=node-local$' /tmp/node-usage.log
+          grep -q '^billing_authoritative=0$' /tmp/node-usage.log
+          grep -q '^global_usage_supported=0$' /tmp/node-usage.log
+          grep -q '^country=BR$' /tmp/node-usage.log
+          grep -q '^region=BR-SP$' /tmp/node-usage.log
+          grep -q '^pool=CI-POOL$' /tmp/node-usage.log
+          grep -q '^sessions=1$' /tmp/node-usage.log
+          grep -q '^session_identities=1$' /tmp/node-usage.log
+          grep -q '^active_protocols=wireguard$' /tmp/node-usage.log
+          grep -q '^download_bytes=500$' /tmp/node-usage.log
+          grep -q '^upload_bytes=200$' /tmp/node-usage.log
+          grep -q '^total_bytes=700$' /tmp/node-usage.log
+          grep -q '^wireguard_total_bytes=700$' /tmp/node-usage.log
+          grep -q '^identities_partial_traffic=1$' /tmp/node-usage.log
+          grep -q '^traffic_complete=0$' /tmp/node-usage.log
+          grep -q '^billing_note=local_telemetry_not_global_billing$' /tmp/node-usage.log
+
+      - name: Revoke through common lifecycle surface
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/connection_actions.sh --revoke ci-client > /tmp/revoke.log
+          grep -q '^status=revoked$' /tmp/revoke.log
+          if sudo id ci-client >/dev/null 2>&1; then
+            echo 'SSH resource survived lifecycle revoke.' >&2
+            exit 1
+          fi
+          sudo /opt/manager/modules/connection_actions.sh --status ci-client > /tmp/revoked-status.log
+          grep -q '^state=disabled$' /tmp/revoked-status.log
+          grep -q '^ssh_resource=$' /tmp/revoked-status.log
+          grep -q '^ssh_status=unbound$' /tmp/revoked-status.log
+
+      - name: Uninstall without new persistent lifecycle state
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/uninstall.sh
+          sudo test ! -e /opt/manager/modules/connection_actions.sh
+          sudo test ! -e /opt/manager/modules/node_usage.sh
+          # Existing persistent Connection Engine state remains intentionally.
+          sudo test -d /etc/manager/connection
