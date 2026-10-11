@@ -32,6 +32,7 @@ collect_paths() {
     /etc/manager/access \
     /etc/manager/proxy \
     /etc/manager/connection \
+    /etc/manager/automation \
     /var/lib/manager/identity-usage/identities \
     /etc/wireguard/wg0.conf \
     /etc/wireguard/server.key \
@@ -93,6 +94,7 @@ entry_is_managed() {
   [[ "$entry" == "etc/manager/access" || "$entry" == etc/manager/access/* ]] && return 0
   [[ "$entry" == "etc/manager/proxy" || "$entry" == etc/manager/proxy/* ]] && return 0
   [[ "$entry" == "etc/manager/connection" || "$entry" == etc/manager/connection/* ]] && return 0
+  [[ "$entry" == "etc/manager/automation" || "$entry" == etc/manager/automation/* ]] && return 0
   [[ "$entry" == "var/lib/manager/identity-usage/identities" || "$entry" == var/lib/manager/identity-usage/identities/* ]] && return 0
   [[ "$entry" == "etc/systemd/system/openvpn-server@manager.service.d" || "$entry" == etc/systemd/system/openvpn-server@manager.service.d/* ]] && return 0
 
@@ -179,7 +181,7 @@ create_backup() {
   cp "$manifest" "$archive.manifest"
   chmod 0600 "$archive.manifest"
   ok "Backup criado: $archive"
-  warn "O backup pode conter chaves privadas de VPN/TLS, identidades, histórico consolidado de uso e dados de revenda. Trate o arquivo como segredo."
+  warn "O backup pode conter chaves privadas de VPN/TLS, identidades, configuração de automação, histórico consolidado de uso e dados de revenda. Trate o arquivo como segredo."
   pause
 }
 
@@ -258,6 +260,9 @@ restore_backup() {
   if [[ -f /etc/systemd/system/manager-test-users.timer ]]; then systemctl enable --now manager-test-users.timer >/dev/null 2>&1 || true; fi
   if [[ -x "$MANAGER_HOME/modules/identity_usage.sh" ]]; then
     "$MANAGER_HOME/modules/identity_usage.sh" --collect >/dev/null 2>&1 || warn "Histórico de uso restaurado, mas o baseline atual não pôde ser coletado agora."
+  fi
+  if [[ -x "$MANAGER_HOME/modules/automation_legacy.sh" ]]; then
+    "$MANAGER_HOME/modules/automation_legacy.sh" --install >/dev/null 2>&1 || warn "Estado Legacy restaurado, mas o listener não pôde ser reanexado."
   fi
   if command -v sshd >/dev/null 2>&1 && sshd -t; then
     systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
