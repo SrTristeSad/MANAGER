@@ -67,6 +67,18 @@ else
   systemctl daemon-reload || true
 fi
 
+# O guard apenas espelha as decisões de identidade/lease no plano IPv6. Ele
+# precisa remover suas regras específicas antes que Session/Policy Engine saiam.
+if [[ -x /opt/manager/modules/ipv6_guard.sh ]]; then
+  /opt/manager/modules/ipv6_guard.sh --detach >/dev/null 2>&1 || true
+else
+  systemctl disable --now manager-ipv6-guard.timer >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-ipv6-guard.timer \
+    /etc/systemd/system/manager-ipv6-guard.service
+  rm -rf /run/manager-ipv6-guard
+  systemctl daemon-reload || true
+fi
+
 # O bridge precisa sair antes do Session Engine, pois usa leases existentes para
 # liberar mapas, regras específicas e hooks de protocolo sem deixar lockout.
 if [[ -x /opt/manager/modules/protocol_leases.sh ]]; then
@@ -125,6 +137,7 @@ if $PURGE; then
   previous_cc=""
   previous_qdisc=""
   previous_forward=""
+  previous_forward6=""
   if [[ -f /etc/manager/adblock/dnsmasq.owner ]]; then
     dnsmasq_owner="$(cat /etc/manager/adblock/dnsmasq.owner)"
   fi
@@ -139,6 +152,9 @@ if $PURGE; then
   fi
   if [[ -f /etc/manager/network/previous-ip-forward ]]; then
     previous_forward="$(tr -d '[:space:]' < /etc/manager/network/previous-ip-forward)"
+  fi
+  if [[ -f /etc/manager/network/previous-ipv6-forwarding ]]; then
+    previous_forward6="$(tr -d '[:space:]' < /etc/manager/network/previous-ipv6-forwarding)"
   fi
 
   if [[ -d /etc/manager/ssh-tests ]]; then
@@ -212,10 +228,14 @@ if $PURGE; then
   if [[ "$previous_forward" == 0 || "$previous_forward" == 1 ]]; then
     sysctl -w "net.ipv4.ip_forward=$previous_forward" >/dev/null 2>&1 || true
   fi
+  if [[ "$previous_forward6" == 0 || "$previous_forward6" == 1 ]]; then
+    sysctl -w "net.ipv6.conf.all.forwarding=$previous_forward6" >/dev/null 2>&1 || true
+  fi
 
   rm -rf /etc/manager
   rm -rf /var/log/manager
   rm -rf /var/lib/manager/identity-usage
+  rm -rf /run/manager-ipv6-guard
   rmdir /var/lib/manager 2>/dev/null || true
   systemctl daemon-reload || true
 
@@ -246,10 +266,10 @@ if ! $PURGE; then
   echo "As configurações em /etc/manager e serviços configurados foram preservados."
   echo "Produtos, vínculos, ACL e estado de franquia foram preservados no Connection Engine."
   echo "O histórico consolidado de uso em /var/lib/manager/identity-usage foi preservado."
-  echo "Leases runtime foram descartadas; session_epoch e identidades persistem para reinstalação."
+  echo "Leases runtime e regras runtime do IPv6 Guard foram descartadas; estado persistente permanece para reinstalação."
   echo "Hooks PAM/OpenVPN e o bridge de protocolos foram desanexados antes da remoção do código."
   echo "O enforcement de identidades foi desanexado junto com o código e volta a ser aplicado numa reinstalação."
   echo "Execute manager-uninstall --purge somente se quiser remover também as configurações e o histórico do MANAGER."
 else
-  echo "Configurações, produtos, ACL, franquias, histórico de uso e unidades próprias do MANAGER removidos. Pacotes do sistema, certificados Let's Encrypt, backups e regras UFW foram preservados."
+  echo "Configurações, produtos, ACL, franquias, histórico de uso e unidades próprias do MANAGER removidos. Forwarding IPv4/IPv6 anterior foi restaurado quando conhecido."
 fi
