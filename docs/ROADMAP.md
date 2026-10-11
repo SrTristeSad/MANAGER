@@ -151,18 +151,37 @@ Concluído:
 - CI dedicado cobre criação SSH por produto, validade, limite de sessões, duplicata, preflight de VPN indisponível, revogação e persistência da identidade lógica após uninstall/reinstall;
 - documentação própria em `docs/PROVISIONING.md`.
 
-Limite deliberado desta etapa: enquanto a cota antiga de revenda continuar baseada em usuários Linux, provisionamentos com `OWNER` exigem `ssh`. A remoção dessa dependência fica para a migração de cotas de revenda para produto/identidade.
+### 0.6.7 — Cotas de revenda por identidade/produto
+
+Concluído:
+
+- a unidade de cota passa de usuário Linux para identidade lógica MANAGER;
+- identidades somente WireGuard ou somente OpenVPN agora podem pertencer a revendedor/subrevendedor sem conta SSH;
+- uma identidade consome uma única vaga mesmo quando combina SSH, WireGuard e OpenVPN;
+- reserva de slot ocorre antes da gravação da identidade e sob lock, impedindo corrida de criação acima da cota;
+- uso de subrevendedor continua agregado à cota do revendedor pai;
+- contas SSH legadas ainda contam enquanto não forem absorvidas por uma identidade, com deduplicação durante adoção;
+- identidades revogadas preservadas pela 0.6.6 são migradas sem voltar a consumir cota;
+- bloqueio temporário mantém a vaga, enquanto revogação completa libera o slot;
+- reativação de identidade com slot liberado precisa reservar capacidade novamente;
+- cotas opcionais por produto permitem limitar, por exemplo, quantos clientes `premium` cada revendedor pode manter;
+- cota de produto do subrevendedor também respeita o limite agregado do pai;
+- `products.sh --assign` aplica a cota de produto mesmo fora do provisionador;
+- o preflight do provisionamento verifica cota total + cota de produto antes da criação dos recursos;
+- novas consultas `manager --reseller-usage OWNER` e `manager --reseller-product-quota OWNER PRODUCT`;
+- estado permanece sob `/etc/manager/access`, entrando no backup/lifecycle existente;
+- CI dedicado cobre identidades VPN-only, pai/subrevendedor, reativação, cotas de produto, legado sem dupla contagem, migração de identidade revogada e persistência após uninstall/reinstall;
+- documentação própria em `docs/RESELLER_QUOTAS.md`.
 
 ### Próximos itens 0.6.x
 
 Antes da Automation v2, a base comum ainda deve ganhar:
 
-1. cotas de revenda baseadas em **produto/identidade**, incluindo identidades VPN-only;
-2. IPv6 completo;
-3. metadados de endpoint/nó/região que serão consumidos pela Colmeia;
-4. passagem automática do contexto `region/pool/node` para a autorização de conexão;
-5. agregação futura de uso por nó sem tratar o accounting local como faturamento global;
-6. consolidação gradual dos contratos internos de criação/revogação de protocolo para que Automation v2 reutilize uma única superfície allowlisted.
+1. IPv6 completo;
+2. metadados de endpoint/nó/região que serão consumidos pela Colmeia;
+3. passagem automática do contexto `region/pool/node` para a autorização de conexão;
+4. agregação futura de uso por nó sem tratar o accounting local como faturamento global;
+5. consolidação gradual dos contratos internos de criação/revogação de protocolo para que Automation v2 reutilize uma única superfície allowlisted.
 
 ## 0.7.0 — Automation Engine
 
@@ -201,7 +220,7 @@ Novo protocolo oficial para integrações futuras:
 - `managerd`/`managerctl` ou mecanismo equivalente;
 - nenhuma execução remota de shell arbitrário.
 
-O Protocol Lease Bridge da 0.6.3 continua sendo a fronteira entre daemons de conexão e a autoridade de sessão. O Identity Usage da 0.6.4 fornece a visão comum de consumo/atividade, a 0.6.5 fornece produto/limites/ACL e a 0.6.6 fornece provisionamento/revogação transacional. Assim, Automation/Colmeia podem chamar ações conhecidas sem reimplementar o ciclo de vida dos protocolos.
+O Protocol Lease Bridge da 0.6.3 continua sendo a fronteira entre daemons de conexão e a autoridade de sessão. O Identity Usage da 0.6.4 fornece a visão comum de consumo/atividade, a 0.6.5 fornece produto/limites/ACL, a 0.6.6 fornece provisionamento/revogação transacional e a 0.6.7 fornece cotas por identidade/produto. Assim, Automation/Colmeia podem chamar ações conhecidas sem reimplementar o ciclo de vida dos protocolos.
 
 ## 0.8.0 — Modo Colmeia
 
