@@ -42,7 +42,11 @@ bridge_init() {
     groupadd --system "$OVPN_GROUP" >/dev/null 2>&1 || true
   fi
   if getent group "$OVPN_GROUP" >/dev/null 2>&1; then
-    install -d -o root -g "$OVPN_GROUP" -m 0730 "$OVPN_REQ_DIR" "$OVPN_RESP_DIR"
+    # O daemon pode criar requests, mas só atravessar/ler respostas conhecidas.
+    # Sem write no diretório de respostas ele não consegue preparar symlink para
+    # um processo root sobrescrever outro caminho durante o retorno ALLOW/DENY.
+    install -d -o root -g "$OVPN_GROUP" -m 0730 "$OVPN_REQ_DIR"
+    install -d -o root -g "$OVPN_GROUP" -m 0710 "$OVPN_RESP_DIR"
   else
     install -d -m 0700 "$OVPN_REQ_DIR" "$OVPN_RESP_DIR"
   fi
@@ -508,15 +512,20 @@ write_openvpn_response() {
 }
 
 process_openvpn_requests() {
-  local request base event client remote port device result processed=0
+  local request base event client remote port device result processed=0 size
   bridge_init
   for request in "$OVPN_REQ_DIR"/request.*.req; do
-    [[ -f "$request" ]] || continue
+    [[ -e "$request" || -L "$request" ]] || continue
     processed=$((processed + 1))
     (( processed <= 200 )) || break
     base="${request##*/}"
-    if [[ ! "$base" =~ ^request\.[A-Za-z0-9]+\.req$ ]]; then
-      rm -f "$request"
+    if [[ ! "$base" =~ ^request\.[A-Za-z0-9]+\.req$ ]] || [[ -L "$request" ]] || [[ ! -f "$request" ]]; then
+      rm -f -- "$request"
+      continue
+    fi
+    size="$(stat -c '%s' "$request" 2>/dev/null || echo 999999)"
+    if [[ ! "$size" =~ ^[0-9]+$ ]] || (( size > 4096 )); then
+      rm -f -- "$request"
       continue
     fi
     event="$(request_value "$request" event)"
@@ -544,7 +553,7 @@ process_openvpn_requests() {
     elif [[ "$event" == client-connect ]]; then
       write_openvpn_response "$request" DENY
     fi
-    rm -f "$request"
+    rm -f -- "$request"
   done
 }
 
