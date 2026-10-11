@@ -1,0 +1,159 @@
+name: Hive Private Network
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hive-network:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo test -x /opt/manager/modules/hive_network.sh
+          command -v wg
+          command -v wg-quick
+          sudo manager hive network status > /tmp/hive-network-status
+          grep -q '^contract=manager-hive-network-v1$' /tmp/hive-network-status
+          grep -q '^interface=mgh0$' /tmp/hive-network-status
+          grep -q '^topology=mesh$' /tmp/hive-network-status
+          grep -q '^wireguard_private_key_exported=0$' /tmp/hive-network-status
+          grep -q '^default_route_exported=0$' /tmp/hive-network-status
+          grep -q '^user_vpn_traffic_transit=0$' /tmp/hive-network-status
+
+      - name: Initialize controller and two isolated enrolled nodes
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager hive controller init >/tmp/controller-init
+          fp="$(sudo manager hive controller fingerprint)"
+          printf '%s' "$fp" >/tmp/controller-fp
+          for node in a b; do
+            root="/tmp/hive-node-$node"
+            sudo rm -rf "$root" "/tmp/hive-wg-$node"
+            sudo mkdir -m 700 "$root" "/tmp/hive-wg-$node"
+            sudo env MANAGER_ETC="$root" /opt/manager/modules/node_metadata.sh --init >/dev/null
+            sudo env MANAGER_ETC="$root" /opt/manager/modules/hive_identity.sh --request "/tmp/node-$node.identity-request.json" >/dev/null
+            sudo manager hive controller approve "/tmp/node-$node.identity-request.json" "/tmp/node-$node.identity-bundle.json" >/dev/null
+            sudo env MANAGER_ETC="$root" /opt/manager/modules/hive_identity.sh --accept "/tmp/node-$node.identity-bundle.json" "$fp" >/dev/null
+            sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC="$root" MANAGER_HIVE_WG_DIR="/tmp/hive-wg-$node" /opt/manager/modules/hive_network.sh --init >/tmp/node-$node.network-init
+            sudo test -f "$root/hive/network/node.key"
+            test "$(sudo stat -c '%a' "$root/hive/network/node.key")" = 600
+          done
+          key_a="$(sudo cat /tmp/hive-node-a/hive/network/node.key)"
+          key_b="$(sudo cat /tmp/hive-node-b/hive/network/node.key)"
+          test "$key_a" != "$key_b"
+
+      - name: Create signed network requests and reject tampering
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/hive-node-a MANAGER_HIVE_WG_DIR=/tmp/hive-wg-a /opt/manager/modules/hive_network.sh --request 203.0.113.10 /tmp/node-a.network-request.json 51870 >/tmp/netreq-a
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/hive-node-b MANAGER_HIVE_WG_DIR=/tmp/hive-wg-b /opt/manager/modules/hive_network.sh --request 203.0.113.11 /tmp/node-b.network-request.json 51870 >/tmp/netreq-b
+          if sudo grep -q 'PrivateKey\|PRIVATE KEY' /tmp/node-a.network-request.json /tmp/node-b.network-request.json; then
+            echo 'network request leaked private key' >&2
+            exit 1
+          fi
+          sudo python3 - <<'PY'
+          import json
+          p='/tmp/node-b.network-request.json'
+          d=json.load(open(p)); d['endpoint']='evil.example.com'
+          json.dump(d,open('/tmp/node-b.network-tampered.json','w'),sort_keys=True,separators=(',',':'))
+          PY
+          sudo chmod 600 /tmp/node-b.network-tampered.json
+          if sudo manager hive network controller approve /tmp/node-b.network-tampered.json; then exit 1; fi
+
+      - name: Approve nodes and assign unique dual-stack addresses
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager hive network controller init >/tmp/network-controller
+          sudo manager hive network controller approve /tmp/node-a.network-request.json >/tmp/approve-a
+          sudo manager hive network controller approve /tmp/node-b.network-request.json >/tmp/approve-b
+          node_a="$(awk -F= '$1=="node_id"{print $2}' /tmp/approve-a)"
+          node_b="$(awk -F= '$1=="node_id"{print $2}' /tmp/approve-b)"
+          test -n "$node_a" -a -n "$node_b" -a "$node_a" != "$node_b"
+          printf '%s' "$node_a" >/tmp/node-a.id
+          printf '%s' "$node_b" >/tmp/node-b.id
+          ip_a="$(awk -F= '$1=="ipv4"{print $2}' /tmp/approve-a)"
+          ip_b="$(awk -F= '$1=="ipv4"{print $2}' /tmp/approve-b)"
+          ip6_a="$(awk -F= '$1=="ipv6"{print $2}' /tmp/approve-a)"
+          ip6_b="$(awk -F= '$1=="ipv6"{print $2}' /tmp/approve-b)"
+          test "$ip_a" != "$ip_b"
+          test "$ip6_a" != "$ip6_b"
+          [[ "$ip_a" == 10.253.* ]]
+          [[ "$ip6_a" == fd42:4d47:4800::* ]]
+          sudo manager hive network controller status >/tmp/net-status
+          grep -q '^topology=mesh$' /tmp/net-status
+          grep -q '^nodes_active=2$' /tmp/net-status
+
+      - name: Generate signed topology bundles and apply isolated configs
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo rm -rf /tmp/hive-bundles
+          sudo mkdir -m 700 /tmp/hive-bundles
+          sudo manager hive network controller bundle-all /tmp/hive-bundles >/tmp/bundle-all
+          node_a="$(cat /tmp/node-a.id)"; node_b="$(cat /tmp/node-b.id)"
+          sudo test -f "/tmp/hive-bundles/$node_a.network.json"
+          sudo test -f "/tmp/hive-bundles/$node_b.network.json"
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/hive-node-a MANAGER_HIVE_WG_DIR=/tmp/hive-wg-a /opt/manager/modules/hive_network.sh --accept "/tmp/hive-bundles/$node_a.network.json" >/tmp/accept-a
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/hive-node-b MANAGER_HIVE_WG_DIR=/tmp/hive-wg-b /opt/manager/modules/hive_network.sh --accept "/tmp/hive-bundles/$node_b.network.json" >/tmp/accept-b
+          grep -q '^peer_count=1$' /tmp/accept-a
+          grep -q '^peer_count=1$' /tmp/accept-b
+          sudo grep -q '^# MANAGER-HIVE-NETWORK v1$' /tmp/hive-wg-a/mgh0.conf
+          sudo grep -q '^# HIVE-PEER ' /tmp/hive-wg-a/mgh0.conf
+          if sudo grep -Eq 'AllowedIPs = (0\.0\.0\.0/0|::/0)' /tmp/hive-wg-a/mgh0.conf /tmp/hive-wg-b/mgh0.conf; then
+            echo 'Hive mesh exported a default route' >&2
+            exit 1
+          fi
+          priv_a="$(sudo cat /tmp/hive-node-a/hive/network/node.key)"
+          priv_b="$(sudo cat /tmp/hive-node-b/hive/network/node.key)"
+          if sudo grep -R -F "$priv_a" /etc/manager/hive/controller /tmp/hive-bundles /tmp/node-a.network-request.json /tmp/node-b.network-request.json; then exit 1; fi
+          if sudo grep -R -F "$priv_b" /etc/manager/hive/controller /tmp/hive-bundles /tmp/node-a.network-request.json /tmp/node-b.network-request.json; then exit 1; fi
+
+      - name: Fence stale topology with config epoch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node_a="$(cat /tmp/node-a.id)"
+          sudo cp "/tmp/hive-bundles/$node_a.network.json" /tmp/node-a.old-bundle.json
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/hive-node-b MANAGER_HIVE_WG_DIR=/tmp/hive-wg-b /opt/manager/modules/hive_network.sh --request 203.0.113.21 /tmp/node-b.network-request-v2.json 51870 >/dev/null
+          sudo manager hive network controller approve /tmp/node-b.network-request-v2.json >/tmp/approve-b2
+          sudo manager hive network controller bundle "$node_a" /tmp/node-a.new-bundle.json >/dev/null
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/hive-node-a MANAGER_HIVE_WG_DIR=/tmp/hive-wg-a /opt/manager/modules/hive_network.sh --accept /tmp/node-a.new-bundle.json >/tmp/accept-a2
+          if sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/hive-node-a MANAGER_HIVE_WG_DIR=/tmp/hive-wg-a /opt/manager/modules/hive_network.sh --accept /tmp/node-a.old-bundle.json; then exit 1; fi
+
+      - name: Disable a node and remove it from fresh topology
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node_a="$(cat /tmp/node-a.id)"; node_b="$(cat /tmp/node-b.id)"
+          sudo manager hive network controller disable "$node_b" >/tmp/disable-b
+          sudo manager hive network controller bundle "$node_a" /tmp/node-a.without-b.json >/tmp/bundle-a3
+          grep -q '^peer_count=0$' /tmp/bundle-a3
+          if sudo manager hive network controller bundle "$node_b" /tmp/node-b.disabled.json; then exit 1; fi
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/hive-node-a MANAGER_HIVE_WG_DIR=/tmp/hive-wg-a /opt/manager/modules/hive_network.sh --accept /tmp/node-a.without-b.json >/tmp/accept-a3
+          grep -q '^peer_count=0$' /tmp/accept-a3
+          if sudo grep -q '^# HIVE-PEER ' /tmp/hive-wg-a/mgh0.conf; then exit 1; fi
+
+      - name: Detach preserves node private state but removes generated runtime config
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/hive-node-a MANAGER_HIVE_WG_DIR=/tmp/hive-wg-a /opt/manager/modules/hive_network.sh --detach
+          sudo test -f /tmp/hive-node-a/hive/network/node.key
+          sudo test -f /tmp/hive-node-a/hive/network/topology.json
+          sudo test ! -e /tmp/hive-wg-a/mgh0.conf
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/hive-node-a MANAGER_HIVE_WG_DIR=/tmp/hive-wg-a /opt/manager/modules/hive_network.sh --install
+          sudo test -f /tmp/hive-wg-a/mgh0.conf
