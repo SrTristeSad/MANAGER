@@ -1,0 +1,173 @@
+name: Automation v2 Core
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  automation-v2:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo systemctl is-active --quiet manager-automation-v2.service
+          sudo test -S /run/manager-automation-v2/manager.sock
+          test "$(sudo stat -c '%a' /run/manager-automation-v2/manager.sock)" = 600
+          sudo test -x /opt/manager/modules/automation_v2.sh
+          sudo test -L /usr/local/sbin/managerctl
+          sudo test -L /usr/local/sbin/managerd
+
+      - name: Verify versioned local-only contract
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/automation_v2.sh --status > /tmp/v2-status.log
+          grep -q '^contract=manager-automation-v2-local-v1$' /tmp/v2-status.log
+          grep -q '^transport=unix$' /tmp/v2-status.log
+          grep -q '^socket_mode=600$' /tmp/v2-status.log
+          grep -q '^remote_transport=0$' /tmp/v2-status.log
+          grep -q '^arbitrary_shell=0$' /tmp/v2-status.log
+          grep -q '^idempotency=1$' /tmp/v2-status.log
+          grep -q '^audit=1$' /tmp/v2-status.log
+
+          sudo managerctl describe --request-id ci-describe-0001 > /tmp/describe.json
+          python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/describe.json'))
+          assert r['contract']=='manager-automation-v2-local-v1'
+          assert r['version']==1
+          assert r['request_id']=='ci-describe-0001'
+          assert r['action_id']=='system.describe'
+          assert r['ok'] is True and r['code']==0
+          assert r['result']['data']['contract']=='manager-connection-actions-v1'
+          assert r['result']['data']['arbitrary_shell']=='0'
+          PY
+
+      - name: Reject non-allowlisted actions
+        shell: bash
+        run: |
+          set -euxo pipefail
+          set +e
+          sudo managerctl shell.exec command=id --request-id ci-shell-0001 > /tmp/rejected.json
+          rc=$?
+          set -e
+          test "$rc" -eq 64
+          python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/rejected.json'))
+          assert r['ok'] is False
+          assert r['code']==64
+          assert 'não permitido' in r['error']
+          PY
+
+      - name: Create through Automation v2 and prove idempotency
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/products.sh --create ci-v2-ssh 'CI V2 SSH' 1 0 1 ssh 0 lifetime warn '*' '*' '*'
+
+          sudo managerctl connection.preflight id=ci-v2-client plan=ci-v2-ssh protocols=ssh --request-id ci-preflight-0001 > /tmp/preflight.json
+          python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/preflight.json'))
+          assert r['ok'] is True and r['code']==0
+          assert r['result']['data']['status']=='ready'
+          PY
+
+          sudo managerctl connection.create id=ci-v2-client plan=ci-v2-ssh protocols=ssh --request-id ci-create-0001 > /tmp/create.json
+          sudo id ci-v2-client >/dev/null
+          python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/create.json'))
+          assert r['ok'] is True and r['code']==0 and r['cached'] is False
+          assert r['result']['data']['identity_id']=='ci-v2-client'
+          password=r['result']['data']['ssh_password']
+          assert len(password) >= 16
+          open('/tmp/password.txt','w').write(password)
+          PY
+
+          # Mesmo request_id + mesmo payload retorna a resposta anterior e não recria a conta.
+          sudo managerctl connection.create id=ci-v2-client plan=ci-v2-ssh protocols=ssh --request-id ci-create-0001 > /tmp/create-replay.json
+          python3 - <<'PY'
+          import json
+          a=json.load(open('/tmp/create.json'))
+          b=json.load(open('/tmp/create-replay.json'))
+          assert b['ok'] is True and b['code']==0 and b['cached'] is True
+          assert b['result']['data']['ssh_password']==a['result']['data']['ssh_password']
+          PY
+
+          # Reutilizar o mesmo request_id para outro payload é conflito, não uma segunda operação.
+          set +e
+          sudo managerctl connection.create id=ci-v2-other plan=ci-v2-ssh protocols=ssh --request-id ci-create-0001 > /tmp/create-conflict.json
+          rc=$?
+          set -e
+          test "$rc" -eq 65
+          if sudo id ci-v2-other >/dev/null 2>&1; then
+            echo 'Conflicting request_id created a second resource.' >&2
+            exit 1
+          fi
+
+      - name: Verify status node usage and secret-free audit
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo managerctl connection.status id=ci-v2-client --request-id ci-status-0001 > /tmp/status.json
+          sudo managerctl node.usage --request-id ci-node-usage-0001 > /tmp/node.json
+          python3 - <<'PY'
+          import json
+          s=json.load(open('/tmp/status.json'))
+          n=json.load(open('/tmp/node.json'))
+          assert s['ok'] is True
+          assert s['result']['data']['identity_id']=='ci-v2-client'
+          assert s['result']['data']['state']=='active'
+          assert n['ok'] is True
+          assert n['result']['data']['contract']=='manager-node-usage-v1'
+          assert n['result']['data']['billing_authoritative']=='0'
+          PY
+
+          password="$(cat /tmp/password.txt)"
+          if sudo grep -Fq "$password" /var/log/manager/automation-v2-audit.jsonl; then
+            echo 'Automation audit leaked the generated SSH password.' >&2
+            exit 1
+          fi
+          sudo grep -q '"action_id":"connection.create"' /var/log/manager/automation-v2-audit.jsonl
+          sudo test -f /var/lib/manager/automation-v2/idempotency/ci-create-0001.json
+          test "$(sudo stat -c '%a' /var/lib/manager/automation-v2/idempotency/ci-create-0001.json)" = 600
+
+      - name: Revoke and preserve local idempotency state across reinstall
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo managerctl connection.revoke id=ci-v2-client --request-id ci-revoke-0001 > /tmp/revoke.json
+          python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/revoke.json'))
+          assert r['ok'] is True and r['code']==0
+          assert r['result']['data']['status']=='revoked'
+          PY
+          if sudo id ci-v2-client >/dev/null 2>&1; then
+            echo 'V2 revoke left SSH resource behind.' >&2
+            exit 1
+          fi
+
+          sudo /opt/manager/uninstall.sh
+          sudo test ! -e /run/manager-automation-v2/manager.sock
+          sudo test ! -e /etc/systemd/system/manager-automation-v2.service
+          sudo test ! -e /usr/local/sbin/managerctl
+          sudo test -f /var/lib/manager/automation-v2/idempotency/ci-create-0001.json
+
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo systemctl is-active --quiet manager-automation-v2.service
+          sudo test -S /run/manager-automation-v2/manager.sock
+          sudo test -f /var/lib/manager/automation-v2/idempotency/ci-create-0001.json
