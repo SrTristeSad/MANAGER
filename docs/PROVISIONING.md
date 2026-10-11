@@ -1,6 +1,6 @@
 # Provisionamento Unificado — 0.6.6+
 
-A 0.6.6 adicionou uma operação única para criar uma identidade MANAGER, aplicar um produto/plano e materializar os recursos técnicos permitidos por esse produto. A 0.6.7 remove a dependência de SSH para clientes de revenda ao integrar o provisionador às cotas por identidade e produto.
+A 0.6.6 adicionou uma operação única para criar uma identidade MANAGER, aplicar um produto/plano e materializar os recursos técnicos permitidos por esse produto. A 0.6.7 removeu a dependência de SSH para clientes de revenda ao integrar o provisionador às cotas por identidade e produto. A 0.6.8 faz o provisionamento reutilizar também o estado IPv6/dual-stack dos servidores WireGuard e OpenVPN.
 
 ## Objetivo
 
@@ -31,7 +31,7 @@ recursos técnicos
    ↓
 bindings
    ↓
-Policy / Product reconcile
+Policy / Product / IPv6 reconcile
    ↓
 commit
 ```
@@ -107,13 +107,46 @@ A senha é retornada uma única vez como `ssh_password=...`. Ela não é gravada
 
 WireGuard só pode ser provisionado quando o servidor MANAGER já está configurado. O provisionador escolhe endereço livre, gera chave privada/pública e PSK, grava perfil restrito, adiciona somente o peer correspondente em `wg0.conf`, recarrega a unidade quando necessário e cria o binding.
 
+A partir da 0.6.8, ele usa o mesmo estado dual-stack do módulo WireGuard. Se `/etc/manager/wireguard/ipv6-enabled` estiver ativo, o cliente recebe IPv4 e IPv6 no mesmo perfil:
+
+```text
+Address = 10.66.66.2/32, fd66:66:66::2/128
+AllowedIPs = 0.0.0.0/0, ::/0
+```
+
+A saída estruturada preserva o campo antigo e adiciona os campos explícitos:
+
+```text
+wireguard_ip=10.66.66.2
+wireguard_ipv4=10.66.66.2
+wireguard_ipv6=fd66:66:66::2
+```
+
+`wireguard_ip` continua sendo o IPv4 para compatibilidade com consumidores anteriores.
+
+Endpoint IPv6 literal é formatado automaticamente com colchetes, por exemplo `[2001:db8::10]:51820`.
+
 Em rollback, remove somente o peer e os arquivos daquela tentativa. Não existe flush global de firewall nem substituição global da configuração.
 
 ## OpenVPN
 
 OpenVPN também exige que o servidor MANAGER já esteja configurado. O provisionador usa a PKI Easy-RSA existente para gerar certificado/chave, produzir o `.ovpn`, registrar metadados e criar binding.
 
+Quando o servidor OpenVPN está em dual-stack, o perfil continua usando a configuração normal do cliente e o servidor entrega o IPv6 do túnel por sua configuração `server-ipv6`. A saída do provisionador informa:
+
+```text
+openvpn_ipv6=1
+```
+
 Se a transação falhar depois da emissão, o certificado é revogado e a CRL é regenerada. O histórico da CA não é apagado.
+
+## IPv6 Guard — 0.6.8
+
+O provisionador não cria um sistema paralelo de autorização para IPv6. Depois de materializar os recursos e bindings, a reconciliação inclui o `IPv6 Guard`, que espelha no IPv6 as decisões do Policy/Session Engine.
+
+Assim, um peer WireGuard ou cliente OpenVPN sem lease válida não consegue contornar o limite de sessão usando apenas tráfego IPv6.
+
+Detalhes: [`IPV6.md`](IPV6.md).
 
 ## Produto, validade e sessões
 
@@ -133,7 +166,7 @@ O provisionador não implementa um segundo sistema de limites. Product Policy, P
 
 ## Revendedores e cotas — 0.6.7
 
-Um `OWNER` pode agora receber identidade:
+Um `OWNER` pode receber identidade:
 
 ```text
 ssh
@@ -177,7 +210,7 @@ WireGuard → peer/configuração do cliente removidos
 OpenVPN   → certificado revogado + CRL atualizada
 ```
 
-O produto é desvinculado e os bindings são limpos. Quando toda a revogação termina sem erro, a vaga de revenda da identidade é liberada.
+O produto é desvinculado e os bindings são limpos. O Policy Engine e o IPv6 Guard são reconciliados durante a revogação. Quando toda a revogação termina sem erro, a vaga de revenda da identidade é liberada.
 
 A identidade lógica **não é apagada**. Ela permanece em estado `disabled`, permitindo histórico/auditoria. Se alguma etapa falhar, a identidade continua desativada e a vaga não é liberada prematuramente.
 
@@ -195,7 +228,7 @@ O registro contém somente metadados operacionais (`action`, ID, produto, owner,
 
 O módulo é instalado em `/opt/manager/modules/provision.sh`. O estado durável continua nos diretórios usados pelos motores existentes; não existe banco paralelo para identidades/produtos.
 
-Uninstall normal preserva o estado lógico do Connection Engine e da revenda. Recursos explicitamente revogados não são recriados por uma reinstalação.
+Uninstall normal preserva o estado lógico do Connection Engine, da revenda e o estado dual-stack em `/etc/manager`. Recursos explicitamente revogados não são recriados por uma reinstalação.
 
 ## Automation v2
 
