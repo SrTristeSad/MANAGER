@@ -9,12 +9,10 @@ Este documento registra a direção técnica do MANAGER até a versão 1.0. O ob
 - Operações privilegiadas passam por ações conhecidas e auditáveis; integrações nunca recebem shell arbitrário.
 - Nenhum módulo deve limpar o firewall global, sobrescrever todo o SSH ou usar permissões `777`.
 - Estado durável de identidade, fencing e autoridade é preservado em update/rollback/uninstall normal.
-- Administração remota futura será centrada em Telegram Bot + Telegram Mini App, sem depender de painel web administrativo convencional.
-- A Colmeia só começa depois que autenticação e autorização da Automation v2 estiverem estabilizadas.
+- Administração remota será centrada em Telegram Bot + Telegram Mini App, sem painel web administrativo convencional.
+- O tráfego VPN real não deve atravessar o controlador da Colmeia.
 
 ## 0.4.x — Fundação ✅
-
-Concluído:
 
 - health check e manutenção;
 - CLI não interativa;
@@ -24,16 +22,12 @@ Concluído:
 
 ## 0.5.x — Paridade SSHPlus útil ✅
 
-Concluído:
-
 - contas SSH, contas teste, expirados e monitor de sessões;
 - backup/migração segura de usuários;
 - banner, speedtest e serviços;
 - hosts de proxy, Squid privado, TCP, WebSocket e TLS;
 - revendedores/subrevendedores, cotas e propriedade;
 - criação vinculada à revenda sob lock.
-
-Recursos antigos dependentes de técnicas inseguras recebem implementação moderna equivalente, não cópia literal.
 
 ## 0.6.x — Connection / Policy / Session Engine ✅
 
@@ -47,7 +41,7 @@ Recursos antigos dependentes de técnicas inseguras recebem implementação mode
 ### 0.6.1 — enforcement
 
 - estado efetivo aplicado aos protocolos;
-- `DenyUsers`/limites SSH sem substituir `sshd_config`;
+- SSH sem substituir todo `sshd_config`;
 - WireGuard removido/restaurado somente em runtime;
 - OpenVPN bloqueável de forma reversível;
 - reconciliação automática.
@@ -65,15 +59,17 @@ Recursos antigos dependentes de técnicas inseguras recebem implementação mode
 - SSH via PAM `open_session/close_session`;
 - OpenVPN via fila runtime privilegiada e allowlisted;
 - WireGuard via handshake recente + gate específico do peer;
-- reconciliação, heartbeat e adoção de sessões existentes;
-- lifecycle seguro de hooks em update/rollback/uninstall.
+- reconciliação e adoção de sessões existentes;
+- lifecycle seguro em update/rollback/uninstall.
+
+A validação da 0.7.4 adicionou uma proteção de adoção curta para maps SSH/OpenVPN recém-admitidas, impedindo que o reconciliador libere uma lease antes que a sessão apareça na observação do protocolo.
 
 ### 0.6.4 — Identity Usage
 
 - atividade e accounting comum por identidade;
 - bytes reais de WireGuard/OpenVPN por delta;
 - reset/restart de contador sem perder acumulado;
-- SSH marcado explicitamente como cobertura parcial de bytes;
+- SSH marcado como cobertura parcial de bytes;
 - estado durável e coleta periódica.
 
 ### 0.6.5 — produtos, ACL e franquias
@@ -128,9 +124,9 @@ Recursos antigos dependentes de técnicas inseguras recebem implementação mode
 - sem shell/comando/caminho arbitrário;
 - telemetria local marcada como não autoritativa para billing global.
 
-## 0.7.x — Automation Engine
+## 0.7.x — Automation Engine ✅
 
-A série 0.7 cria a superfície oficial de integração. Ela deve estar estabilizada **antes** da Colmeia.
+A série 0.7 cria a superfície oficial de integração e está concluída na 0.7.4.
 
 ### 0.7.0 — Automation Legacy v1 ✅
 
@@ -142,18 +138,14 @@ A série 0.7 cria a superfície oficial de integração. Ela deve estar estabili
 - senha de integração one-shot;
 - lifecycle e CI próprios.
 
-Documentação: `docs/AUTOMATION_LEGACY.md`.
-
 ### 0.7.1 — Automation v2: núcleo local estruturado ✅
 
 - `managerd` + `managerctl`;
 - socket Unix `/run/manager-automation-v2/manager.sock`;
 - runtime `0700`, socket `0600`, `SO_PEERCRED`;
-- contrato `manager-automation-v2-local-v1`;
 - envelope JSON versionado;
 - `request_id`, `action_id` e códigos estáveis;
 - allowlist de `system.describe`, `node.usage` e lifecycle `connection.*`;
-- nenhuma ação de shell/comando/caminho arbitrário;
 - idempotência persistente;
 - segredo one-shot fora do cache;
 - audit JSONL sem senha/chaves privadas;
@@ -170,108 +162,128 @@ Documentação: `docs/AUTOMATION_LEGACY.md`.
 - `node.usage` admin-only;
 - owner forçado/validado em criação por revenda;
 - autorização antes da idempotência;
-- `principal_id` no hash idempotente;
-- audit allow/deny;
-- lifecycle e CI dedicados.
-
-A limitação histórica da 0.7.2 era `cryptographic_auth=0`; isso foi encerrado na 0.7.3.
+- audit allow/deny.
 
 ### 0.7.3 — autenticação criptográfica e enrollment ✅
 
+- Ed25519 via OpenSSL;
+- registry público root-only;
+- enrollment explícito;
+- chave privada fora do registry server-side;
+- `local-root` continua autenticado por `SO_PEERCRED`;
+- principals não-locais exigem assinatura;
+- rotação e revogação;
+- fingerprint/key ID derivados da chave pública;
+- autenticação reavaliada antes de replay idempotente;
+- CI de autenticação/RBAC dedicado.
+
+### 0.7.4 — anti-replay, rate limiting e transporte remoto ✅
+
 Implementado:
 
-- Ed25519 via OpenSSL, sem criptografia inventada;
-- registry público root-only em `/etc/manager/automation/v2/credentials/<principal>/`;
-- enrollment explícito de uma chave em principal existente;
-- servidor armazena somente chave pública, `key_id`, fingerprint e estado de revogação;
-- arquivo privado de credencial criado externamente em modo `0600` e não incluído no backup server-side;
-- `local-root` continua autenticado por `SO_PEERCRED` e não recebe credencial externa;
-- todos os demais principals exigem assinatura Ed25519 válida;
-- assinatura cobre contrato, versão, `request_id`, `principal_id`, `action_id` e parâmetros;
-- `managerctl --credential FILE` assina o envelope localmente;
-- daemon recalcula identidade/fingerprint da chave pública antes de confiar no registro;
-- rotação cria nova chave e revoga as anteriores somente depois do novo registro estar ativo;
-- revogação de credencial é independente do RBAC;
-- autenticação é reavaliada antes do RBAC/idempotência, portanto chave revogada não consegue replay cacheado;
-- audit registra esquema, `key_id`, fingerprint e decisão, sem assinatura/chave privada;
-- uninstall/reinstall preservam registry público; purge remove estado server-side;
-- CI `Automation v2 Authentication` cobre assinatura, negação sem assinatura, chave errada, rotação, fencing, revogação, audit e purge;
-- CI RBAC usa principals realmente assinados.
-
-Contrato de confiança atual:
-
-```text
-rbac=1
-cryptographic_auth=1
-credential_algorithm=ed25519
-nonlocal_signature_required=1
-anti_replay=0
-rate_limit=0
-remote_transport=0
-```
-
-A autenticação está pronta, mas o transporte continua local. Isso evita expor rede antes de existir proteção anti-replay/rate limit específica para essa superfície.
+- `auth_scheme=ed25519-v2`;
+- `issued_at` assinado;
+- janela de freshness de 120 s;
+- nonce assinado;
+- cache anti-replay persistente por principal/chave;
+- retenção de replay superior à janela de freshness;
+- retry idempotente preservado com novo nonce/timestamp;
+- token bucket por principal/ação;
+- leitura: 120 req/min, burst 20;
+- escrita: 30 req/min, burst 8;
+- proteção adicional de burst por IP no gateway remoto;
+- gateway dedicado `manager-automation-v2-remote.service`;
+- somente TLS 1.3;
+- certificado Ed25519 root-only;
+- pin SHA-256 obrigatório no cliente;
+- `local-root` explicitamente proibido no remoto;
+- remote listener opt-in, desabilitável e com rotação de certificado;
+- nenhuma regra de firewall é aberta automaticamente;
+- gateway apenas encaminha ao socket Unix; autoridade permanece no `managerd`;
+- audit registra transport/freshness/replay/rate-limit;
+- lifecycle cobre install/update/rollback/uninstall/reinstall/purge;
+- CI dedicado tenta replay, timestamp velho/futuro, burst, pin incorreto, TLS 1.2 e rotação do certificado.
 
 Documentação: `docs/AUTOMATION_V2.md`.
 
-### 0.7.4 — anti-replay, rate limiting e transporte remoto estruturado — PRÓXIMO
+## 0.8.x — Modo Colmeia — PRÓXIMO
 
-Planejado:
+A série 0.8 transforma a autoridade local existente em coordenação distribuída entre VPS.
 
-- timestamp assinado e nonce;
-- janela de validade;
-- cache de replay;
-- limites por principal/ação;
-- quotas de chamadas e proteção contra burst;
-- transporte remoto autenticado e criptografado;
-- Unix socket continua como fronteira privilegiada local;
-- nenhum shell remoto arbitrário;
-- chave revogada/principal desabilitado continua falhando fechado antes do dispatcher.
+### 0.8.0 — identidade e enrollment de nós
 
-**A série 0.7 só é considerada concluída quando anti-replay, rate limiting e transporte remoto estiverem estabilizados sobre a autenticação/RBAC já concluídos.**
+Próximo milestone recomendado:
 
-## 0.8.x — Modo Colmeia
+- reutilizar `node_id` persistente;
+- identidade criptográfica por nó;
+- enrollment explícito no controlador;
+- trust bootstrap sem segredo compartilhado permanente;
+- metadados de região/pool/capacidade/peso;
+- enable/disable/drain como estado de autoridade;
+- rotação/revogação de credencial do nó;
+- nenhuma sessão global ainda nesta primeira etapa.
 
-Só começa depois da Automation v2 estar pronta para autenticar e autorizar integrações/nós remotamente.
-
-### Enrollment dos nós
-
-A Colmeia reutilizará a identidade criptográfica da Automation, integrada ao `node_id`, região e pool.
-
-### Heartbeat e saúde
+### 0.8.1 — heartbeat e saúde
 
 - CPU, RAM e rede;
 - sessões/capacidade;
 - latência;
 - protocolos/serviços;
-- estados `HEALTHY`, `DEGRADED`, `DRAINING`, `OFFLINE`.
+- estados `HEALTHY`, `DEGRADED`, `DRAINING`, `OFFLINE`;
+- tolerância a heartbeat perdido;
+- clock/freshness compatíveis com a Automation v2.
 
-### Scheduler
+### 0.8.2 — scheduler
 
 - weighted least-loaded;
 - capacidade/peso;
 - protocolo solicitado;
 - região/pool/ACL;
 - sticky session;
-- drain e failover.
+- drain;
+- failover.
 
-### Sessões globais
+Comando desejado:
+
+```bash
+manager hive node drain BR-SP-02
+```
+
+Drain impede novas conexões, mas sessões existentes continuam até finalizar.
+
+### 0.8.3 — autoridade de sessões globais
 
 - lease global por identidade/plano;
 - `max_sessions` global atômico;
+- seleção de nó + aquisição de lease na mesma autoridade;
 - fencing distribuído;
-- `session_epoch` para impedir retorno de autoridade antiga;
+- `session_epoch` contra retorno de estado antigo;
 - troca de servidor sem sessão fantasma;
-- grace controlado durante falha temporária do controlador.
+- grace controlado em indisponibilidade temporária do controlador.
 
-O tráfego VPN real não deve passar pelo controlador da Colmeia; o controlador coordena autoridade e seleção de nó.
+Exemplo obrigatório:
 
-### Accounting global
+```text
+Maria possui acesso a 10 países/nós
+max_sessions global = 1
+→ pode estar conectada em apenas um deles por vez
+```
+
+### 0.8.4 — accounting global
 
 - ingestão idempotente de deltas por nó;
 - deduplicação;
 - franquia global;
-- telemetria local 0.6.11 continua não sendo billing autoritativo sozinha.
+- telemetria local 0.6.11 continua não autoritativa sozinha;
+- proteção contra double counting após failover/reconnect.
+
+### 0.8.5 — resiliência operacional
+
+- controlador fora do caminho de dados VPN;
+- sessões existentes podem sobreviver a outage do controlador sob regras de grace;
+- novos grants podem falhar fechado quando autoridade global não puder ser garantida;
+- recovery/fencing após retorno do controlador;
+- observabilidade e auditoria distribuída.
 
 ## 0.9.x — Telegram Bot + Mini App
 
@@ -296,7 +308,8 @@ Planejado depois da Automation/Colmeia:
 Critérios:
 
 - paridade útil do legado sem copiar vulnerabilidades;
-- Automation v2 autenticada, autorizada, auditável e rate-limited;
+- Automation v2 autenticada, autorizada, anti-replay, auditável e rate-limited;
+- transporte remoto TLS 1.3 estabilizado;
 - Colmeia com scheduler/leases globais estáveis;
 - Telegram consumindo somente contratos estruturados;
 - backup/restore/migração testados;

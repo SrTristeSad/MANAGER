@@ -1,71 +1,150 @@
-# Automation v2 — núcleo estruturado, RBAC e autenticação Ed25519
+# Automation v2 — contrato estruturado, RBAC, Ed25519 e transporte remoto
 
-A Automation v2 é a interface oficial para integrações novas do MANAGER. A série 0.7 constrói a fronteira de segurança em camadas antes de abrir transporte remoto.
+A Automation v2 é a interface oficial para integrações novas do MANAGER.
+
+A série 0.7 foi construída em camadas:
 
 - **0.7.1:** núcleo local estruturado, `managerd`/`managerctl`, idempotência e auditoria;
 - **0.7.2:** principals e RBAC;
 - **0.7.3:** autenticação Ed25519, enrollment, rotação e revogação;
-- **0.7.4:** anti-replay, rate limiting e transporte remoto estruturado.
+- **0.7.4:** timestamp/nonce, anti-replay, rate limiting e transporte remoto TLS 1.3.
 
-A Colmeia só começa depois dessas fronteiras estarem estabilizadas.
+A 0.7.4 encerra a fundação da Automation. A próxima fase é a 0.8 Colmeia.
 
-## Transporte atual
+## Arquitetura
 
-Serviço e socket:
+O desenho mantém uma única autoridade lógica:
+
+```text
+cliente local root
+      │ Unix socket / SO_PEERCRED
+      ▼
+   managerd
+      │
+      ├── autenticação
+      ├── freshness / anti-replay
+      ├── rate limit
+      ├── RBAC
+      ├── idempotência
+      ├── auditoria
+      └── dispatcher allowlisted
+
+cliente remoto
+      │ TLS 1.3 + pin SHA-256
+      ▼
+remote gateway
+      │ encaminha o envelope original
+      ▼
+Unix socket local
+      ▼
+   managerd
+```
+
+O gateway remoto **não executa ações privilegiadas por conta própria** e não cria um segundo motor de autorização.
+
+## Serviços e estado
+
+Local:
 
 ```text
 manager-automation-v2.service
 /run/manager-automation-v2/manager.sock
+/usr/local/sbin/managerd
+/usr/local/sbin/managerctl
 ```
 
-Permissões esperadas:
+Remoto:
 
 ```text
-runtime: 0700
-socket:  0600
+manager-automation-v2-remote.service
 ```
 
-O socket continua local e root-only. O daemon valida o peer Unix com `SO_PEERCRED`. A 0.7.3 adiciona autenticação criptográfica dos principals, mas **não abre porta TCP nem listener remoto**.
+Estado durável:
 
-Status:
+```text
+/etc/manager/automation/v2/
+├── principals/
+├── credentials/
+├── remote.conf
+└── tls/
+    ├── server.crt
+    └── server.key
+```
+
+Estado de runtime/dados:
+
+```text
+/var/lib/manager/automation-v2/
+├── idempotency/
+└── replay/
+```
+
+Auditoria:
+
+```text
+/var/log/manager/automation-v2-audit.jsonl
+```
+
+Permissões sensíveis são root-only.
+
+## Status do contrato
 
 ```bash
 manager automation v2 status
 ```
 
-Contrato atual:
+A 0.7.4 declara:
 
 ```text
 contract=manager-automation-v2-local-v1
-transport=unix
-remote_transport=0
+version=1
+transport=unix,tls1.3
+remote_transport=1
 arbitrary_shell=0
 rbac=1
 principal_assertion=local-root-peercred-or-ed25519
 cryptographic_auth=1
 credential_algorithm=ed25519
+auth_scheme=ed25519-v2
 nonlocal_signature_required=1
 enrollment=local-admin
 key_rotation=1
 key_revocation=1
-anti_replay=0
-rate_limit=0
+timestamp_signed=1
+timestamp_window_seconds=120
+nonce_signed=1
+anti_replay=1
+rate_limit=1
+principal_action_rate_limit=1
+remote_source_burst_limit=1
+tls_server_pinning=sha256
+remote_local_root=0
 idempotency=1
 audit=1
 secret_replay=0
 ```
 
-`anti_replay=0` é intencional: timestamp/nonce, janela de validade e cache anti-replay pertencem à 0.7.4.
+`remote_transport=1` representa capacidade implementada. Use `manager automation v2 remote status` para saber se o listener está efetivamente habilitado.
 
-## Principals
+## Principal local-root
 
-Estado persistente:
+`local-root` é reservado.
+
+- role `admin`;
+- subject `*`;
+- autenticado exclusivamente pelo UID 0 observado em `SO_PEERCRED` no socket Unix;
+- não recebe credencial Ed25519;
+- não é aceito no transporte remoto.
+
+Isso impede transformar um arquivo de credencial em equivalente remoto de root local.
+
+## Principals e RBAC
+
+Registry:
 
 ```text
 /etc/manager/automation/v2/principals/
 ```
-
-Cada principal é root-only `0600`; o diretório é `0700`.
 
 Papéis:
 
@@ -75,14 +154,6 @@ reseller
 subreseller
 user
 ```
-
-O MANAGER reaproveita a autoridade existente:
-
-- `reseller` e `subreseller` apontam para `/etc/manager/access/resellers/`;
-- `user` aponta para uma identidade do Connection Engine;
-- `admin` possui escopo global.
-
-O principal reservado `local-root` é criado automaticamente, possui `role=admin`, `subject=*` e é autenticado exclusivamente pelo UID 0 observado em `SO_PEERCRED`. Ele não recebe credencial Ed25519.
 
 Administração:
 
@@ -95,28 +166,34 @@ manager automation v2 principal disable ID
 manager automation v2 principal products ID SCOPE
 ```
 
-Exemplo:
+A matriz principal é:
 
-```bash
-manager automation v2 principal create loja01 reseller loja01 premium,basic
-```
+| Ação | admin | reseller | subreseller | user |
+|---|---:|---:|---:|---:|
+| `system.describe` | sim | sim | sim | sim |
+| `node.usage` | sim | não | não | não |
+| `connection.preflight/create` | sim | escopo | próprio owner | não |
+| `connection.status` | sim | escopo | próprio owner | própria identidade |
+| `connection.revoke` | sim | escopo | próprio owner | não |
+
+Revendedor atua na própria árvore e em subrevendedores filhos diretos. Subrevendedor não sobe para o pai. Usuário só consulta a identidade vinculada.
 
 ## Credenciais Ed25519
 
-O registry público fica em:
+Registry público:
 
 ```text
 /etc/manager/automation/v2/credentials/<principal>/
 ```
 
-Para cada chave existem:
+Para cada chave:
 
 ```text
-<key_id>.conf   metadados, fingerprint, enabled/revoked
-<key_id>.pub    chave pública PEM
+<key_id>.conf
+<key_id>.pub
 ```
 
-Arquivos e diretórios são root-only. O servidor **não guarda a chave privada** nesse registry.
+O servidor não guarda a chave privada nesse registry.
 
 ### Enrollment
 
@@ -124,22 +201,9 @@ Arquivos e diretórios são root-only. O servidor **não guarda a chave privada*
 manager automation v2 credential enroll loja01 /root/loja01.credential
 ```
 
-O caminho precisa ser absoluto e o arquivo não pode existir previamente. O MANAGER gera um par Ed25519 com OpenSSL, registra somente a parte pública no servidor e cria o arquivo privado de credencial em modo `0600` no caminho informado.
+O arquivo privado é criado em modo `0600` no caminho explícito fornecido pelo administrador.
 
-Saída inclui:
-
-```text
-principal_id=loja01
-key_id=ed25519-...
-algorithm=ed25519
-fingerprint=SHA256:...
-credential_file=/root/loja01.credential
-private_key_stored_server=0
-```
-
-O arquivo `.credential` é segredo operacional. Guarde/transfira por canal seguro. Ele não é copiado automaticamente para backup do servidor MANAGER.
-
-### Listar e inspecionar
+### Listar / mostrar
 
 ```bash
 manager automation v2 credentials loja01
@@ -152,19 +216,7 @@ manager automation v2 credential show loja01 ed25519-0123456789abcdef
 manager automation v2 credential rotate loja01 /root/loja01-v2.credential
 ```
 
-A sequência é:
-
-```text
-gera nova chave
-  ↓
-cria arquivo privado externo
-  ↓
-registra nova chave pública ativa
-  ↓
-revoga credenciais anteriores ativas
-```
-
-A chave antiga deixa de autenticar novas requisições imediatamente.
+A nova credencial é registrada antes da revogação das anteriores.
 
 ### Revogação
 
@@ -172,27 +224,11 @@ A chave antiga deixa de autenticar novas requisições imediatamente.
 manager automation v2 credential revoke loja01 ed25519-0123456789abcdef
 ```
 
-Revogação de credencial é independente de RBAC. Um principal pode continuar habilitado e ainda assim uma chave específica ser recusada.
+A revogação é reavaliada antes de servir replay idempotente.
 
-## Identidade da chave
+## Ed25519 v2: timestamp e nonce assinados
 
-`key_id` deriva do SHA-256 da representação DER da chave pública:
-
-```text
-ed25519-<16 primeiros hex do SHA-256>
-```
-
-O fingerprint usa SHA-256 da mesma chave pública:
-
-```text
-SHA256:<base64 do digest>
-```
-
-O daemon não confia cegamente no `.conf`: ele relê a chave pública, recalcula `key_id` e fingerprint e exige correspondência com os metadados antes de verificar a assinatura.
-
-## Envelope assinado
-
-Requisição conceitual para principal não-local:
+O envelope não-local inclui:
 
 ```json
 {
@@ -200,11 +236,11 @@ Requisição conceitual para principal não-local:
   "request_id": "exemplo-0001",
   "principal_id": "loja01",
   "action_id": "connection.status",
-  "params": {
-    "id": "maria"
-  },
+  "params": {"id": "maria"},
+  "issued_at": 1791740000,
+  "nonce": "nonce-aleatorio-com-entropia-suficiente",
   "auth": {
-    "scheme": "ed25519-v1",
+    "scheme": "ed25519-v2",
     "key_id": "ed25519-0123456789abcdef",
     "signature": "BASE64..."
   }
@@ -220,78 +256,212 @@ request_id
 principal_id
 action_id
 params
+issued_at
+nonce
 ```
 
-Assim, mudar principal, ação, request ID ou parâmetros invalida a assinatura.
+Alterar qualquer um desses campos invalida a assinatura.
 
-Uso normal:
+## Freshness
+
+`issued_at` é obrigatório para principal não-local.
+
+Janela aceita:
+
+```text
+±120 segundos
+```
+
+Timestamp muito antigo ou excessivamente no futuro é recusado antes de RBAC/dispatcher.
+
+Esse mecanismo pressupõe relógios razoavelmente sincronizados. Em produção, mantenha NTP/systemd-timesyncd/chrony funcionando nos participantes.
+
+## Anti-replay
+
+O nonce é obrigatório e possui formato restrito.
+
+Depois de uma assinatura válida, o daemon registra o nonce consumido em:
+
+```text
+/var/lib/manager/automation-v2/replay/<principal>/<key_id>/<sha256-do-nonce>
+```
+
+A criação usa semântica exclusiva: o mesmo nonce não pode ser consumido duas vezes.
+
+O cache anti-replay é persistente no filesystem e usa retenção de aproximadamente **10 minutos**, superior à janela de freshness de 120 s.
+
+Consequência:
+
+```text
+mesmo envelope assinado enviado duas vezes
+→ segunda chamada = replay negado
+```
+
+### Replay de rede x retry idempotente
+
+Esses conceitos são diferentes.
+
+Para repetir uma operação com segurança:
+
+```text
+mesmo request_id
+mesmo principal
+mesma ação
+mesmo payload lógico
+NOVO issued_at
+NOVO nonce
+NOVA assinatura
+```
+
+O novo envelope passa freshness/anti-replay e depois pode receber o resultado idempotente já cacheado.
+
+## Rate limiting
+
+Principals não-locais possuem token bucket por `(principal_id, action_id)`.
+
+Ações de leitura:
+
+```text
+system.describe
+node.usage
+connection.status
+```
+
+Limite:
+
+```text
+120 requisições/minuto
+burst 20
+```
+
+Ações de escrita:
+
+```text
+connection.preflight
+connection.create
+connection.revoke
+```
+
+Limite:
+
+```text
+30 requisições/minuto
+burst 8
+```
+
+Ao exceder, a resposta usa código temporário `75` e pode incluir `retry_after_seconds`.
+
+`local-root` não passa por esse bucket remoto/non-local.
+
+O gateway TLS possui ainda proteção própria por IP de origem:
+
+```text
+burst inicial: 30 conexões
+refill: 2 por segundo
+```
+
+Essa camada é uma proteção de borda; a autoridade principal continua sendo o daemon.
+
+## Transporte remoto TLS 1.3
+
+### Estado
 
 ```bash
-managerctl --credential /root/loja01.credential \
+manager automation v2 remote status
+```
+
+Exemplo conceitual:
+
+```text
+remote_transport=1
+remote_enabled=0|1
+remote_service=inactive|active
+remote_bind=203.0.113.10
+remote_port=9443
+remote_tls=TLSv1.3
+server_fingerprint=SHA256:<64 hex>
+```
+
+### Habilitar
+
+```bash
+manager automation v2 remote enable 203.0.113.10 9443
+```
+
+`BIND_IP` precisa ser endereço IPv4/IPv6 literal. Porta permitida: `1024..65535`.
+
+A implementação:
+
+- gera chave/certificado Ed25519 se não existirem;
+- grava `remote.conf` root-only;
+- sobe `manager-automation-v2-remote.service`;
+- exige o daemon Unix local ativo;
+- **não abre firewall automaticamente**.
+
+### Desabilitar
+
+```bash
+manager automation v2 remote disable
+```
+
+A configuração é preservada, mas o listener remoto é desligado.
+
+### Rotacionar certificado
+
+```bash
+manager automation v2 remote rotate-certificate
+```
+
+A rotação produz novo fingerprint. Clientes precisam receber o novo pin por canal confiável.
+
+### TLS
+
+O gateway aceita somente:
+
+```text
+TLS 1.3
+```
+
+TLS 1.2 e inferiores são rejeitados.
+
+O cliente não usa confiança genérica de CA para essa conexão. Ele exige pin explícito do certificado apresentado:
+
+```text
+SHA256:<64 hex do certificado DER>
+```
+
+Se o fingerprint não conferir, a conexão falha.
+
+### Chamada remota
+
+```bash
+managerctl \
+  --credential /root/loja01.credential \
+  --remote 203.0.113.10:9443 \
+  --server-fingerprint SHA256:<64-hex> \
   connection.status id=maria
 ```
 
-O `principal_id` é lido da própria credencial. Também é possível informar `--principal`, mas ele precisa corresponder ao principal da credencial.
-
-Para `local-root`:
+IPv6:
 
 ```bash
-managerctl describe
+managerctl \
+  --credential /root/loja01.credential \
+  --remote '[2001:db8::10]:9443' \
+  --server-fingerprint SHA256:<64-hex> \
+  connection.status id=maria
 ```
 
-Sem `--credential`, uma chamada com principal diferente de `local-root` é recusada com código `67`.
+Transporte remoto exige:
 
-## Ordem de validação
-
-A fronteira executa, em essência:
-
-```text
-peer Unix / UID 0
-       ↓
-principal existe e está ativo
-       ↓
-autenticação peercred ou Ed25519
-       ↓
-RBAC / ownership / produto
-       ↓
-idempotência
-       ↓
-dispatcher allowlisted
-```
-
-Autenticação e autorização são reavaliadas **antes do cache idempotente**. Portanto:
-
-```text
-requisição executada
-       ↓
-chave revogada ou principal desabilitado
-       ↓
-retry do mesmo request_id
-       ↓
-NEGADO
-```
-
-A existência de resultado em cache não contorna revogação.
-
-## Matriz RBAC
-
-| Ação | admin | reseller | subreseller | user |
-|---|---:|---:|---:|---:|
-| `system.describe` | sim | sim | sim | sim |
-| `node.usage` | sim | não | não | não |
-| `connection.preflight/create` | sim | escopo | próprio owner | não |
-| `connection.status` | sim | escopo | próprio owner | própria identidade |
-| `connection.revoke` | sim | escopo | próprio owner | não |
-
-Para revenda:
-
-- produto precisa estar no `products` do principal;
-- `owner` omitido é preenchido pelo MANAGER com owner autorizado;
-- revendedor pode atuar em sua árvore e subrevendedores filhos diretos;
-- subrevendedor não sobe para o pai nem cruza para outra revenda;
-- `user` só consulta sua identidade vinculada.
-
-Negação de autenticação ou autorização usa código estável `67`.
+- principal diferente de `local-root`;
+- `--credential` válido;
+- `--server-fingerprint` válido;
+- TLS 1.3;
+- assinatura Ed25519 v2;
+- freshness/nonce válidos;
+- rate limit;
+- RBAC.
 
 ## Ações allowlisted
 
@@ -304,9 +474,9 @@ connection.status
 connection.revoke
 ```
 
-Não existe ação para shell, comando arbitrário, script ou caminho executável fornecido pelo cliente. O daemon constrói `argv` fixos e executa com `shell=False`.
+O dispatcher monta `argv` conhecido e usa execução sem shell. O cliente não fornece comando, script ou caminho arbitrário.
 
-## Idempotência e segredos
+## Idempotência
 
 Estado:
 
@@ -314,7 +484,7 @@ Estado:
 /var/lib/manager/automation-v2/idempotency/
 ```
 
-O hash inclui:
+Hash lógico:
 
 ```text
 version
@@ -323,20 +493,43 @@ action_id
 params normalizados
 ```
 
-- mesmo principal + ação + payload normalizado: replay idempotente;
-- mesmo `request_id` com principal/payload diferente: conflito `65`;
-- credencial/assinatura não vira parte da identidade lógica da operação, permitindo rotação sem duplicar semanticamente a mesma operação;
-- autenticação atual é revalidada antes de servir o resultado cacheado.
+`issued_at`, nonce e assinatura **não** fazem parte da identidade lógica da operação. Isso é intencional para permitir retry seguro com novo envelope criptográfico.
 
-Senhas/chaves geradas pelas operações continuam one-shot. O cache persistente remove conteúdo sensível antes de gravar.
+- mesmo principal + ação + payload: replay idempotente;
+- mesmo `request_id` com payload/principal diferente: conflito `65`;
+- autenticação/freshness/anti-replay/RBAC continuam sendo avaliados antes do cache.
 
-## Auditoria
+Segredos gerados permanecem one-shot. Senha SSH/chaves privadas não são recuperadas por replay.
 
-Arquivo:
+## Ordem de validação
+
+Para principal não-local:
 
 ```text
-/var/log/manager/automation-v2-audit.jsonl
+peer local do gateway/Unix
+       ↓
+principal ativo
+       ↓
+credencial pública válida
+       ↓
+assinatura Ed25519 v2
+       ↓
+issued_at dentro da janela
+       ↓
+rate limit
+       ↓
+nonce único
+       ↓
+RBAC / ownership / produto
+       ↓
+idempotência
+       ↓
+dispatcher allowlisted
 ```
+
+No transporte remoto, `local-root` é recusado explicitamente antes de qualquer ação.
+
+## Auditoria
 
 Campos relevantes incluem:
 
@@ -344,62 +537,46 @@ Campos relevantes incluem:
 principal_id
 principal_role
 principal_subject
+transport
 auth_scheme
 auth_key_id
 auth_fingerprint
-auth_decision=allow|deny
-rbac_decision=allow|deny
+auth_decision
+freshness_decision
+replay_decision
+rate_limit_decision
+rbac_decision
 rbac_reason
+request_issued_at
+ok
+code
+cached
 ```
 
-O audit não armazena assinatura, chave privada, senha ou stdout sensível.
+O audit não guarda assinatura, chave privada, senha ou stdout sensível.
 
 ## Lifecycle
 
-Instalação:
+### Instalação / update
 
-- instala principals e registry de credenciais;
-- garante `local-root`;
-- instala OpenSSL/Python 3 quando necessário;
-- inicia `manager-automation-v2.service`;
-- só considera pronto quando o socket existe em `0600`.
+- instala/reconcilia o daemon local;
+- preserva principals e credenciais públicas;
+- preserva configuração remota;
+- se `remote_enabled=1`, recria/inicia o serviço remoto;
+- readiness local exige socket real em modo `0600`.
 
-Uninstall normal:
+### Uninstall normal
 
-- para daemon e remove runtime/aliases;
-- preserva principals;
-- preserva chave pública/metadados de credenciais;
-- preserva idempotência/audit conforme lifecycle atual.
+- desliga serviço remoto e daemon local;
+- remove units/runtime;
+- preserva estado durável sob `/etc/manager/automation/v2`;
+- preserva dados necessários ao lifecycle normal.
 
-Reinstall reutiliza os registros públicos existentes.
+### Purge
 
-`manager-uninstall --purge` remove o estado persistente server-side, inclusive principals e credenciais públicas. Arquivos privados de credencial criados fora de `/etc/manager` são responsabilidade do administrador e não são apagados pelo purge.
+`manager-uninstall --purge` remove o estado server-side do MANAGER. Arquivos privados de credencial criados fora de `/etc/manager` continuam responsabilidade do administrador.
 
-## Limite de confiança da 0.7.3
-
-Pronto:
-
-```text
-RBAC:                       sim
-autenticação Ed25519:       sim
-enrollment:                  sim
-fingerprint:                 sim
-rotação:                     sim
-revogação:                   sim
-secret-free server registry: sim
-```
-
-Ainda ausente:
-
-```text
-remote_transport: 0
-anti_replay:      0
-rate_limit:       0
-```
-
-Como o transporte ainda é o socket local root-only, a 0.7.3 estabiliza a identidade criptográfica antes de expor rede. Uma assinatura válida sozinha **não deve ser tratada como autorização para abrir o socket na Internet**.
-
-## Relação com o Legacy
+## Relação com Legacy
 
 ```text
 Legacy v1
@@ -411,24 +588,25 @@ Automation v2
   integrações novas
   contrato estruturado
   principals + RBAC
-  autenticação Ed25519
-  socket privilegiado local
+  Ed25519 v2
+  freshness + anti-replay
+  rate limiting
+  Unix local + gateway TLS 1.3 opcional
 ```
 
-A v2 não usa o transporte Legacy como arquitetura principal.
+A Automation v2 não usa o transporte Legacy como arquitetura principal.
 
-## Próxima etapa — 0.7.4
+## Próxima etapa — 0.8 Colmeia
 
-A próxima etapa fecha a série 0.7 com proteção própria para transporte remoto:
+Com a fronteira remota fechada, a próxima fase passa a ser distribuída:
 
-- timestamp assinado;
-- nonce;
-- janela de validade;
-- cache anti-replay;
-- rate limiting por principal/ação;
-- limites de burst;
-- transporte remoto autenticado e criptografado;
-- Unix socket preservado como fronteira privilegiada local;
-- nenhuma execução arbitrária de shell.
-
-Depois disso começa a 0.8 Colmeia: enrollment de nós, heartbeat, scheduler, drain/failover, autoridade de leases globais e accounting distribuído.
+- identidade/enrollment de nós;
+- heartbeat e saúde;
+- estados `HEALTHY`, `DEGRADED`, `DRAINING`, `OFFLINE`;
+- scheduler por região/pool/capacidade/peso/protocolo;
+- sticky session;
+- drain/failover;
+- autoridade de leases globais;
+- `max_sessions` global atômico;
+- fencing distribuído por `session_epoch`;
+- accounting global idempotente.
