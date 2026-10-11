@@ -40,7 +40,8 @@ parent_of() { read_field "$(record_file "$1")" parent; }
 quota_of() { read_field "$(record_file "$1")" quota; }
 enabled_of() { read_field "$(record_file "$1")" enabled; }
 owner_of_user() {
-  local file="$(owner_file "$1")"
+  local file
+  file="$(owner_file "$1")"
   [[ -f "$file" ]] || return 0
   read_field "$file" owner
 }
