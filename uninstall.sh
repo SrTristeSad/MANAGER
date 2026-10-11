@@ -45,6 +45,17 @@ remove_protocol_pam_fallback() {
   rm -f "$tmp"
 }
 
+# O histórico consolidado de uso é persistente. A unidade precisa sair antes
+# do código; os dados permanecem em /var/lib sem --purge.
+if [[ -x /opt/manager/modules/identity_usage.sh ]]; then
+  /opt/manager/modules/identity_usage.sh --detach >/dev/null 2>&1 || true
+else
+  systemctl disable --now manager-identity-usage.timer >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-identity-usage.timer \
+    /etc/systemd/system/manager-identity-usage.service
+  systemctl daemon-reload || true
+fi
+
 # O bridge precisa sair antes do Session Engine, pois usa leases existentes para
 # liberar mapas, regras específicas e hooks de protocolo sem deixar lockout.
 if [[ -x /opt/manager/modules/protocol_leases.sh ]]; then
@@ -193,6 +204,8 @@ if $PURGE; then
 
   rm -rf /etc/manager
   rm -rf /var/log/manager
+  rm -rf /var/lib/manager/identity-usage
+  rmdir /var/lib/manager 2>/dev/null || true
   systemctl daemon-reload || true
 
   if command -v sshd >/dev/null 2>&1; then
@@ -220,10 +233,11 @@ rm -rf /opt/manager /opt/manager.rollback
 echo "[OK] Código do MANAGER removido."
 if ! $PURGE; then
   echo "As configurações em /etc/manager e serviços configurados foram preservados."
+  echo "O histórico consolidado de uso em /var/lib/manager/identity-usage foi preservado."
   echo "Leases runtime foram descartadas; session_epoch e identidades persistem para reinstalação."
   echo "Hooks PAM/OpenVPN e o bridge de protocolos foram desanexados antes da remoção do código."
   echo "O enforcement de identidades foi desanexado junto com o código e volta a ser aplicado numa reinstalação."
-  echo "Execute manager-uninstall --purge somente se quiser remover também as configurações do MANAGER."
+  echo "Execute manager-uninstall --purge somente se quiser remover também as configurações e o histórico do MANAGER."
 else
-  echo "Configurações e unidades próprias do MANAGER removidas. Pacotes do sistema, certificados Let's Encrypt, backups e regras UFW foram preservados."
+  echo "Configurações, histórico de uso e unidades próprias do MANAGER removidos. Pacotes do sistema, certificados Let's Encrypt, backups e regras UFW foram preservados."
 fi
