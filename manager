@@ -42,6 +42,7 @@ Uso:
   manager --identity-sessions [ID] mostra sessões observadas por identidade
   manager --leases [ID]           mostra leases locais ativas
   manager --usage [ID]            mostra tráfego/atividade consolidada por identidade
+  manager --ipv6-status           mostra estado dual-stack, egress e IPv6 Guard
   manager --diagnostics           abre o diagnóstico
   manager --version               mostra a versão
   manager --help                  mostra esta ajuda
@@ -196,6 +197,7 @@ case "${1:-}" in
       exec "$MANAGER_HOME/modules/identity_usage.sh" --list
     fi
     ;;
+  --ipv6-status) exec "$MANAGER_HOME/modules/ipv6_guard.sh" --status ;;
   --diagnostics) exec "$MANAGER_HOME/modules/diagnostics.sh" ;;
   "") ;;
   *)
@@ -217,6 +219,7 @@ while true; do
   say " ${C_CYAN}19${C_RESET}) Banner SSH"
   say " ${C_CYAN}25${C_RESET}) Hosts do proxy"
   say " ${C_CYAN}26${C_RESET}) Proxies e túneis"
+  say " ${C_CYAN}35${C_RESET}) Estado IPv6 / dual-stack"
   say ""
   say " ${C_WHITE}SEGURANÇA${C_RESET}"
   say "  ${C_CYAN}6${C_RESET}) Segurança / hardening SSH"
@@ -300,6 +303,15 @@ while true; do
     32) run_module products.sh ;;
     33) run_provision_menu ;;
     34) run_module reseller_product_quotas.sh ;;
+    35)
+      header
+      say "${C_WHITE}ESTADO IPV6 / DUAL-STACK${C_RESET}\n"
+      "$MANAGER_HOME/modules/ipv6_guard.sh" --status || true
+      say ""
+      "$MANAGER_HOME/modules/wireguard.sh" --network-state 2>/dev/null || true
+      "$MANAGER_HOME/modules/openvpn.sh" --network-state 2>/dev/null || true
+      pause
+      ;;
     90) self_update ;;
     0) clear 2>/dev/null || true; exit 0 ;;
     *) warn "Opção inválida"; sleep 1 ;;
