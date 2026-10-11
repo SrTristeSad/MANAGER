@@ -23,7 +23,10 @@ jobs:
           sudo systemctl is-active --quiet manager-automation-v2.service
           sudo manager automation v2 status | grep -q '^cryptographic_auth=1$'
           sudo manager automation v2 status | grep -q '^credential_algorithm=ed25519$'
-          sudo manager automation v2 status | grep -q '^anti_replay=0$'
+          sudo manager automation v2 status | grep -q '^auth_scheme=ed25519-v2$'
+          sudo manager automation v2 status | grep -q '^timestamp_signed=1$'
+          sudo manager automation v2 status | grep -q '^nonce_signed=1$'
+          sudo manager automation v2 status | grep -q '^anti_replay=1$'
           sudo managerctl describe --request-id auth-local-root-01 > /tmp/local-root.json
 
       - name: Create principal and enroll first credential
@@ -48,7 +51,7 @@ jobs:
             exit 1
           fi
 
-      - name: Require a valid signature
+      - name: Require a valid fresh signature
         shell: bash
         run: |
           set -euxo pipefail
@@ -129,15 +132,16 @@ jobs:
           set -e
           test "$rc" -eq 67
 
-      - name: Audit authenticates without storing signatures or private keys
+      - name: Audit authenticates without storing signatures nonces or private keys
         shell: bash
         run: |
           set -euxo pipefail
-          sudo grep -q '"auth_scheme":"ed25519-v1"' /var/log/manager/automation-v2-audit.jsonl
+          sudo grep -q '"auth_scheme":"ed25519-v2"' /var/log/manager/automation-v2-audit.jsonl
           sudo grep -q '"auth_decision":"allow"' /var/log/manager/automation-v2-audit.jsonl
           sudo grep -q '"auth_decision":"deny"' /var/log/manager/automation-v2-audit.jsonl
-          if sudo grep -Eqi 'BEGIN PRIVATE|private_key|signature' /var/log/manager/automation-v2-audit.jsonl; then
-            echo 'audit leaked authentication secret material' >&2
+          sudo grep -q '"freshness_decision":"allow"' /var/log/manager/automation-v2-audit.jsonl
+          if sudo grep -Eqi 'BEGIN PRIVATE|private_key|signature|"nonce"' /var/log/manager/automation-v2-audit.jsonl; then
+            echo 'audit leaked authentication secret/replay material' >&2
             exit 1
           fi
 
@@ -149,5 +153,6 @@ jobs:
           sudo test -f /tmp/auth-admin-v2.credential
           sudo /opt/manager/modules/automation_v2.sh --purge
           sudo test ! -e /etc/manager/automation/v2/credentials
+          sudo test ! -e /var/lib/manager/automation-v2/replay
           sudo test -f /tmp/auth-admin-v1.credential
           sudo test -f /tmp/auth-admin-v2.credential
