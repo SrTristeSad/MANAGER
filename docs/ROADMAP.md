@@ -133,16 +133,36 @@ Concluído:
 - catálogo, vínculos e baseline ficam sob `/etc/manager/connection`, entrando no backup/lifecycle existente;
 - CI dedicado cobre ACL, limite de sessões, `warn/block`, franquia, SSH parcial, restauração da política base, uninstall/reinstall e purge.
 
+### 0.6.6 — Provisionamento Unificado
+
+Concluído:
+
+- nova operação `manager --provision ID PLANO [OWNER] [PROTOCOLS]`;
+- preflight valida produto, protocolos, conflitos e dependências antes de alterar o sistema;
+- identidade, produto, recursos técnicos e bindings passam a ser tratados como uma única operação;
+- usuário SSH nasce bloqueado durante a transação e só é liberado depois da reconciliação bem-sucedida;
+- senha SSH aleatória é devolvida uma única vez e não entra no log de eventos;
+- WireGuard cria somente peer/perfil do cliente solicitado, sem alterações destrutivas globais;
+- OpenVPN reutiliza a PKI Easy-RSA existente e revoga certificado emitido se a transação precisar ser desfeita;
+- falha intermediária aciona rollback dos recursos criados naquela tentativa;
+- sinais intermediários do watcher de política podem ser adiados durante o fluxo CLI para evitar aplicação de identidade parcialmente construída;
+- revogação `manager --revoke-identity ID` desativa primeiro, revoga leases, remove/revoga recursos técnicos e preserva a identidade lógica desativada para histórico/auditoria;
+- log restrito `/var/log/manager/provision-events.log` guarda apenas metadados operacionais, sem senha ou chave privada;
+- CI dedicado cobre criação SSH por produto, validade, limite de sessões, duplicata, preflight de VPN indisponível, revogação e persistência da identidade lógica após uninstall/reinstall;
+- documentação própria em `docs/PROVISIONING.md`.
+
+Limite deliberado desta etapa: enquanto a cota antiga de revenda continuar baseada em usuários Linux, provisionamentos com `OWNER` exigem `ssh`. A remoção dessa dependência fica para a migração de cotas de revenda para produto/identidade.
+
 ### Próximos itens 0.6.x
 
 Antes da Automation v2, a base comum ainda deve ganhar:
 
-1. provisionamento/revogação de SSH, WireGuard e OpenVPN pelo próprio Connection Engine;
-2. cotas de revenda baseadas em **produto/identidade**, não somente usuário Linux;
-3. IPv6 completo;
-4. metadados de endpoint/nó/região que serão consumidos pela Colmeia;
-5. passagem automática do contexto `region/pool/node` para a autorização de conexão;
-6. agregação futura de uso por nó sem tratar o accounting local como faturamento global.
+1. cotas de revenda baseadas em **produto/identidade**, incluindo identidades VPN-only;
+2. IPv6 completo;
+3. metadados de endpoint/nó/região que serão consumidos pela Colmeia;
+4. passagem automática do contexto `region/pool/node` para a autorização de conexão;
+5. agregação futura de uso por nó sem tratar o accounting local como faturamento global;
+6. consolidação gradual dos contratos internos de criação/revogação de protocolo para que Automation v2 reutilize uma única superfície allowlisted.
 
 ## 0.7.0 — Automation Engine
 
@@ -181,7 +201,7 @@ Novo protocolo oficial para integrações futuras:
 - `managerd`/`managerctl` ou mecanismo equivalente;
 - nenhuma execução remota de shell arbitrário.
 
-O Protocol Lease Bridge da 0.6.3 continua sendo a fronteira entre daemons de conexão e a autoridade de sessão. O Identity Usage da 0.6.4 fornece a visão comum de consumo/atividade, e a 0.6.5 fornece produto, limites e ACL. Assim, Automation/Colmeia podem trocar a autoridade e agregar nós sem reescrever os protocolos.
+O Protocol Lease Bridge da 0.6.3 continua sendo a fronteira entre daemons de conexão e a autoridade de sessão. O Identity Usage da 0.6.4 fornece a visão comum de consumo/atividade, a 0.6.5 fornece produto/limites/ACL e a 0.6.6 fornece provisionamento/revogação transacional. Assim, Automation/Colmeia podem chamar ações conhecidas sem reimplementar o ciclo de vida dos protocolos.
 
 ## 0.8.0 — Modo Colmeia
 
