@@ -63,7 +63,7 @@ esac
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y curl ca-certificates iproute2 iputils-ping procps passwd login coreutils gawk sed grep tar util-linux dnsutils openssh-client libpam-modules
+apt-get install -y curl ca-certificates iproute2 iputils-ping procps passwd login coreutils gawk sed grep tar util-linux dnsutils openssh-client libpam-modules python3
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -91,6 +91,7 @@ FILES=(
   "modules/provision.sh"
   "modules/connection_actions.sh"
   "modules/automation_legacy.sh"
+  "modules/automation_v2.sh"
   "modules/policy_engine.sh"
   "modules/session_engine.sh"
   "modules/protocol_leases.sh"
@@ -189,6 +190,9 @@ ln -sfn "$BIN" /usr/local/bin/manager
 ln -sfn "$BIN" /usr/local/bin/menu
 ln -sfn "$INSTALL_DIR/rollback.sh" /usr/local/sbin/manager-rollback
 ln -sfn "$INSTALL_DIR/uninstall.sh" /usr/local/sbin/manager-uninstall
+ln -sfn "$INSTALL_DIR/modules/automation_v2.sh" /usr/local/sbin/managerctl
+ln -sfn "$INSTALL_DIR/modules/automation_v2.sh" /usr/local/bin/managerctl
+ln -sfn "$INSTALL_DIR/modules/automation_v2.sh" /usr/local/sbin/managerd
 
 printf '%s\n' "$NEW_VERSION" > "$ETC_DIR/installed-version"
 chmod 0644 "$ETC_DIR/installed-version"
@@ -221,6 +225,9 @@ fi
 "$INSTALL_DIR/modules/automation_legacy.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O estado do Legacy v1 foi preservado, mas um listener previamente habilitado não pôde ser reanexado. Use: manager automation legacy status" >&2
 }
+"$INSTALL_DIR/modules/automation_v2.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] O Automation v2 local não pôde iniciar. Revise: systemctl status manager-automation-v2" >&2
+}
 if [[ -d "$ETC_DIR/proxy" ]]; then
   "$INSTALL_DIR/modules/proxies.sh" --reconcile >/dev/null 2>&1 || true
 fi
@@ -244,6 +251,7 @@ echo "Leases:      manager --leases"
 echo "Uso ID:      manager --usage"
 echo "IPv6:        manager --ipv6-status"
 echo "Legacy:      manager automation legacy status"
+echo "Automation:  managerctl describe"
 echo "Rollback:    manager-rollback"
 echo "Remover:     manager-uninstall"
 [[ -d "$ROLLBACK_DIR" ]] && echo "Código anterior preservado em: $ROLLBACK_DIR"
@@ -251,5 +259,6 @@ echo ""
 if [[ "${1:-}" != "--update" ]]; then
   echo "VPNs, DNS, proxies, firewall, Fail2ban, TLS, Speedtest, vnStat e demais módulos"
   echo "só instalam dependências quando você escolhe a função correspondente."
-  echo "Automation Legacy v1 também permanece desligada por padrão até enable explícito."
+  echo "Automation Legacy v1 permanece desligada por padrão até enable explícito."
+  echo "Automation v2 inicia somente em socket Unix local root-only; não abre porta TCP."
 fi
