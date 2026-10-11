@@ -1,0 +1,231 @@
+name: Automation v2 RBAC
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rbac:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo systemctl is-active --quiet manager-automation-v2.service
+          sudo test -f /etc/manager/automation/v2/principals/local-root.conf
+          test "$(sudo stat -c '%a' /etc/manager/automation/v2/principals/local-root.conf)" = 600
+          sudo manager automation v2 status | grep -q '^rbac=1$'
+          sudo manager automation v2 status | grep -q '^principal_assertion=root-local$'
+
+      - name: Build reseller hierarchy products and logical identities
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/resellers.sh --create-reseller rbac-res reseller '' 20 1
+          sudo /opt/manager/modules/resellers.sh --create-reseller rbac-sub subreseller rbac-res 10 1
+          sudo /opt/manager/modules/resellers.sh --create-reseller rbac-other reseller '' 10 1
+
+          sudo /opt/manager/modules/products.sh --create rbac-basic 'RBAC Basic' 1 0 1 ssh 0 lifetime warn '*' '*' '*'
+          sudo /opt/manager/modules/products.sh --create rbac-other-plan 'RBAC Other' 1 0 1 ssh 0 lifetime warn '*' '*' '*'
+
+          sudo /opt/manager/modules/connection_engine.sh --create rbac-owned rbac-res 0 1 ssh
+          sudo /opt/manager/modules/connection_engine.sh --create rbac-child rbac-sub 0 1 ssh
+          sudo /opt/manager/modules/connection_engine.sh --create rbac-foreign rbac-other 0 1 ssh
+
+      - name: Create principals bound to existing authority objects
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager automation v2 principal create p-res reseller rbac-res rbac-basic
+          sudo manager automation v2 principal create p-sub subreseller rbac-sub rbac-basic
+          sudo manager automation v2 principal create p-user user rbac-owned
+          sudo manager automation v2 principal create p-admin admin
+
+          sudo manager automation v2 principals > /tmp/principals.txt
+          grep -q 'p-res' /tmp/principals.txt
+          grep -q 'p-sub' /tmp/principals.txt
+          grep -q 'p-user' /tmp/principals.txt
+          grep -q 'p-admin' /tmp/principals.txt
+
+      - name: Enforce owner and identity scopes
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          sudo managerctl --principal p-res connection.status id=rbac-owned --request-id rbac-status-own-01 > /tmp/own.json
+          sudo managerctl --principal p-res connection.status id=rbac-child --request-id rbac-status-child-01 > /tmp/child.json
+
+          set +e
+          sudo managerctl --principal p-res connection.status id=rbac-foreign --request-id rbac-status-foreign-01 > /tmp/foreign.json
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+
+          sudo managerctl --principal p-sub connection.status id=rbac-child --request-id rbac-sub-own-0001 > /tmp/sub-own.json
+          set +e
+          sudo managerctl --principal p-sub connection.status id=rbac-owned --request-id rbac-sub-parent-01 > /tmp/sub-parent.json
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+
+          sudo managerctl --principal p-user connection.status id=rbac-owned --request-id rbac-user-own-001 > /tmp/user-own.json
+          set +e
+          sudo managerctl --principal p-user connection.status id=rbac-child --request-id rbac-user-other-01 > /tmp/user-other.json
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+
+          set +e
+          sudo managerctl --principal p-user connection.revoke id=rbac-owned --request-id rbac-user-revoke01 > /tmp/user-revoke.json
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+
+          python3 - <<'PY'
+          import json
+          for path, principal, role in [
+              ('/tmp/own.json','p-res','reseller'),
+              ('/tmp/child.json','p-res','reseller'),
+              ('/tmp/sub-own.json','p-sub','subreseller'),
+              ('/tmp/user-own.json','p-user','user'),
+          ]:
+              r=json.load(open(path))
+              assert r['ok'] is True
+              assert r['principal_id']==principal
+              assert r['principal_role']==role
+          for path in ['/tmp/foreign.json','/tmp/sub-parent.json','/tmp/user-other.json','/tmp/user-revoke.json']:
+              r=json.load(open(path))
+              assert r['ok'] is False and r['code']==67
+          PY
+
+      - name: Enforce action and product scopes
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          sudo managerctl --principal p-user describe --request-id rbac-user-describe1 > /tmp/user-describe.json
+          set +e
+          sudo managerctl --principal p-res node.usage --request-id rbac-node-deny-001 > /tmp/node-deny.json
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+          sudo managerctl --principal p-admin node.usage --request-id rbac-node-admin-001 > /tmp/node-admin.json
+
+          set +e
+          sudo managerctl --principal p-res connection.preflight id=rbac-plan-denied plan=rbac-other-plan protocols=ssh --request-id rbac-plan-deny-001 > /tmp/plan-deny.json
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+
+          sudo manager automation v2 principal products p-res '*'
+          sudo managerctl --principal p-res connection.preflight id=rbac-plan-allowed plan=rbac-other-plan protocols=ssh --request-id rbac-plan-allow01 > /tmp/plan-allow.json
+
+          set +e
+          sudo managerctl --principal p-res connection.preflight id=rbac-owner-denied plan=rbac-basic owner=rbac-other protocols=ssh --request-id rbac-owner-deny01 > /tmp/owner-deny.json
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+
+          sudo managerctl --principal p-res connection.preflight id=rbac-child-create plan=rbac-basic owner=rbac-sub protocols=ssh --request-id rbac-child-create1 > /tmp/child-preflight.json
+
+          python3 - <<'PY'
+          import json
+          assert json.load(open('/tmp/user-describe.json'))['ok'] is True
+          assert json.load(open('/tmp/node-deny.json'))['code']==67
+          assert json.load(open('/tmp/node-admin.json'))['ok'] is True
+          assert json.load(open('/tmp/plan-deny.json'))['code']==67
+          assert json.load(open('/tmp/plan-allow.json'))['ok'] is True
+          assert json.load(open('/tmp/owner-deny.json'))['code']==67
+          assert json.load(open('/tmp/child-preflight.json'))['ok'] is True
+          PY
+
+      - name: Force reseller owner on real provisioning
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager automation v2 principal products p-res rbac-basic
+          sudo managerctl --principal p-res connection.create id=rbac-new plan=rbac-basic protocols=ssh --request-id rbac-create-owner1 > /tmp/create.json
+          sudo id rbac-new >/dev/null
+          grep -q '^owner=rbac-res$' /etc/manager/connection/identities/rbac-new.conf
+          python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/create.json'))
+          assert r['ok'] is True
+          assert r['principal_id']=='p-res'
+          assert r['principal_role']=='reseller'
+          assert len(r['result']['data']['ssh_password']) >= 16
+          PY
+
+      - name: Bind idempotency to principal and re-check authorization before replay
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo managerctl --principal p-res connection.status id=rbac-new --request-id rbac-replay-scope1 > /tmp/replay-first.json
+          sudo manager automation v2 principal disable p-res
+
+          set +e
+          sudo managerctl --principal p-res connection.status id=rbac-new --request-id rbac-replay-scope1 > /tmp/replay-disabled.json
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+
+          sudo manager automation v2 principal enable p-res
+          sudo managerctl --principal p-res connection.status id=rbac-new --request-id rbac-replay-scope1 > /tmp/replay-enabled.json
+          python3 - <<'PY'
+          import json
+          a=json.load(open('/tmp/replay-first.json'))
+          b=json.load(open('/tmp/replay-disabled.json'))
+          c=json.load(open('/tmp/replay-enabled.json'))
+          assert a['ok'] is True and a['cached'] is False
+          assert b['ok'] is False and b['code']==67
+          assert c['ok'] is True and c['cached'] is True
+          PY
+
+          sudo managerctl --principal p-admin describe --request-id rbac-cross-principal1 > /tmp/admin-request.json
+          set +e
+          sudo managerctl --principal p-user describe --request-id rbac-cross-principal1 > /tmp/user-conflict.json
+          rc=$?
+          set -e
+          test "$rc" -eq 65
+
+      - name: Verify structured RBAC audit
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo grep -q '"principal_id":"p-res"' /var/log/manager/automation-v2-audit.jsonl
+          sudo grep -q '"principal_role":"reseller"' /var/log/manager/automation-v2-audit.jsonl
+          sudo grep -q '"rbac_decision":"deny"' /var/log/manager/automation-v2-audit.jsonl
+          sudo grep -q '"rbac_decision":"allow"' /var/log/manager/automation-v2-audit.jsonl
+          if sudo grep -Eqi 'ssh_password|private_key|credential|passwd' /var/log/manager/automation-v2-audit.jsonl; then
+            echo 'RBAC audit contains secret-shaped fields.' >&2
+            exit 1
+          fi
+
+      - name: Preserve principals across uninstall and reinstall
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/uninstall.sh
+          sudo test -f /etc/manager/automation/v2/principals/p-res.conf
+          sudo test ! -e /run/manager-automation-v2/manager.sock
+
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo systemctl is-active --quiet manager-automation-v2.service
+          sudo manager automation v2 principal show p-res | grep -q '^role=reseller$'
+          sudo managerctl --principal p-res connection.status id=rbac-new --request-id rbac-after-reinstall > /tmp/after-reinstall.json
+          python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/after-reinstall.json'))
+          assert r['ok'] is True
+          assert r['principal_id']=='p-res'
+          PY
