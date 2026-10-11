@@ -52,11 +52,11 @@ jobs:
           grep -q '^account_locked=0$' /tmp/legacy-enabled-status
           sudo sshd -t -f /etc/manager/automation/legacy/sshd_config
           sudo sshd -t
-          grep -q '^ForceCommand /usr/bin/sudo -n /opt/manager/modules/automation_legacy.sh --forced-command$' /etc/manager/automation/legacy/sshd_config
-          grep -q '^PermitRootLogin no$' /etc/manager/automation/legacy/sshd_config
-          grep -q '^AllowTcpForwarding no$' /etc/manager/automation/legacy/sshd_config
-          grep -q '^Match User manager-legacy$' /etc/ssh/sshd_config.d/64-manager-automation-legacy.conf
-          grep -q '^Match all$' /etc/ssh/sshd_config.d/64-manager-automation-legacy.conf
+          sudo grep -q '^ForceCommand /usr/bin/sudo -n /opt/manager/modules/automation_legacy.sh --forced-command$' /etc/manager/automation/legacy/sshd_config
+          sudo grep -q '^PermitRootLogin no$' /etc/manager/automation/legacy/sshd_config
+          sudo grep -q '^AllowTcpForwarding no$' /etc/manager/automation/legacy/sshd_config
+          sudo grep -q '^Match User manager-legacy$' /etc/ssh/sshd_config.d/64-manager-automation-legacy.conf
+          sudo grep -q '^Match all$' /etc/ssh/sshd_config.d/64-manager-automation-legacy.conf
           sudo test -f /etc/sudoers.d/manager-automation-legacy
           sudo visudo -cf /etc/sudoers.d/manager-automation-legacy
           sudo grep -Fq 'manager-legacy ALL=(root) NOPASSWD: /opt/manager/modules/automation_legacy.sh --forced-command' /etc/sudoers.d/manager-automation-legacy
