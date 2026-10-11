@@ -91,6 +91,7 @@ FILES=(
   "modules/provision.sh"
   "modules/connection_actions.sh"
   "modules/automation_legacy.sh"
+  "modules/automation_principals.sh"
   "modules/automation_v2.sh"
   "modules/policy_engine.sh"
   "modules/session_engine.sh"
@@ -200,6 +201,7 @@ chmod 0644 "$ETC_DIR/installed-version"
 "$INSTALL_DIR/modules/connection_engine.sh" --init >/dev/null
 "$INSTALL_DIR/modules/node_metadata.sh" --init >/dev/null
 "$INSTALL_DIR/modules/resellers.sh" --init >/dev/null
+"$INSTALL_DIR/modules/automation_principals.sh" --init >/dev/null
 "$INSTALL_DIR/modules/products.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O motor de produtos/ACL/franquias foi instalado parcialmente. Identidades sem produto continuam usando a política base." >&2
 }
