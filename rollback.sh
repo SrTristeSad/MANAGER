@@ -31,6 +31,14 @@ read -r -p "Restaurar o código anterior? [s/N]: " answer
 
 # Unidades/hooks externos ao /opt precisam ser retirados pelo código que os
 # criou antes da troca. Estados persistentes permanecem em /etc/manager e /var/lib.
+if [[ -x "$INSTALL_DIR/modules/automation_v2.sh" ]]; then
+  "$INSTALL_DIR/modules/automation_v2.sh" --detach >/dev/null 2>&1 || true
+else
+  systemctl disable --now manager-automation-v2.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-automation-v2.service
+  rm -rf /run/manager-automation-v2
+  systemctl daemon-reload >/dev/null 2>&1 || true
+fi
 if [[ -x "$INSTALL_DIR/modules/automation_legacy.sh" ]]; then
   "$INSTALL_DIR/modules/automation_legacy.sh" --detach >/dev/null 2>&1 || true
 fi
@@ -64,6 +72,13 @@ ln -sfn /usr/local/sbin/manager /usr/local/bin/manager
 ln -sfn /usr/local/sbin/manager /usr/local/bin/menu
 ln -sfn "$INSTALL_DIR/rollback.sh" /usr/local/sbin/manager-rollback
 ln -sfn "$INSTALL_DIR/uninstall.sh" /usr/local/sbin/manager-uninstall
+if [[ -x "$INSTALL_DIR/modules/automation_v2.sh" ]]; then
+  ln -sfn "$INSTALL_DIR/modules/automation_v2.sh" /usr/local/sbin/managerctl
+  ln -sfn "$INSTALL_DIR/modules/automation_v2.sh" /usr/local/bin/managerctl
+  ln -sfn "$INSTALL_DIR/modules/automation_v2.sh" /usr/local/sbin/managerd
+else
+  rm -f /usr/local/sbin/managerctl /usr/local/bin/managerctl /usr/local/sbin/managerd
+fi
 
 # Reaplica apenas os componentes disponíveis na versão que acabou de voltar.
 # Isso permite rollback para uma versão anterior sem deixar units/hooks
@@ -113,6 +128,14 @@ else
       systemctl reload ssh >/dev/null 2>&1 || systemctl reload sshd >/dev/null 2>&1 || true
     fi
   fi
+fi
+if [[ -x "$INSTALL_DIR/modules/automation_v2.sh" ]]; then
+  "$INSTALL_DIR/modules/automation_v2.sh" --install >/dev/null 2>&1 || true
+else
+  systemctl disable --now manager-automation-v2.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-automation-v2.service
+  rm -rf /run/manager-automation-v2
+  systemctl daemon-reload >/dev/null 2>&1 || true
 fi
 
 echo "[OK] Código restaurado para $previous. A versão $current ficou disponível como novo rollback."
