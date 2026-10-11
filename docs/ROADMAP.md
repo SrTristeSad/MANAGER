@@ -6,17 +6,20 @@ Este documento registra a direção técnica do MANAGER até a versão 1.0. O ob
 
 - O MANAGER novo não deve ser uma versão funcionalmente capada do SSHPlus original.
 - Compatibilidade não significa copiar práticas inseguras do legado.
-- Operações privilegiadas devem passar por ações conhecidas e auditáveis; integrações nunca devem receber shell arbitrário.
+- Operações privilegiadas passam por ações conhecidas e auditáveis; integrações nunca recebem shell arbitrário.
 - Nenhum módulo deve limpar o firewall global, sobrescrever toda a configuração SSH ou usar permissões `777`.
-- Administração remota futura será centrada em Telegram Bot + Telegram Mini App, sem painel web administrativo convencional.
+- Administração remota futura será centrada em Telegram Bot + Telegram Mini App, sem painel web administrativo convencional obrigatório.
 
 ## 0.4.x — Fundação
 
-- corrigir regressões e inconsistências dos módulos atuais;
-- endurecer instalador, atualização e rollback;
-- manter CI com Bash syntax, ShellCheck e regressões de segurança;
-- ampliar testes para distribuições suportadas;
-- manter documentação sincronizada com o código.
+Concluído como base de confiabilidade:
+
+- health check;
+- manutenção;
+- CLI não interativa;
+- atualização/rollback conservadores;
+- CI com Bash syntax, ShellCheck e regressões de segurança;
+- endurecimento do instalador e da política de downloads.
 
 ## 0.5.x — Paridade SSHPlus útil
 
@@ -35,40 +38,77 @@ Status em **0.5.2**: a paridade operacional principal está implementada. O MANA
 - cotas e propriedade das contas;
 - criação de conta diretamente vinculada ao revendedor com proteção contra corrida de cota.
 
-Recursos legados que dependem de técnicas obsoletas ou inseguras recebem uma implementação moderna equivalente, e não uma cópia literal. A conversão assistida de formatos antigos completos permanece na etapa de migração, pois não deve restaurar cegamente arquivos como `/etc/shadow` ou configurações antigas de rede.
+Recursos legados dependentes de técnicas obsoletas/inseguras recebem implementação moderna equivalente, não cópia literal. Conversão completa de formatos antigos permanece uma etapa assistida de migração.
 
-## 0.6.0 — Connection Engine
+## 0.6.x — Connection, Policy e Session Engine
 
-Criar uma camada comum para identidades e protocolos:
+### 0.6.0 — identidade comum
 
-- SSH;
-- WireGuard;
-- OpenVPN;
-- TLS e proxies suportados;
-- IPv4/IPv6;
+Concluído:
+
+- identidade MANAGER independente do usuário Linux;
+- protocolos `ssh`, `wireguard` e `openvpn` por identidade;
+- propriedade/revenda;
 - expiração;
-- ACL/políticas;
-- limite de sessões;
-- tráfego e estado por conta.
+- `max_sessions`;
+- bindings para recursos técnicos existentes;
+- contratos estruturados de criação, consulta, bind e enable/disable.
 
-A conta passa a ser uma identidade MANAGER que pode possuir acesso a um ou mais protocolos, em vez de o núcleo assumir que toda identidade é somente um usuário Linux.
+### 0.6.1 — enforcement
 
-Primeira fundação planejada:
+Concluído:
 
-1. identidade MANAGER estável e independente do nome de usuário Linux;
-2. registro de protocolos habilitados por identidade;
-3. política comum de expiração, sessão e propriedade;
-4. operações estruturadas de criar/consultar/alterar/revogar identidade;
-5. adaptadores que traduzam o modelo comum para SSH, WireGuard e OpenVPN;
-6. interface local preparada para o futuro `managerctl`/Automation v2 sem shell arbitrário.
+- estado `active/disabled/expired` aplicado aos protocolos;
+- `DenyUsers` e limites SSH sem substituir `sshd_config`;
+- WireGuard removido/restaurado somente em runtime;
+- OpenVPN bloqueável de forma reversível;
+- visão consolidada `manager --identity-sessions`;
+- reconciliação automática de política.
+
+### 0.6.2 — Session / Lease Engine
+
+Concluído:
+
+- `session_id` estável por lease;
+- TTL/heartbeat/release;
+- aquisição idempotente;
+- limite local atômico sob lock;
+- `session_epoch` persistente;
+- fencing;
+- `switch` e `revoke-all`;
+- invalidação de geração por mudança de política;
+- `manager --leases` separado da visão de sessões observadas.
+
+### 0.6.3 — Protocol Lease Bridge
+
+Concluído:
+
+- SSH `open_session/close_session` ligado a lease via PAM;
+- OpenVPN `client-connect/client-disconnect` ligado a lease por fila runtime privilegiada controlada, sem dar shell root ao daemon;
+- WireGuard ligado a lease por handshake recente e gate específico de tráfego do peer;
+- heartbeat/reconciliação entre conexões reais e leases;
+- adoção de sessões existentes durante upgrade;
+- rollback/uninstall conscientes de hooks externos ao `/opt/manager`;
+- CI cobrindo limite `1/1`, release e lifecycle completo do bridge.
+
+### Próximos itens 0.6.x
+
+Antes da Automation v2, a base comum ainda deve ganhar:
+
+1. registro comum de tráfego/estado por identidade e protocolo;
+2. ACL/políticas independentes do protocolo;
+3. provisionamento/revogação de SSH, WireGuard e OpenVPN pelo próprio Connection Engine;
+4. cotas de revenda baseadas em **produto/identidade**, não somente usuário Linux;
+5. IPv6 completo;
+6. metadados de endpoint/nó/região que serão consumidos pela Colmeia.
 
 ## 0.7.0 — Automation Engine
 
 ### Legacy v1
 
-Uma única conexão de compatibilidade para o antigo ecossistema `syncpainel`, compartilhada pelos projetos/painéis compatíveis. Não haverá um protocolo separado por versão de painel.
+Uma única conexão de compatibilidade para o antigo ecossistema `syncpainel`, compartilhada pelos projetos/painéis compatíveis. Não haverá protocolo separado por versão de painel.
 
-O Legacy deve ser opcional e ficar desligado por padrão em instalações novas.
+O Legacy é opcional e ficará desligado por padrão em instalações novas.
 
 Interface planejada:
 
@@ -79,9 +119,9 @@ manager automation legacy disable
 manager automation legacy restart
 ```
 
-Quando desligado, nenhum listener ou tarefa exclusiva do Legacy deve permanecer ativo. Dados e configuração são preservados para reativação posterior.
+Quando desligado, nenhum listener/tarefa exclusiva do Legacy deve permanecer ativo. Dados e configuração são preservados para reativação posterior.
 
-A compatibilidade deve preservar o comportamento necessário para integrações antigas, mas não práticas inseguras como armazenamento desnecessário de senhas em texto claro.
+A compatibilidade preserva o contrato necessário para integrações antigas, mas não práticas inseguras como senha em texto claro, `chmod 777` ou alterações destrutivas de firewall.
 
 ### Automation v2
 
@@ -89,19 +129,21 @@ Novo protocolo oficial para integrações futuras:
 
 - ações estruturadas e versionadas;
 - IDs de requisição e idempotência;
-- respostas e códigos de erro padronizados;
+- respostas/códigos de erro padronizados;
 - RBAC;
 - auditoria;
 - autenticação criptográfica;
 - anti-replay;
 - rate limiting;
-- interface local por Unix socket;
+- interface privilegiada local por Unix socket;
 - `managerd`/`managerctl` ou mecanismo equivalente;
 - nenhuma execução remota de shell arbitrário.
 
+O Protocol Lease Bridge da 0.6.3 deve continuar sendo a fronteira entre daemons de conexão e a autoridade de sessão, permitindo trocar a autoridade local por Automation/Colmeia sem reescrever os protocolos.
+
 ## 0.8.0 — Modo Colmeia
 
-A Colmeia é uma rede de servidores MANAGER cooperando. Ela não é definida por país: pode reunir VPS no mesmo datacenter, cidade, país ou em várias regiões do mundo.
+A Colmeia é uma rede de servidores MANAGER cooperando. Ela pode reunir VPS no mesmo datacenter, cidade, país ou em várias regiões.
 
 ### Nós e regiões
 
@@ -115,11 +157,11 @@ Cada servidor terá identidade própria e metadados como:
 - protocolos disponíveis;
 - estado e saúde.
 
-Regiões são agrupamentos lógicos. Uma região Brasil pode conter várias VPS brasileiras, por exemplo.
+Regiões serão agrupamentos lógicos. Uma região Brasil pode conter várias VPS brasileiras, por exemplo.
 
 ### Distribuição de carga
 
-O scheduler da Colmeia deve considerar, entre outros sinais:
+O scheduler deve considerar:
 
 - CPU;
 - RAM;
@@ -127,7 +169,7 @@ O scheduler da Colmeia deve considerar, entre outros sinais:
 - número de sessões;
 - latência;
 - estado dos serviços;
-- capacidade/peso do servidor;
+- capacidade/peso;
 - protocolo solicitado.
 
 Recursos planejados:
@@ -135,30 +177,47 @@ Recursos planejados:
 - weighted scheduling;
 - sticky session/afinidade;
 - limites de capacidade;
-- `drain` para manutenção sem receber novas sessões;
+- `drain`;
 - failover;
 - health heartbeat;
 - resultados parciais quando alguns nós estiverem offline.
 
 ### Sessões globais
 
-A quantidade simultânea pertence à identidade/plano, e não individualmente a cada VPS.
+A quantidade simultânea pertence à identidade/plano, não a cada VPS individualmente.
 
-Exemplo: uma conta pode ter acesso a dez servidores ou países, mas `max_sessions_global=1`. Se já houver uma sessão ativa em um nó, uma segunda conexão em outro nó deve ser negada ou executar uma troca controlada.
+Exemplo:
 
-A implementação deve usar leases atômicos, heartbeat e expiração para evitar sessões presas e condições de corrida.
+```text
+Maria
+allowed_nodes = BR-01, US-01, DE-01, FR-01, ...
+max_sessions_global = 1
+```
+
+Se já houver uma sessão ativa em um nó, uma segunda conexão em outro nó é negada ou executa uma troca controlada.
+
+A Colmeia reutilizará os conceitos já implementados em 0.6.x:
+
+```text
+session_id
+TTL
+heartbeat
+session_epoch
+fencing
+```
+
+A diferença será a autoridade: o lock deixa de ser local e passa a ser global no Hub.
 
 ### Segurança da Colmeia
 
 - identidade criptográfica por nó;
 - bootstrap por convite/token temporário;
-- chaves privadas permanecem no nó correspondente;
-- comunicação autenticada e criptografada usando primitivas criptográficas consolidadas;
-- rotação de chaves de sessão;
-- proteção anti-replay;
-- comprometimento de um nó não deve fornecer credenciais administrativas dos demais nós.
-
-Nós devem preferencialmente iniciar a conexão de controle para reduzir a necessidade de portas administrativas públicas em todas as VPS.
+- chave privada permanece no nó correspondente;
+- comunicação autenticada e criptografada com primitivas consolidadas;
+- rotação de chaves;
+- anti-replay;
+- comprometimento de um nó não deve entregar credenciais administrativas dos demais;
+- nós preferencialmente iniciam conexão de controle para fora, reduzindo portas administrativas públicas.
 
 ## 0.9.0 — Telegram
 
@@ -167,8 +226,8 @@ Administração remota oficial via Telegram:
 - Bot;
 - Mini App;
 - identidade principal pelo `Telegram user.id` numérico;
-- validação server-side do contexto de autenticação do Mini App;
-- RBAC no backend independentemente do que a UI exibe.
+- validação server-side do contexto do Mini App;
+- RBAC no backend independentemente da UI.
 
 Papéis iniciais:
 
@@ -177,28 +236,29 @@ Papéis iniciais:
 - subrevendedor;
 - usuário.
 
-O Mini App deve mostrar somente os servidores e operações autorizados ao usuário, enquanto o backend sempre revalida as permissões.
+O Mini App mostra somente servidores/operações autorizados, enquanto o backend sempre revalida permissões.
 
 ## 0.9.5 — Migração e escala
 
 - importação assistida de instalações SSHPlus conhecidas;
 - migração de usuários, limites e validade quando possível;
-- testes de compatibilidade Legacy com projetos originais;
-- testes de carga e concorrência;
+- testes reais de compatibilidade Legacy;
+- testes de carga/concorrência;
 - restauração de backup validada;
-- testes de upgrade entre versões.
+- testes de upgrade entre versões;
+- matriz de CI ampliada para distribuições modernas suportadas.
 
 ## 1.0.0 — Produção
 
 Critérios mínimos planejados:
 
-- paridade útil com o MANAGER/SSHPlus original;
+- paridade útil com MANAGER/SSHPlus original;
 - Legacy v1 compatível e desligável;
 - Automation v2 estável;
 - Colmeia com balanceamento e sessão global;
 - comunicação criptografada da camada de controle;
 - SSH, WireGuard e OpenVPN integrados ao modelo comum;
-- revendedores/cotas;
+- revendedores/cotas por produto/identidade;
 - Telegram Bot + Mini App;
 - backup, auditoria e migração;
 - documentação e CI de release;
@@ -208,9 +268,9 @@ Critérios mínimos planejados:
 
 Possíveis evoluções:
 
-- métricas e histórico avançados;
+- métricas/histórico avançados;
 - roteamento por qualidade/latência;
 - autoscaling assistido;
-- alta disponibilidade do controlador da Colmeia;
+- alta disponibilidade do Hub;
 - provisionamento assistido de novos nós;
 - políticas de tráfego e capacidade mais avançadas.
