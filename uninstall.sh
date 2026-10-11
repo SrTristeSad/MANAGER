@@ -152,9 +152,6 @@ if $PURGE; then
       /etc/openvpn/server/manager-tls-crypt.key
     rm -rf /etc/systemd/system/openvpn-server@manager.service.d
   fi
-  if getent group manager-openvpn >/dev/null 2>&1; then
-    groupdel manager-openvpn >/dev/null 2>&1 || true
-  fi
 
   systemctl disable --now manager-squid.service >/dev/null 2>&1 || true
   rm -f /etc/systemd/system/manager-squid.service
