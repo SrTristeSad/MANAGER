@@ -80,6 +80,17 @@ is_valid_ipv4() {
   done
 }
 
+is_valid_ipv6_token() {
+  local value="${1:-}" address prefix
+  [[ "$value" == *:* ]] || return 1
+  [[ "$value" =~ ^[0-9A-Fa-f:]+(/[0-9]{1,3})?$ ]] || return 1
+  address="${value%%/*}"
+  prefix=""
+  [[ "$value" != */* ]] || prefix="${value##*/}"
+  [[ -z "$prefix" || "$prefix" =~ ^[0-9]+$ && "$prefix" -le 128 ]] || return 1
+  ip -6 route get "$address" >/dev/null 2>&1
+}
+
 is_valid_port() {
   local port="$1"
   [[ "$port" =~ ^[0-9]+$ ]] || return 1
@@ -111,4 +122,60 @@ remember_ipv4_forwarding() {
 enable_ipv4_forwarding() {
   remember_ipv4_forwarding
   sysctl -w net.ipv4.ip_forward=1 >/dev/null
+}
+
+remember_ipv6_forwarding() {
+  local state_dir="$MANAGER_ETC/network" state_file="$MANAGER_ETC/network/previous-ipv6-forwarding"
+  mkdir -p "$state_dir"
+  chmod 0700 "$state_dir"
+  if [[ ! -f "$state_file" ]]; then
+    sysctl -n net.ipv6.conf.all.forwarding > "$state_file"
+    chmod 0600 "$state_file"
+  fi
+}
+
+enable_ipv6_forwarding() {
+  remember_ipv6_forwarding
+  sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null
+}
+
+ipv6_default_interface() {
+  ip -6 route show default 2>/dev/null | awk '$1=="default" {print $5; exit}'
+}
+
+ipv6_global_address() {
+  local iface="${1:-}" address
+  [[ -n "$iface" ]] || iface="$(ipv6_default_interface)"
+  [[ -n "$iface" ]] || return 1
+  address="$(ip -6 -o addr show dev "$iface" scope global 2>/dev/null | awk '$3=="inet6" {sub(/\/.*/,"",$4); print $4; exit}')"
+  [[ -n "$address" ]] || return 1
+  printf '%s\n' "$address"
+}
+
+ipv6_egress_available() {
+  local iface
+  iface="$(ipv6_default_interface)"
+  [[ -n "$iface" ]] || return 1
+  ipv6_global_address "$iface" >/dev/null 2>&1
+}
+
+format_host_port() {
+  local host="$1" port="$2"
+  case "$host" in
+    \[*\]) printf '%s:%s\n' "$host" "$port" ;;
+    *:*) printf '[%s]:%s\n' "$host" "$port" ;;
+    *) printf '%s:%s\n' "$host" "$port" ;;
+  esac
+}
+
+ip_family() {
+  local value="${1:-}"
+  value="${value%%/*}"
+  if [[ "$value" == *:* ]]; then
+    printf '6\n'
+  elif is_valid_ipv4 "$value"; then
+    printf '4\n'
+  else
+    return 1
+  fi
 }
