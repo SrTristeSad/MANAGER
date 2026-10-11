@@ -192,16 +192,44 @@ Concluído:
 - documentação própria em `docs/IPV6.md`;
 - CI `IPv6 Dual Stack` cobre helpers, guard por lease e lifecycle.
 
-### Próximos itens 0.6.x
+### 0.6.9 — identidade e metadados do nó
 
-Antes da Automation v2, a base comum ainda deve ganhar:
+Concluído:
 
-1. metadados de endpoint/nó/região/pool que serão consumidos pela Colmeia;
-2. passagem automática do contexto `region/pool/node` para a autorização de conexão;
-3. agregação futura de uso por nó sem tratar o accounting local como faturamento global;
-4. consolidação gradual dos contratos internos de criação/revogação de protocolo para que Automation v2 reutilize uma única superfície allowlisted.
+- `node_id` persistente e independente das identidades de clientes;
+- metadados administrativos `country`, `region`, `pool`, `provider`, `city`, `capacity`, `weight`, `max_sessions` e `enabled`;
+- descoberta local de protocolos disponíveis e capacidade IPv6;
+- `node_id` imutável por operações normais e preservado em reinstall;
+- estado armazenado dentro de `/etc/manager/connection/node`, herdando backup/lifecycle do Connection Engine;
+- comandos de consulta/contexto e atualização somente de campos allowlisted;
+- CI dedicado cobrindo validação, imutabilidade e persistência.
 
-A próxima etapa planejada é **0.6.9 — Node/Region/Pool Metadata + ACL Context**, ligando cada VPS e endpoint a metadados estruturados e fazendo Product ACL receber o contexto real automaticamente.
+### 0.6.10 — ACL automática pelo contexto do nó
+
+Concluído:
+
+- Product Policy resolve automaticamente `region`, `pool` e `node_id` a partir do nó local quando o chamador não fornece contexto explícito;
+- valores explícitos continuam suportados para compatibilidade e testes;
+- ACL restrita falha fechada quando o metadado necessário está ausente;
+- Session Engine usa a mesma autorização e recusa lease em nó fora da ACL;
+- CI dedicado cobre região/pool/nó corretos, incorretos, metadado ausente e compatibilidade manual.
+
+### 0.6.11 — fechamento do Connection Engine
+
+Concluído:
+
+- agregado local `manager-node-usage-v1` soma uso medido e atividade por `node_id` sem criar um segundo banco de accounting;
+- snapshot local inclui identidades, leases/sessões, protocolos ativos, bytes WireGuard/OpenVPN, última atividade e metadados do nó;
+- o contrato declara `billing_authoritative=0` e `global_usage_supported=0`, impedindo que telemetria local seja confundida com faturamento global;
+- cobertura incompleta de bytes por presença de SSH continua explícita por `traffic_complete=0` e `ssh_bytes_supported=0`;
+- nova superfície privilegiada `manager-connection-actions-v1` consolida `preflight`, `create`, `revoke`, `status` e `describe`;
+- a superfície reutiliza o provisionamento/revogação transacional já existente em vez de duplicar lógica de SSH/WireGuard/OpenVPN;
+- somente `ssh`, `wireguard` e `openvpn` podem ser solicitados; não há parâmetro para shell, comando arbitrário ou caminho executável;
+- códigos de saída são estabilizados para consumo futuro pela Automation v2;
+- documentação em `docs/NODE_USAGE.md` e `docs/CONNECTION_ACTIONS.md`;
+- CI dedicado cobre allowlist, segredo SSH fora do log, lifecycle create/status/revoke, accounting local e uninstall.
+
+**Status: a série 0.6.x está concluída.** Novas capacidades de controle remoto, compatibilidade `syncpainel`, API, RBAC, idempotência e transporte pertencem à fase 0.7.x. Saúde distribuída, scheduler e autoridade multi-nó pertencem à fase 0.8.x, não à 0.6.x.
 
 ## 0.7.0 — Automation Engine
 
@@ -240,7 +268,7 @@ Novo protocolo oficial para integrações futuras:
 - `managerd`/`managerctl` ou mecanismo equivalente;
 - nenhuma execução remota de shell arbitrário.
 
-O Protocol Lease Bridge da 0.6.3 continua sendo a fronteira entre daemons de conexão e a autoridade de sessão. O Identity Usage da 0.6.4 fornece a visão comum de consumo/atividade, a 0.6.5 fornece produto/limites/ACL, a 0.6.6 fornece provisionamento/revogação transacional, a 0.6.7 fornece cotas por identidade/produto e a 0.6.8 garante dual-stack com enforcement equivalente. Assim, Automation/Colmeia podem chamar ações conhecidas sem reimplementar o ciclo de vida dos protocolos.
+O Protocol Lease Bridge da 0.6.3 continua sendo a fronteira entre daemons de conexão e a autoridade de sessão. O Identity Usage da 0.6.4 fornece a visão comum de consumo/atividade, a 0.6.5 fornece produto/limites/ACL, a 0.6.6 fornece provisionamento/revogação transacional, a 0.6.7 fornece cotas por identidade/produto, a 0.6.8 garante dual-stack, a 0.6.9/0.6.10 fornecem identidade/contexto real do nó e a 0.6.11 oferece a superfície allowlisted e telemetria local consumíveis pela Automation. Assim, a fase 0.7 pode tratar transporte, autenticação, autorização e compatibilidade sem reimplementar o ciclo de vida dos protocolos.
 
 ## 0.8.0 — Modo Colmeia
 
@@ -250,7 +278,7 @@ A Colmeia é uma rede de servidores MANAGER cooperando. Ela pode reunir VPS no m
 
 Cada servidor terá identidade própria e metadados como:
 
-- `server_id`;
+- `node_id`;
 - chave/fingerprint;
 - país e região;
 - provedor;
