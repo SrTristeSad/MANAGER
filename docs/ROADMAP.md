@@ -173,15 +173,35 @@ Concluído:
 - CI dedicado cobre identidades VPN-only, pai/subrevendedor, reativação, cotas de produto, legado sem dupla contagem, migração de identidade revogada e persistência após uninstall/reinstall;
 - documentação própria em `docs/RESELLER_QUOTAS.md`.
 
+### 0.6.8 — IPv6 / dual-stack
+
+Concluído:
+
+- detecção compartilhada de rota IPv6 padrão e endereço global antes de habilitar dual-stack;
+- WireGuard com `fd66:66:66::/64`, clientes IPv4 + IPv6, `::/0`, endpoint IPv6 literal corretamente formatado e migração de clientes existentes sem trocar chaves;
+- OpenVPN com `fd66:8::/64`, `server-ipv6`, redirect IPv6 e rollback da migração quando o daemon não volta saudável;
+- ULA + NAT66 como modo portátil para provedores que não delegam prefixo aos clientes;
+- UFW configurado para cobrir IPv4 e IPv6 antes de administrar regras;
+- novo IPv6 Guard espelhando no IPv6 as decisões já tomadas pelo Policy/Session Engine;
+- bloqueio específico por identidade/IPv6 quando não há lease/política válida, sem flush global de firewall;
+- `manager-ipv6-guard.timer` e lifecycle completo em install/update/rollback/uninstall;
+- preservação e restauração do valor anterior de `net.ipv6.conf.all.forwarding` no purge;
+- provisionamento unificado herda o estado dual-stack dos servidores e expõe `wireguard_ipv4`, `wireguard_ipv6` e `openvpn_ipv6`;
+- `manager --ipv6-status` e opção própria no menu;
+- accounting WireGuard/OpenVPN continua único, pois os contadores do túnel incluem tráfego IPv4 e IPv6;
+- documentação própria em `docs/IPV6.md`;
+- CI `IPv6 Dual Stack` cobre helpers, guard por lease e lifecycle.
+
 ### Próximos itens 0.6.x
 
 Antes da Automation v2, a base comum ainda deve ganhar:
 
-1. IPv6 completo;
-2. metadados de endpoint/nó/região que serão consumidos pela Colmeia;
-3. passagem automática do contexto `region/pool/node` para a autorização de conexão;
-4. agregação futura de uso por nó sem tratar o accounting local como faturamento global;
-5. consolidação gradual dos contratos internos de criação/revogação de protocolo para que Automation v2 reutilize uma única superfície allowlisted.
+1. metadados de endpoint/nó/região/pool que serão consumidos pela Colmeia;
+2. passagem automática do contexto `region/pool/node` para a autorização de conexão;
+3. agregação futura de uso por nó sem tratar o accounting local como faturamento global;
+4. consolidação gradual dos contratos internos de criação/revogação de protocolo para que Automation v2 reutilize uma única superfície allowlisted.
+
+A próxima etapa planejada é **0.6.9 — Node/Region/Pool Metadata + ACL Context**, ligando cada VPS e endpoint a metadados estruturados e fazendo Product ACL receber o contexto real automaticamente.
 
 ## 0.7.0 — Automation Engine
 
@@ -220,7 +240,7 @@ Novo protocolo oficial para integrações futuras:
 - `managerd`/`managerctl` ou mecanismo equivalente;
 - nenhuma execução remota de shell arbitrário.
 
-O Protocol Lease Bridge da 0.6.3 continua sendo a fronteira entre daemons de conexão e a autoridade de sessão. O Identity Usage da 0.6.4 fornece a visão comum de consumo/atividade, a 0.6.5 fornece produto/limites/ACL, a 0.6.6 fornece provisionamento/revogação transacional e a 0.6.7 fornece cotas por identidade/produto. Assim, Automation/Colmeia podem chamar ações conhecidas sem reimplementar o ciclo de vida dos protocolos.
+O Protocol Lease Bridge da 0.6.3 continua sendo a fronteira entre daemons de conexão e a autoridade de sessão. O Identity Usage da 0.6.4 fornece a visão comum de consumo/atividade, a 0.6.5 fornece produto/limites/ACL, a 0.6.6 fornece provisionamento/revogação transacional, a 0.6.7 fornece cotas por identidade/produto e a 0.6.8 garante dual-stack com enforcement equivalente. Assim, Automation/Colmeia podem chamar ações conhecidas sem reimplementar o ciclo de vida dos protocolos.
 
 ## 0.8.0 — Modo Colmeia
 
@@ -290,6 +310,7 @@ session_epoch
 fencing
 usage counters
 last activity
+IPv4/IPv6 dual-stack
 ```
 
 A diferença será a autoridade: o lock deixa de ser local e passa a ser global no Hub; o uso local de cada nó será agregado sem alterar os contadores originais.
