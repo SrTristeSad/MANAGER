@@ -94,7 +94,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          key1="$(sudo /opt/manager/modules/automation_credentials.sh --list auth-admin | awk '/auth-admin/ && $4==1 {print $2; exit}')"
+          key1="$(sudo /opt/manager/modules/automation_credentials.sh --list auth-admin | awk '/auth-admin/ && $4==1 {key=$2} END {print key}')"
           test -n "$key1"
           sudo /opt/manager/modules/automation_credentials.sh --rotate auth-admin /tmp/auth-admin-v2.credential > /tmp/rotate.txt
           key2="$(awk -F= '/^key_id=/{print $2}' /tmp/rotate.txt)"
@@ -119,7 +119,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          key2="$(sudo /opt/manager/modules/automation_credentials.sh --list auth-admin | awk '/auth-admin/ && $4==1 {print $2; exit}')"
+          key2="$(sudo /opt/manager/modules/automation_credentials.sh --list auth-admin | awk '/auth-admin/ && $4==1 {key=$2} END {print key}')"
           test -n "$key2"
           sudo /opt/manager/modules/automation_credentials.sh --revoke auth-admin "$key2"
           sudo grep -q '^enabled=0$' "/etc/manager/automation/v2/credentials/auth-admin/${key2}.conf"
