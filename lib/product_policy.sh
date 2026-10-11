@@ -9,6 +9,7 @@ PRODUCT_LOCK="$PRODUCT_ROOT/.lock"
 PRODUCT_USAGE_ROOT="${MANAGER_PRODUCT_USAGE_ROOT:-${IDENTITY_ROOT:-${MANAGER_ETC:-/etc/manager}/connection}/product-usage}"
 PRODUCT_USAGE_DIR="$PRODUCT_USAGE_ROOT/identities"
 IDENTITY_USAGE_DIR="${MANAGER_USAGE_ROOT:-/var/lib/manager/identity-usage}/identities"
+PRODUCT_NODE_CONF="${MANAGER_NODE_CONF:-${MANAGER_ETC:-/etc/manager}/connection/node/node.conf}"
 
 product_valid_id() {
   [[ "${1:-}" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,47}$ ]]
@@ -45,6 +46,20 @@ product_assignment_read() {
 
 product_quota_read() {
   product_read_file_field "$(product_quota_file "$1")" "$2"
+}
+
+product_node_context_read() {
+  local key="$1"
+  [[ -f "$PRODUCT_NODE_CONF" ]] || return 0
+  product_read_file_field "$PRODUCT_NODE_CONF" "$key"
+}
+
+product_resolve_node_context() {
+  local region="${1:-}" pool="${2:-}" node="${3:-}"
+  [[ -n "$region" ]] || region="$(product_node_context_read region)"
+  [[ -n "$pool" ]] || pool="$(product_node_context_read pool)"
+  [[ -n "$node" ]] || node="$(product_node_context_read node_id)"
+  printf 'region=%s\npool=%s\nnode=%s\n' "$region" "$pool" "$node"
 }
 
 product_for_identity() {
@@ -164,6 +179,11 @@ product_context_authorized() {
   product="$(product_for_identity "$identity" 2>/dev/null || true)"
   [[ -n "$product" ]] || return 0
   product_exists "$product" || return 68
+
+  [[ -n "$region" ]] || region="$(product_node_context_read region)"
+  [[ -n "$pool" ]] || pool="$(product_node_context_read pool)"
+  [[ -n "$node" ]] || node="$(product_node_context_read node_id)"
+
   product_acl_allows "$(product_read "$product" acl_regions)" "$region" || return 67
   product_acl_allows "$(product_read "$product" acl_pools)" "$pool" || return 67
   product_acl_allows "$(product_read "$product" acl_nodes)" "$node" || return 67
