@@ -19,6 +19,7 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -41,6 +42,7 @@ NODE_WG_PUB = os.path.join(NETWORK_DIR, "node.pub")
 NODE_NETWORK_CONF = os.path.join(NETWORK_DIR, "network.conf")
 NODE_TOPOLOGY = os.path.join(NETWORK_DIR, "topology.json")
 WG_CONF = os.path.join(WG_DIR, "mgh0.conf")
+WG_OWNER = os.path.join(NETWORK_DIR, "mgh0.owner")
 
 CTRL_DIR = os.path.join(HIVE_DIR, "controller")
 CTRL_KEY = os.path.join(CTRL_DIR, "controller.key")
@@ -56,6 +58,7 @@ BUNDLE_CONTRACT = "manager-hive-network-bundle-v1"
 STATUS_CONTRACT = "manager-hive-network-v1"
 VERSION = 1
 IFACE = "mgh0"
+MANAGED_MARKER = "# MANAGER-HIVE-NETWORK v1"
 DEFAULT_PORT = 51870
 IPV4_CIDR = "10.253.0.0/16"
 IPV6_CIDR = "fd42:4d47:4800::/64"
@@ -615,7 +618,7 @@ def validate_bundle(bundle):
 
 def render_config(target, peers):
     private = Path(NODE_WG_KEY).read_text(encoding="utf-8").strip()
-    lines = ["# MANAGER-HIVE-NETWORK v1", "[Interface]", f"PrivateKey = {private}",
+    lines = [MANAGED_MARKER, "[Interface]", f"PrivateKey = {private}",
              f"Address = {target['ipv4']}/32, {target['ipv6']}/128", f"ListenPort = {target['listen_port']}", "SaveConfig = false"]
     for p in sorted(peers, key=lambda x: x["node_id"]):
         lines.extend(["", f"# HIVE-PEER {p['node_id']} epoch={p['node_epoch']}", "[Peer]",
@@ -626,17 +629,19 @@ def render_config(target, peers):
 
 
 def validate_wg_config(text):
-    ensure_dir(WG_DIR)
-    fd, path = tempfile.mkstemp(prefix="mgh0-", suffix=".conf", dir=WG_DIR)
+    tmpdir = tempfile.mkdtemp(prefix="manager-hive-wg-")
+    path = os.path.join(tmpdir, "mgh0.conf")
     try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh: fh.write(text)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
         proc = subprocess.run(["wg-quick", "strip", path], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=20, check=False)
         if proc.returncode != 0:
-            die("Configuração WireGuard da Colmeia não passou em wg-quick strip.")
+            die("Configuração WireGuard da Colmeia não passou em wg-quick strip usando mgh0.conf.")
     finally:
-        try: os.unlink(path)
-        except FileNotFoundError: pass
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def test_skip_apply():
@@ -646,14 +651,121 @@ def test_skip_apply():
     return skip
 
 
+def owner_text():
+    return f"version=1\nowner=manager\ninterface={IFACE}\n"
+
+
+def wg_conf_state(adopt_legacy=False):
+    if not os.path.lexists(WG_CONF):
+        return "missing"
+    try:
+        st = os.lstat(WG_CONF)
+    except FileNotFoundError:
+        return "missing"
+    if not stat.S_ISREG(st.st_mode):
+        return "external"
+    try:
+        with open(WG_CONF, "r", encoding="utf-8") as fh:
+            first = fh.readline().rstrip("\n")
+    except (UnicodeDecodeError, OSError):
+        return "external"
+    owner = read_conf(WG_OWNER) if os.path.lexists(WG_OWNER) else {}
+    owner_matches = owner.get("owner") == "manager" and owner.get("interface") == IFACE
+    if owner_matches:
+        if first != MANAGED_MARKER:
+            die("Ownership da mgh0 está inconsistente; recusando tocar na configuração.", 65)
+        return "managed"
+    if first == MANAGED_MARKER and adopt_legacy:
+        atomic_write(WG_OWNER, owner_text())
+        return "managed"
+    return "external"
+
+
+def ensure_wg_conf_writable():
+    state = wg_conf_state(adopt_legacy=True)
+    if state == "external":
+        die("mgh0.conf já existe e não pertence ao MANAGER; recusando sobrescrever.", 65)
+
+
+def remove_managed_wg_conf():
+    state = wg_conf_state(adopt_legacy=True)
+    if state == "managed":
+        try:
+            os.unlink(WG_CONF)
+        except FileNotFoundError:
+            pass
+        try:
+            os.unlink(WG_OWNER)
+        except FileNotFoundError:
+            pass
+    elif state == "missing":
+        try:
+            os.unlink(WG_OWNER)
+        except FileNotFoundError:
+            pass
+
+
+def service_state():
+    if test_skip_apply():
+        return False, False
+    unit = f"wg-quick@{IFACE}.service"
+    active = subprocess.run(["systemctl", "is-active", "--quiet", unit], stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, timeout=10, check=False).returncode == 0
+    enabled = subprocess.run(["systemctl", "is-enabled", "--quiet", unit], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, timeout=10, check=False).returncode == 0
+    return active, enabled
+
+
+def restore_service_state(active, enabled):
+    if test_skip_apply():
+        return
+    unit = f"wg-quick@{IFACE}.service"
+    if active:
+        subprocess.run(["systemctl", "restart", unit], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=False)
+    else:
+        subprocess.run(["systemctl", "stop", unit], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=False)
+    action = "enable" if enabled else "disable"
+    subprocess.run(["systemctl", action, unit], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=False)
+
+
 def apply_service():
     if test_skip_apply():
         return
-    proc = subprocess.run(["systemctl", "enable", "--now", f"wg-quick@{IFACE}.service"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30, check=False)
+    unit = f"wg-quick@{IFACE}.service"
+    proc = subprocess.run(["systemctl", "enable", unit], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30, check=False)
     if proc.returncode != 0:
-        proc = subprocess.run(["systemctl", "restart", f"wg-quick@{IFACE}.service"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30, check=False)
+        die("Não foi possível habilitar a interface privada mgh0.", 70)
+    active = subprocess.run(["systemctl", "is-active", "--quiet", unit], stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, timeout=10, check=False).returncode == 0
+    action = "restart" if active else "start"
+    proc = subprocess.run(["systemctl", action, unit], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30, check=False)
     if proc.returncode != 0:
         die("A topologia foi validada, mas a interface mgh0 não pôde ser ativada; verifique kernel/firewall/endpoint.", 70)
+
+
+def install_runtime_config(config):
+    ensure_wg_conf_writable()
+    old_wg = Path(WG_CONF).read_bytes() if os.path.isfile(WG_CONF) else None
+    old_owner = Path(WG_OWNER).read_bytes() if os.path.isfile(WG_OWNER) else None
+    old_active, old_enabled = service_state()
+    ensure_dir(WG_DIR)
+    atomic_write(WG_CONF, config)
+    atomic_write(WG_OWNER, owner_text())
+    try:
+        apply_service()
+    except SystemExit:
+        if old_wg is None:
+            try: os.unlink(WG_CONF)
+            except FileNotFoundError: pass
+        else:
+            atomic_write(WG_CONF, old_wg)
+        if old_owner is None:
+            try: os.unlink(WG_OWNER)
+            except FileNotFoundError: pass
+        else:
+            atomic_write(WG_OWNER, old_owner)
+        restore_service_state(old_active, old_enabled)
+        raise
 
 
 def accept_bundle(path):
@@ -661,11 +773,9 @@ def accept_bundle(path):
     node_id, node_epoch, epoch, target, peers, digest = validate_bundle(bundle)
     config = render_config(target, peers)
     validate_wg_config(config)
-    old_wg = Path(WG_CONF).read_bytes() if os.path.isfile(WG_CONF) else None
     old_state = Path(NODE_NETWORK_CONF).read_bytes() if os.path.isfile(NODE_NETWORK_CONF) else None
     old_topology = Path(NODE_TOPOLOGY).read_bytes() if os.path.isfile(NODE_TOPOLOGY) else None
-    ensure_dir(WG_DIR); ensure_dir(NETWORK_DIR)
-    atomic_write(WG_CONF, config)
+    ensure_dir(NETWORK_DIR)
     atomic_write(NODE_TOPOLOGY, json.dumps(bundle, sort_keys=True, separators=(",", ":")) + "\n")
     now = int(time.time())
     state = (f"version=1\nnetwork_id={bundle['network_id']}\ntopology=mesh\nnode_id={node_id}\nnode_epoch={node_epoch}\n"
@@ -673,20 +783,18 @@ def accept_bundle(path):
              f"listen_port={target['listen_port']}\npeer_count={len(peers)}\nbundle_sha256={digest}\naccepted_epoch={now}\n")
     atomic_write(NODE_NETWORK_CONF, state)
     try:
-        apply_service()
+        install_runtime_config(config)
     except SystemExit:
-        if old_wg is None:
-            try: os.unlink(WG_CONF)
-            except FileNotFoundError: pass
-        else: atomic_write(WG_CONF, old_wg)
         if old_state is None:
             try: os.unlink(NODE_NETWORK_CONF)
             except FileNotFoundError: pass
-        else: atomic_write(NODE_NETWORK_CONF, old_state)
+        else:
+            atomic_write(NODE_NETWORK_CONF, old_state)
         if old_topology is None:
             try: os.unlink(NODE_TOPOLOGY)
             except FileNotFoundError: pass
-        else: atomic_write(NODE_TOPOLOGY, old_topology)
+        else:
+            atomic_write(NODE_TOPOLOGY, old_topology)
         raise
     print("network_configured=1")
     print(f"interface={IFACE}")
@@ -705,18 +813,17 @@ def reconcile():
     _, _, _, target, peers, _ = validate_bundle(bundle)
     config = render_config(target, peers)
     validate_wg_config(config)
-    atomic_write(WG_CONF, config)
-    apply_service()
+    install_runtime_config(config)
     print("reconciled=1")
     print(f"interface={IFACE}")
 
 
 def stop_service(remove_conf=False):
-    if os.environ.get("GITHUB_ACTIONS", "false") != "true" or os.environ.get("MANAGER_HIVE_NETWORK_SKIP_APPLY", "0") != "1":
-        subprocess.run(["systemctl", "disable", "--now", f"wg-quick@{IFACE}.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=False)
+    if not test_skip_apply():
+        subprocess.run(["systemctl", "disable", "--now", f"wg-quick@{IFACE}.service"], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=30, check=False)
     if remove_conf:
-        try: os.unlink(WG_CONF)
-        except FileNotFoundError: pass
+        remove_managed_wg_conf()
 
 
 def status():
@@ -727,6 +834,7 @@ def status():
     if not test_skip_apply():
         proc = subprocess.run(["systemctl", "is-active", f"wg-quick@{IFACE}.service"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=10, check=False)
         service = proc.stdout.strip() or "inactive"
+    conf_state = wg_conf_state(adopt_legacy=False)
     print(f"contract={STATUS_CONTRACT}")
     print(f"interface={IFACE}")
     print("topology=mesh")
@@ -737,6 +845,7 @@ def status():
     print(f"identity_enrolled={1 if enrolled else 0}")
     print(f"network_configured={1 if state else 0}")
     print(f"service={service}")
+    print(f"runtime_config_state={conf_state}")
     print("default_route_exported=0")
     print("user_vpn_traffic_transit=0")
     print("firewall_auto_open=0")
@@ -775,7 +884,6 @@ def main(argv):
     if cmd == "--detach": stop_service(True); return
     if cmd == "--purge":
         stop_service(True)
-        import shutil
         shutil.rmtree(NETWORK_DIR, ignore_errors=True)
         shutil.rmtree(CTRL_NET_DIR, ignore_errors=True)
         return
