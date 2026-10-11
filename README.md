@@ -4,7 +4,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 > O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva capacidades úteis, substitui implementações inseguras/obsoletas e evolui para uma arquitetura própria de identidade, automação, VPN, revenda e operação multi-servidor.
 
-Versão atual: **0.8.1**.
+Versão atual: **0.8.2**.
 
 ## Princípios
 
@@ -17,7 +17,7 @@ Versão atual: **0.8.1**.
 - integrações novas usam operações estruturadas e nunca shell remoto arbitrário;
 - senhas/chaves privadas não são persistidas pelo servidor para replay posterior;
 - autenticação, freshness, anti-replay, rate limit e autorização são reavaliados antes do replay idempotente;
-- a Colmeia estabelece confiança criptográfica e rede privada própria antes de introduzir scheduler ou autoridade global de sessões.
+- a Colmeia estabelece confiança criptográfica, rede privada e saúde verificável antes de introduzir scheduler ou autoridade global de sessões.
 
 ## Recursos atuais
 
@@ -236,22 +236,24 @@ Não existe shell/comando/caminho arbitrário.
 
 Documentação: [`docs/AUTOMATION_V2.md`](docs/AUTOMATION_V2.md).
 
-## Colmeia — 0.8.0 a 0.8.1
+## Colmeia — 0.8.0 a 0.8.2
 
-A 0.8.0 criou a raiz de confiança entre nós e controlador. A 0.8.1 acrescenta a **rede privada da Colmeia**, sem ainda ativar heartbeat, scheduler ou autoridade global de sessões.
+A 0.8.0 criou a raiz de confiança entre nós e controlador. A 0.8.1 acrescentou a **rede privada da Colmeia**. A 0.8.2 acrescenta **heartbeat assinado e saúde dos nós**, ainda sem ativar scheduler ou autoridade global de sessões.
 
 Cada VPS possui uma identidade Ed25519 de controle ligada ao `node_id` e uma chave WireGuard própria para a malha. A chave WireGuard privada nasce e permanece no próprio nó; o controlador recebe somente chave pública, endpoint e metadados de rede.
 
 ```text
 /etc/manager/hive/node/                 identidade Ed25519 do nó
 /etc/manager/hive/network/              chave/topologia privada do nó
-/etc/manager/hive/controller/           autoridade e registry público
+/etc/manager/hive/health/               configuração durável de heartbeat do nó
+/etc/manager/hive/controller/           autoridade, registry, saúde e TLS do controlador
+/var/lib/manager/hive-health/           observações/replay/runtime de saúde
 /etc/wireguard/mgh0.conf                runtime WireGuard gerenciado
 ```
 
-A interface da Colmeia é `mgh0`, separada do `wg0` usado por clientes. A topologia atual é mesh direto VPS↔VPS: o controlador distribui a topologia, mas **não carrega o tráfego VPN dos usuários**.
+A interface da Colmeia é `mgh0`, separada do `wg0` usado por clientes. A topologia atual é mesh direto VPS↔VPS: o controlador distribui a topologia e recebe telemetria de controle, mas **não carrega o tráfego VPN dos usuários**.
 
-Fluxo da rede:
+### Rede privada 0.8.1
 
 ```text
 nó enrolled gera chave WireGuard local
@@ -267,16 +269,7 @@ controlador emite bundle de topologia assinado por nó
 nó valida assinatura/fencing e reconcilia mgh0
 ```
 
-Comandos principais:
-
 ```bash
-manager hive status
-manager hive request /root/node-request.json
-manager hive controller init
-manager hive controller fingerprint
-manager hive controller approve /root/node-request.json /root/node-bundle.json
-manager hive accept /root/node-bundle.json SHA256:<fingerprint-controlador>
-
 manager hive network status
 manager hive network init
 manager hive network request vpn-br-01.example.com /root/node-network.json 51870
@@ -291,7 +284,7 @@ manager hive network down
 
 O controlador também pode `enable`/`disable` nós na topologia e gerar bundles para todos os nós com `bundle-all`.
 
-### Fronteiras de segurança da rede
+Fronteiras da malha:
 
 - `config_epoch` monotônico impede rollback de topologia;
 - bundle divergente reutilizando o mesmo `config_epoch` é recusado;
@@ -300,12 +293,44 @@ O controlador também pode `enable`/`disable` nós na topologia e gerar bundles 
 - `mgh0` nunca instala `0.0.0.0/0` ou `::/0`;
 - o MANAGER não abre automaticamente a porta WireGuard no firewall;
 - `mgh0.conf` externo/symlink/não pertencente ao MANAGER não é sobrescrito nem removido;
-- configuração nova passa por `wg-quick strip` usando exatamente `mgh0.conf` antes de ativação;
-- mudança de topologia reinicia uma `mgh0` já ativa, em vez de deixar peers antigos em memória;
+- configuração nova passa por `wg-quick strip` antes de ativação;
+- mudança de topologia reinicia uma `mgh0` já ativa;
 - falha ao aplicar restaura configuração/ownership/estado anteriores;
-- uninstall/rollback desligam e removem apenas o runtime MANAGER da malha, preservando chave local e topologia durável para reinstalação.
+- uninstall/rollback removem somente o runtime MANAGER da malha, preservando chave local e topologia durável.
 
-Estado da 0.8.1:
+### Heartbeat e saúde 0.8.2
+
+O nó envia uma amostra assinada com sua identidade Ed25519 já enrolled. A assinatura cobre `controller_id`, `node_id`, `node_epoch`, `issued_at`, nonce e todas as métricas. O controlador valida a chave pública registrada, exige `node_epoch` exato, aceita somente timestamp dentro de 120 segundos e consome o nonce uma única vez.
+
+O transporte do heartbeat usa **TLS 1.3 somente**. O nó exige pin SHA-256 explícito do certificado do controlador antes de enviar o payload. O listener é opt-in, usa porta padrão `9444` quando não informada e o MANAGER **não abre o firewall automaticamente**.
+
+```bash
+# controlador
+manager hive health controller init
+manager hive health controller enable 203.0.113.10 9444
+manager hive health controller status
+manager hive health controller list
+manager hive health controller show NODE_ID
+manager hive health controller thresholds 75 180
+manager hive health controller rotate-tls
+
+# nó
+manager hive health configure controller.example.com 9444 SHA256:<fingerprint> 30
+manager hive health status
+manager hive health send
+manager hive health disable
+```
+
+Cada heartbeat inclui CPU, RAM, load, contadores de rede, sessões, capacidade/peso, protocolos disponíveis, estado dos serviços SSH/WireGuard/OpenVPN, estado/peers de `mgh0` e RTT anterior. O controlador deriva:
+
+- `HEALTHY`: heartbeat atual e serviços esperados saudáveis;
+- `DEGRADED`: heartbeat atrasado, serviço necessário inativo, pressão extrema de CPU/RAM ou capacidade de sessão esgotada;
+- `DRAINING`: o nó reporta `enabled=0`; na 0.8.2 este estado é informativo e **ainda não executa drain do scheduler**;
+- `OFFLINE`: ausência/timeout de heartbeat, revogação/desabilitação de autoridade ou epoch incompatível.
+
+Os thresholds padrão são 75 s para heartbeat atrasado e 180 s para offline, podendo ser alterados no controlador. Aceites/recusas entram em audit JSONL sem persistir chaves privadas.
+
+Estado da 0.8.2:
 
 ```text
 cryptographic_node_identity=1
@@ -318,15 +343,23 @@ wireguard_mesh=1
 signed_network_requests=1
 signed_topology_bundles=1
 config_epoch_fencing=1
-controller_user_traffic_transit=0
-heartbeat=0
-node_health=0
+heartbeat=1
+node_health=1
+signed_heartbeat=1
+freshness=1
+anti_replay=1
+tls_transport=TLS1.3
+tls_server_pinning=sha256
+controller_in_user_vpn_path=0
 scheduler=0
+drain_runtime=0
+failover=0
 global_lease_authority=0
+global_max_sessions=0
 global_accounting=0
 ```
 
-O estado da Colmeia entra no backup protegido do MANAGER e pode conter chaves privadas de nó/controlador; trate o backup como segredo operacional. Uninstall normal preserva a confiança e o estado durável da rede; purge remove o estado server-side.
+O estado durável da Colmeia entra no backup protegido do MANAGER e pode conter chaves privadas de nó/controlador; trate o backup como segredo operacional. Uninstall normal preserva confiança, topologia e configuração durável de saúde; os units/listeners de runtime são destacados. Purge remove o estado server-side.
 
 Documentação: [`docs/HIVE.md`](docs/HIVE.md).
 
@@ -338,7 +371,7 @@ manager-uninstall
 manager-uninstall --purge
 ```
 
-Uninstall normal fecha listeners/socket e remove código, mas preserva estado durável necessário para reinstalação, incluindo Automation v2 e confiança/topologia da Colmeia. O runtime `mgh0` gerenciado é destacado antes da remoção. O purge remove estado server-side. Arquivos privados externos de credencial da Automation não são apagados automaticamente.
+Uninstall normal fecha listeners/socket e remove código, mas preserva estado durável necessário para reinstalação, incluindo Automation v2 e confiança/topologia/configuração de saúde da Colmeia. O runtime `mgh0` e os units de heartbeat/health gerenciados são destacados antes da remoção. O purge remove estado server-side. Arquivos privados externos de credencial da Automation não são apagados automaticamente.
 
 ## Segurança
 
@@ -354,10 +387,13 @@ Uninstall normal fecha listeners/socket e remove código, mas preserva estado du
 - nonce repetido falha fechado;
 - rate limit existe no daemon e gateway remoto;
 - Colmeia usa Ed25519 e pin do controlador no trust bootstrap;
-- `node_epoch` impede aceitar bundle antigo após revogação/re-enrollment;
+- `node_epoch` impede aceitar autoridade antiga após revogação/re-enrollment;
 - topologia WireGuard da Colmeia usa bundle assinado + `config_epoch`;
 - chave WireGuard privada da Colmeia nunca sai do nó;
 - config externa `mgh0.conf` é preservada;
+- heartbeat é assinado, freshness/nonce são verificados e replay falha fechado;
+- heartbeat usa TLS 1.3 com pin SHA-256 e listener opt-in;
+- controlador não fica no caminho do tráfego VPN dos usuários;
 - nenhuma ação estruturada aceita shell/comando/caminho arbitrário.
 
 ## CLI principal
@@ -394,6 +430,15 @@ manager hive network controller approve REQUEST
 manager hive network controller enable|disable NODE_ID
 manager hive network controller bundle NODE_ID OUT
 manager hive network controller bundle-all DIR
+manager hive health status
+manager hive health configure HOST PORT TLS_FP [INTERVAL]
+manager hive health disable|send
+manager hive health controller init|status|list
+manager hive health controller show NODE_ID
+manager hive health controller enable BIND_IP [PORT]
+manager hive health controller disable
+manager hive health controller thresholds DEGRADED OFFLINE
+manager hive health controller rotate-tls
 manager automation legacy status
 manager automation v2 status
 manager automation v2 principals
@@ -434,8 +479,8 @@ Plano detalhado: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 0.7.x  Automation Engine segura/remota                               ✅
 0.8.0  Colmeia — identidade e enrollment de nós                      ✅
 0.8.1  rede privada WireGuard da Colmeia                             ✅
-0.8.2  heartbeat + saúde de nós                                      próximo
-0.8.3  scheduler / drain / seleção de nó
+0.8.2  heartbeat + saúde de nós                                      ✅
+0.8.3  scheduler / drain / seleção de nó                             próximo
 0.8.4  autoridade de leases globais
 0.8.5  VPN allocation / login global
 0.8.6  quotas/accounting globais
@@ -449,21 +494,19 @@ Plano detalhado: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Testes
 
-O CI cobre syntax/ShellCheck, lifecycle, Connection/Session Engine, products/quotas, IPv6, Automation v2 e Colmeia. A 0.8.1 acrescenta testes específicos para:
+O CI cobre syntax/ShellCheck, lifecycle, Connection/Session Engine, products/quotas, IPv6, Automation v2 e Colmeia. Além dos testes de enrollment/rede/lifecycle, a 0.8.2 acrescenta o workflow `Hive Heartbeat and Health`, cobrindo:
 
-- request WireGuard assinado e adulteração recusada;
-- IPv4/IPv6 internos únicos por nó;
-- bundles de topologia assinados;
-- ausência de chave WireGuard privada no controlador/bundles/requests;
-- ausência de rota default na malha;
-- fencing de `config_epoch`;
-- remoção de peer quando um nó é desabilitado;
-- ownership de `mgh0.conf` e preservação de configuração externa;
-- restart de `mgh0` quando a topologia muda;
-- detach preservando chave/topologia duráveis;
-- uninstall normal sem runtime órfão;
-- rollback para versão sem Hive Network sem `mgh0`/drop-in órfãos;
-- persistência do estado durável após uninstall/rollback.
+- listener TLS 1.3 opt-in e pin SHA-256;
+- fingerprint TLS errado recusado antes do heartbeat;
+- heartbeat Ed25519 válido aceito e métricas registradas;
+- payload adulterado recusado;
+- nonce repetido/replay recusado;
+- heartbeat atrasado derivando `DEGRADED`;
+- timeout derivando `OFFLINE`;
+- `enabled=0` derivando `DRAINING` sem fingir drain de scheduler;
+- revogação/avanço de `node_epoch` cercando heartbeat antigo;
+- lifecycle destacando units de runtime sem apagar configuração durável;
+- regressão dos módulos anteriores no mesmo conjunto de CI.
 
 ## Origem
 
