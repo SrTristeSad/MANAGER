@@ -134,21 +134,17 @@ A série 0.7 cria a superfície oficial de integração. Ela deve estar estabili
 
 ### 0.7.0 — Automation Legacy v1 ✅
 
-Compatibilidade controlada com `syncpainel` e painéis antigos:
-
+- compatibilidade controlada com `syncpainel` e painéis antigos;
 - desligado por padrão;
 - listener OpenSSH dedicado;
 - conta não-root `manager-legacy`;
 - `ForceCommand`, sudoers exato e allowlist;
-- comandos históricos suportados sem `eval`;
 - senha de integração one-shot;
 - lifecycle e CI próprios.
 
 Documentação: `docs/AUTOMATION_LEGACY.md`.
 
 ### 0.7.1 — Automation v2: núcleo local estruturado ✅
-
-Implementado:
 
 - `managerd` + `managerctl`;
 - socket Unix `/run/manager-automation-v2/manager.sock`;
@@ -165,79 +161,78 @@ Implementado:
 
 ### 0.7.2 — Principals e RBAC ✅
 
-Implementado:
-
 - registry root-only em `/etc/manager/automation/v2/principals`;
-- principal reservado `local-root` para compatibilidade local;
+- principal reservado `local-root`;
 - roles `admin`, `reseller`, `subreseller` e `user`;
-- principals de revenda reutilizam `/etc/manager/access/resellers`, sem duplicar a hierarquia;
-- principal `user` é ligado a uma identidade real do Connection Engine;
+- revenda reutiliza `/etc/manager/access/resellers`;
+- principal `user` ligado a identidade do Connection Engine;
 - escopo por owner, identidade e produto;
 - `node.usage` admin-only;
-- reseller acessa sua árvore e subrevendedores filhos diretos;
-- subreseller fica limitado ao próprio owner;
-- user consulta somente sua identidade e não revoga;
-- `owner` omitido em create/preflight de revenda é forçado pelo daemon;
-- tentativa de cruzar para outra revenda é recusada;
-- autorização ocorre antes do cache idempotente;
-- `principal_id` entra no hash de idempotência;
-- desabilitar principal corta retries já cacheados;
-- audit registra principal, papel, decisão `allow/deny` e razão;
-- arquivos de principal precisam ser root-owned e sem permissões de grupo/mundo;
-- principals são preservados por uninstall/reinstall normal;
-- CI dedicado cobre isolamento, produto, owner forçado, replay, audit e lifecycle.
+- owner forçado/validado em criação por revenda;
+- autorização antes da idempotência;
+- `principal_id` no hash idempotente;
+- audit allow/deny;
+- lifecycle e CI dedicados.
 
-Limite de confiança desta etapa:
+A limitação histórica da 0.7.2 era `cryptographic_auth=0`; isso foi encerrado na 0.7.3.
+
+### 0.7.3 — autenticação criptográfica e enrollment ✅
+
+Implementado:
+
+- Ed25519 via OpenSSL, sem criptografia inventada;
+- registry público root-only em `/etc/manager/automation/v2/credentials/<principal>/`;
+- enrollment explícito de uma chave em principal existente;
+- servidor armazena somente chave pública, `key_id`, fingerprint e estado de revogação;
+- arquivo privado de credencial criado externamente em modo `0600` e não incluído no backup server-side;
+- `local-root` continua autenticado por `SO_PEERCRED` e não recebe credencial externa;
+- todos os demais principals exigem assinatura Ed25519 válida;
+- assinatura cobre contrato, versão, `request_id`, `principal_id`, `action_id` e parâmetros;
+- `managerctl --credential FILE` assina o envelope localmente;
+- daemon recalcula identidade/fingerprint da chave pública antes de confiar no registro;
+- rotação cria nova chave e revoga as anteriores somente depois do novo registro estar ativo;
+- revogação de credencial é independente do RBAC;
+- autenticação é reavaliada antes do RBAC/idempotência, portanto chave revogada não consegue replay cacheado;
+- audit registra esquema, `key_id`, fingerprint e decisão, sem assinatura/chave privada;
+- uninstall/reinstall preservam registry público; purge remove estado server-side;
+- CI `Automation v2 Authentication` cobre assinatura, negação sem assinatura, chave errada, rotação, fencing, revogação, audit e purge;
+- CI RBAC usa principals realmente assinados.
+
+Contrato de confiança atual:
 
 ```text
 rbac=1
-principal_assertion=root-local
-cryptographic_auth=0
+cryptographic_auth=1
+credential_algorithm=ed25519
+nonlocal_signature_required=1
 anti_replay=0
 rate_limit=0
 remote_transport=0
 ```
 
-Ou seja: `managerctl --principal X` ainda é uma asserção de um chamador que já é root local no socket `0600`; não é autenticação de uma integração remota.
+A autenticação está pronta, mas o transporte continua local. Isso evita expor rede antes de existir proteção anti-replay/rate limit específica para essa superfície.
 
 Documentação: `docs/AUTOMATION_V2.md`.
 
-### 0.7.3 — autenticação criptográfica e enrollment — PRÓXIMO
-
-Objetivo: transformar o principal lógico já autorizado em uma identidade comprovável criptograficamente.
+### 0.7.4 — anti-replay, rate limiting e transporte remoto estruturado — PRÓXIMO
 
 Planejado:
 
-- par de chaves/identidade por integração;
-- enrollment explícito de uma chave em um `principal_id` existente;
-- fingerprint estável;
-- armazenamento root-only;
-- rotação de chave sem recriar o principal;
-- revogação de credencial independente da política RBAC;
-- associação inequívoca `chave autenticada -> principal_id`;
-- nenhuma senha compartilhada em texto claro;
-- formato versionado para futura autenticação de Telegram gateway, Colmeia e outras integrações.
-
-Nesta etapa ainda não é necessário expor TCP público: a autenticação pode ser construída/testada sobre a fronteira local antes do transporte remoto.
-
-### 0.7.4 — anti-replay, rate limiting e transporte remoto estruturado
-
-Planejado:
-
-- timestamp e nonce;
+- timestamp assinado e nonce;
 - janela de validade;
 - cache de replay;
 - limites por principal/ação;
 - quotas de chamadas e proteção contra burst;
 - transporte remoto autenticado e criptografado;
 - Unix socket continua como fronteira privilegiada local;
-- nenhum shell remoto arbitrário.
+- nenhum shell remoto arbitrário;
+- chave revogada/principal desabilitado continua falhando fechado antes do dispatcher.
 
-**A série 0.7 só é considerada concluída quando RBAC, autenticação, anti-replay e rate limiting estiverem estabilizados.**
+**A série 0.7 só é considerada concluída quando anti-replay, rate limiting e transporte remoto estiverem estabilizados sobre a autenticação/RBAC já concluídos.**
 
 ## 0.8.x — Modo Colmeia
 
-Só começa depois da Automation v2 estar pronta para autenticar e autorizar integrações/nós.
+Só começa depois da Automation v2 estar pronta para autenticar e autorizar integrações/nós remotamente.
 
 ### Enrollment dos nós
 
