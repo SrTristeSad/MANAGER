@@ -42,9 +42,6 @@ bridge_init() {
     groupadd --system "$OVPN_GROUP" >/dev/null 2>&1 || true
   fi
   if getent group "$OVPN_GROUP" >/dev/null 2>&1; then
-    # O daemon pode criar requests, mas só atravessar/ler respostas conhecidas.
-    # Sem write no diretório de respostas ele não consegue preparar symlink para
-    # um processo root sobrescrever outro caminho durante o retorno ALLOW/DENY.
     install -d -o root -g "$OVPN_GROUP" -m 0730 "$OVPN_REQ_DIR"
     install -d -o root -g "$OVPN_GROUP" -m 0710 "$OVPN_RESP_DIR"
   else
@@ -246,9 +243,7 @@ pam_ssh() {
   device="$(make_device ssh "$user" "$fingerprint")"
 
   case "$pam_type" in
-    open_session)
-      acquire_managed ssh "$user" "$device" "$source_pid" "$rhost" "$tty"
-      ;;
+    open_session) acquire_managed ssh "$user" "$device" "$source_pid" "$rhost" "$tty" ;;
     close_session)
       release_device ssh "$device"
       release_matching ssh "$user" "$rhost" "$tty"
@@ -546,9 +541,7 @@ process_openvpn_requests() {
           release_device openvpn "$device"
           release_matching openvpn "$client"
           ;;
-        *)
-          write_openvpn_response "$request" DENY
-          ;;
+        *) write_openvpn_response "$request" DENY ;;
       esac
     elif [[ "$event" == client-connect ]]; then
       write_openvpn_response "$request" DENY
@@ -596,9 +589,7 @@ response="\$RESP_DIR/request.\$id.resp"
 } > "\$tmp"
 mv "\$tmp" "\$request" || exit 1
 
-if [ "\$event" = client-disconnect ]; then
-  exit 0
-fi
+if [ "\$event" = client-disconnect ]; then exit 0; fi
 
 i=0
 while [ "\$i" -lt 60 ]; do
@@ -796,6 +787,10 @@ detach_bridge() {
   local file
   bridge_init
   systemctl disable --now manager-protocol-leases.timer manager-openvpn-lease-queue.path >/dev/null 2>&1 || true
+  # Um timer/path já disparado pode ter deixado um oneshot ativo. Espere esses
+  # workers terminarem antes de remover o runtime, senão eles podem recriá-lo
+  # depois do rm -rf durante uninstall/rollback.
+  systemctl stop manager-protocol-leases.service manager-openvpn-lease-queue.service >/dev/null 2>&1 || true
   rm -f "$BRIDGE_SERVICE" "$BRIDGE_TIMER" "$OVPN_QUEUE_SERVICE" "$OVPN_QUEUE_PATH"
   remove_pam_block
   clear_all_bridge_firewall
@@ -805,8 +800,8 @@ detach_bridge() {
   done
   restore_openvpn_group
   rm -f "$SSH_PAM_HOOK" "$OVPN_CLIENT_HOOK"
-  rm -rf "$BRIDGE_RUNTIME"
   systemctl daemon-reload || true
+  rm -rf "$BRIDGE_RUNTIME"
 }
 
 bridge_init
