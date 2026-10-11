@@ -56,9 +56,9 @@ product_for_identity() {
 
 product_acl_allows() {
   local list="${1:-*}" value="${2:-}" item
-  [[ -n "$value" ]] || return 0
   [[ -n "$list" ]] || list="*"
   [[ "$list" == "*" ]] && return 0
+  [[ -n "$value" ]] || return 1
   IFS=',' read -r -a _product_acl_items <<< "$list"
   for item in "${_product_acl_items[@]}"; do
     [[ "$item" == "$value" ]] && return 0
