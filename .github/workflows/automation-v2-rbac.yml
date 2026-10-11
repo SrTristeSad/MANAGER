@@ -155,7 +155,7 @@ jobs:
           sudo manager automation v2 principal products p-res rbac-basic
           sudo managerctl --principal p-res connection.create id=rbac-new plan=rbac-basic protocols=ssh --request-id rbac-create-owner1 > /tmp/create.json
           sudo id rbac-new >/dev/null
-          grep -q '^owner=rbac-res$' /etc/manager/connection/identities/rbac-new.conf
+          sudo grep -q '^owner=rbac-res$' /etc/manager/connection/identities/rbac-new.conf
           python3 - <<'PY'
           import json
           r=json.load(open('/tmp/create.json'))
