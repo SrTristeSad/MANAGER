@@ -87,6 +87,7 @@ FILES=(
   "modules/connection_engine.sh"
   "modules/node_metadata.sh"
   "modules/node_usage.sh"
+  "modules/hive_identity.sh"
   "modules/products.sh"
   "modules/provision.sh"
   "modules/connection_actions.sh"
@@ -201,6 +202,9 @@ chmod 0644 "$ETC_DIR/installed-version"
 
 "$INSTALL_DIR/modules/connection_engine.sh" --init >/dev/null
 "$INSTALL_DIR/modules/node_metadata.sh" --init >/dev/null
+"$INSTALL_DIR/modules/hive_identity.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] A identidade criptográfica do nó da Colmeia não pôde ser inicializada." >&2
+}
 "$INSTALL_DIR/modules/resellers.sh" --init >/dev/null
 "$INSTALL_DIR/modules/automation_principals.sh" --init >/dev/null
 "$INSTALL_DIR/modules/automation_credentials.sh" --init >/dev/null
@@ -248,6 +252,7 @@ echo "Sessões SSH: manager --ssh-sessions"
 echo "Proxies:     manager --proxy-status"
 echo "Identidades: manager --identities"
 echo "Nó:          manager --node"
+echo "Colmeia:     manager hive status"
 echo "Produtos:    manager --products"
 echo "Provisionar: manager --provision ID PLANO"
 echo "Sessões ID:  manager --identity-sessions"
