@@ -83,6 +83,17 @@ run_provision_transaction() {
   return "$rc"
 }
 
+run_provision_menu() {
+  local rc=0
+  MANAGER_DEFER_POLICY_SIGNAL=1 "$MANAGER_HOME/modules/provision.sh" || rc=$?
+  touch "$MANAGER_ETC/connection/.changed" 2>/dev/null || true
+  if (( rc != 0 )); then
+    warn "O módulo provision.sh terminou com erro (código $rc). O menu principal continuará ativo."
+    pause
+  fi
+  return 0
+}
+
 self_update() {
   header
   say "${C_WHITE}ATUALIZAÇÃO DO MANAGER${C_RESET}\n"
@@ -275,7 +286,7 @@ while true; do
     30) run_module session_engine.sh ;;
     31) run_module identity_usage.sh ;;
     32) run_module products.sh ;;
-    33) run_module provision.sh ;;
+    33) run_provision_menu ;;
     90) self_update ;;
     0) clear 2>/dev/null || true; exit 0 ;;
     *) warn "Opção inválida"; sleep 1 ;;
