@@ -158,16 +158,12 @@ preflight_protocols() {
 }
 
 preflight_owner() {
-  local owner="$1" protocols="$2"
+  local owner="$1" identity_id="$2"
   [[ -n "$owner" ]] || return 0
   valid_owner "$owner" || { err "Proprietário inválido"; return 64; }
   [[ -x "$RESELLER_MODULE" ]] || { err "Módulo de revenda ausente"; return 69; }
-  if ! protocol_list_has "$protocols" ssh; then
-    err "Nesta etapa, identidade de revendedor provisionada precisa incluir SSH para a cota antiga continuar consistente"
-    return 67
-  fi
-  "$RESELLER_MODULE" --can-create "$owner" >/dev/null 2>&1 || {
-    err "Cota/estado não permite nova conta para $owner"
+  "$RESELLER_MODULE" --can-create "$owner" "$identity_id" >/dev/null 2>&1 || {
+    err "Cota/estado não permite nova identidade para $owner"
     return 73
   }
 }
@@ -396,6 +392,7 @@ rollback_fresh_identity() {
   if (( product_assigned == 1 )); then
     "$PRODUCT_MODULE" --unassign "$id" >/dev/null 2>&1 || true
   fi
+  [[ ! -x "$RESELLER_MODULE" ]] || "$RESELLER_MODULE" --release-identity "$id" >/dev/null 2>&1 || true
   rm -f "$(identity_file "$id")"
   rm -f "$IDENTITY_ROOT/session-epochs/$id.epoch" 2>/dev/null || true
   rm -f "/var/lib/manager/identity-usage/identities/$id.state" 2>/dev/null || true
@@ -420,7 +417,7 @@ provision_impl() {
   }
   resource_conflict "$id" "$protocols" || return $?
   preflight_protocols "$protocols" || return $?
-  preflight_owner "$owner" "$protocols" || return $?
+  preflight_owner "$owner" "$id" || return $?
 
   plan_max="$(product_read "$product" max_sessions)"
   [[ "$plan_max" =~ ^[0-9]+$ ]] || plan_max=0
@@ -559,6 +556,10 @@ revoke_impl() {
   "$CONNECTION_MODULE" --disable "$id" >/dev/null 2>&1 || true
   "$POLICY_MODULE" --reconcile >/dev/null 2>&1 || true
 
+  if (( failures == 0 )) && [[ -n "$owner" && -x "$RESELLER_MODULE" ]]; then
+    "$RESELLER_MODULE" --release-identity "$id" >/dev/null 2>&1 || failures=$((failures + 1))
+  fi
+
   if (( failures > 0 )); then
     log_event revoke "$id" "$product" "$owner" "$protocols" partial
     err "Revogação terminou com $failures falha(s). A identidade permaneceu desativada."
@@ -577,7 +578,7 @@ show_preflight() {
   protocols="$(select_protocols "$product" "$requested_protocols")" || return $?
   resource_conflict "$id" "$protocols" || return $?
   preflight_protocols "$protocols" || return $?
-  preflight_owner "$owner" "$protocols" || return $?
+  preflight_owner "$owner" "$id" || return $?
   printf 'status=ready\nidentity_id=%s\nproduct_id=%s\nowner=%s\nprotocols=%s\n' "$id" "$product" "$owner" "$protocols"
 }
 
@@ -610,7 +611,7 @@ interactive_revoke() {
   read -r -p "Identidade: " id
   identity_exists "$id" || { err "Identidade não encontrada"; pause; return; }
   warn "SSH será removido, WireGuard será revogado e o certificado OpenVPN será revogado quando vinculados."
-  warn "A identidade lógica permanece desativada para histórico/auditoria."
+  warn "A identidade lógica permanece desativada para histórico/auditoria e sua vaga de revenda é liberada após revogação completa."
   if confirm "Revogar definitivamente os acessos de $id?"; then
     if flock -x "$PROVISION_LOCK" "$0" --revoke-unlocked "$id"; then
       ok "Acessos revogados"
