@@ -30,6 +30,7 @@ jobs:
         run: |
           set -euxo pipefail
           sudo rm -rf /tmp/hive-health-node /tmp/hive-health-node-data /tmp/hive-health-controller-data /tmp/hive-health-systemd-node /tmp/hive-health-systemd-controller
+          sudo rm -f /tmp/node-request /tmp/controller-init /tmp/node-approve /tmp/node-accept /tmp/hive-health-node.id /tmp/hive-controller-identity-fp
           sudo mkdir -m 700 /tmp/hive-health-node /tmp/hive-health-node-data /tmp/hive-health-controller-data
           sudo mkdir -m 755 /tmp/hive-health-systemd-node /tmp/hive-health-systemd-controller
           sudo env MANAGER_ETC=/tmp/hive-health-node /opt/manager/modules/node_metadata.sh --init >/dev/null
@@ -49,6 +50,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          sudo rm -f /tmp/controller-health-enable /tmp/controller-health-status /tmp/hive-health-server.log /tmp/hive-health-server.pid /tmp/hive-health.port /tmp/hive-health.tls-fp
           port="$(python3 - <<'PY'
           import socket
           s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()
@@ -83,6 +85,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          sudo rm -f /tmp/node-health-configure /tmp/heartbeat-send /tmp/controller-node-health
           port="$(cat /tmp/hive-health.port)"
           tls_fp="$(cat /tmp/hive-health.tls-fp)"
           wrong_fp='SHA256:0000000000000000000000000000000000000000000000000000000000000000'
@@ -113,6 +116,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          sudo rm -f /tmp/heartbeat-replay.json /tmp/heartbeat-tamper.json /tmp/replay-first
           sudo env MANAGER_ETC=/tmp/hive-health-node MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-node-data /opt/manager/modules/hive_health.sh --heartbeat /tmp/heartbeat-replay.json >/dev/null
           sudo env GITHUB_ACTIONS=true MANAGER_ETC=/tmp/hive-health-node MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-health-systemd-node MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-node-data /opt/manager/modules/hive_health.sh --send-file /tmp/heartbeat-replay.json >/tmp/replay-first
           grep -q '^heartbeat_accepted=1$' /tmp/replay-first
@@ -139,6 +143,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          sudo rm -f /tmp/delayed-health /tmp/offline-health
           node_id="$(cat /tmp/hive-health-node.id)"
           obs="/tmp/hive-health-controller-data/nodes/$node_id.json"
           sudo test -f "$obs"
@@ -167,6 +172,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          sudo rm -f /tmp/draining-send
           sudo env MANAGER_ETC=/tmp/hive-health-node /opt/manager/modules/node_metadata.sh --set enabled 0
           sudo env GITHUB_ACTIONS=true MANAGER_ETC=/tmp/hive-health-node MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-health-systemd-node MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-node-data /opt/manager/modules/hive_health.sh --send >/tmp/draining-send
           grep -q '^state=DRAINING$' /tmp/draining-send
@@ -177,6 +183,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          sudo rm -f /tmp/heartbeat-before-revoke.json /tmp/revoke-node /tmp/revoked-health
           node_id="$(cat /tmp/hive-health-node.id)"
           sudo env MANAGER_ETC=/tmp/hive-health-node MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health-node-data /opt/manager/modules/hive_health.sh --heartbeat /tmp/heartbeat-before-revoke.json >/dev/null
           sudo manager hive controller revoke "$node_id" ci-revoke >/tmp/revoke-node
