@@ -57,11 +57,13 @@ set -u
 
 MANAGER_HOME="${MANAGER_HOME:-/opt/manager}"
 HIVE_MODULE="$MANAGER_HOME/modules/hive_network.sh"
+HEALTH_MODULE="$MANAGER_HOME/modules/hive_health.sh"
 DROPIN_FILE="/etc/systemd/system/manager-automation-v2.service.d/90-manager-hive-network.conf"
 SELF="/usr/local/libexec/manager-hive-lifecycle"
 WG_CONF="/etc/wireguard/mgh0.conf"
 WG_OWNER="/etc/manager/hive/network/mgh0.owner"
 WG_MARKER="# MANAGER-HIVE-NETWORK v1"
+HEALTH_MARKER="# MANAGER-HIVE-HEALTH v1"
 
 owned_runtime() {
   local first="" owner="" iface=""
@@ -76,11 +78,32 @@ owned_runtime() {
   return 0
 }
 
-fallback_detach() {
+owned_health_unit() {
+  local file="$1" first=""
+  [[ -f "$file" && ! -L "$file" ]] || return 1
+  IFS= read -r first < "$file" || true
+  [[ "$first" == "$HEALTH_MARKER" ]]
+}
+
+fallback_network_detach() {
   systemctl disable --now wg-quick@mgh0.service >/dev/null 2>&1 || true
   if owned_runtime; then
     rm -f "$WG_CONF" "$WG_OWNER"
   fi
+}
+
+fallback_health_detach() {
+  local file
+  systemctl disable --now manager-hive-heartbeat.timer >/dev/null 2>&1 || true
+  systemctl stop manager-hive-heartbeat.service >/dev/null 2>&1 || true
+  systemctl disable --now manager-hive-health-controller.service >/dev/null 2>&1 || true
+  for file in \
+    /etc/systemd/system/manager-hive-heartbeat.service \
+    /etc/systemd/system/manager-hive-heartbeat.timer \
+    /etc/systemd/system/manager-hive-health-controller.service; do
+    owned_health_unit "$file" && rm -f "$file"
+  done
+  systemctl daemon-reload >/dev/null 2>&1 || true
 }
 
 case "${1:-}" in
@@ -88,17 +111,25 @@ case "${1:-}" in
     if [[ -x "$HIVE_MODULE" ]]; then
       "$HIVE_MODULE" --install >/dev/null 2>&1 || true
     fi
+    if [[ -x "$HEALTH_MODULE" ]]; then
+      "$HEALTH_MODULE" --install >/dev/null 2>&1 || true
+    fi
     ;;
   stop)
-    if [[ -x "$HIVE_MODULE" ]]; then
-      "$HIVE_MODULE" --detach >/dev/null 2>&1 || fallback_detach
+    if [[ -x "$HEALTH_MODULE" ]]; then
+      "$HEALTH_MODULE" --detach >/dev/null 2>&1 || fallback_health_detach
     else
-      fallback_detach
+      fallback_health_detach
+    fi
+    if [[ -x "$HIVE_MODULE" ]]; then
+      "$HIVE_MODULE" --detach >/dev/null 2>&1 || fallback_network_detach
+    else
+      fallback_network_detach
     fi
 
     # uninstall.sh e rollback.sh usam "systemctl disable --now" no Automation v2.
     # Quando a unidade deixa de estar habilitada, este hook se auto-remove para
-    # não sobreviver como dependência órfã numa versão antiga/sem Hive Network.
+    # não sobreviver como dependência órfã numa versão antiga/sem Colmeia atual.
     if ! systemctl is-enabled --quiet manager-automation-v2.service >/dev/null 2>&1; then
       rm -f "$DROPIN_FILE" "$SELF"
       rmdir /etc/systemd/system/manager-automation-v2.service.d 2>/dev/null || true
@@ -158,14 +189,17 @@ detach_lifecycle() {
 }
 
 status_lifecycle() {
-  local dropin="0" helper="0"
+  local dropin="0" helper="0" health="0"
   if [[ -f "$DROPIN_FILE" && ! -L "$DROPIN_FILE" && "$(first_line "$DROPIN_FILE")" == "$DROPIN_MARKER" ]]; then
     dropin="1"
   fi
   if helper_owned; then
     helper="1"
   fi
-  printf 'contract=manager-hive-lifecycle-v1\ndropin=%s\nhelper=%s\nautomation_service=manager-automation-v2.service\n' "$dropin" "$helper"
+  if [[ -x "$MANAGER_HOME/modules/hive_health.sh" ]]; then
+    health="1"
+  fi
+  printf 'contract=manager-hive-lifecycle-v1\ndropin=%s\nhelper=%s\nhealth_module=%s\nautomation_service=manager-automation-v2.service\n' "$dropin" "$helper" "$health"
 }
 
 case "${1:-}" in
