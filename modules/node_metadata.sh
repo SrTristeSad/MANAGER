@@ -7,7 +7,7 @@ MANAGER_ETC="${MANAGER_ETC:-/etc/manager}"
 source "$MANAGER_HOME/lib/common.sh"
 require_root
 
-STATE_DIR="$MANAGER_ETC/node"
+STATE_DIR="$MANAGER_ETC/connection/node"
 CONF="$STATE_DIR/node.conf"
 LOCK_FILE="$STATE_DIR/.lock"
 
@@ -162,7 +162,7 @@ set_field() {
 }
 
 capability_ssh() {
-  command_exists sshd || [[ -x /usr/sbin/sshd || -x /usr/sbin/ssh ]] 
+  command_exists sshd || [[ -x /usr/sbin/sshd ]]
 }
 
 capability_wireguard() {
