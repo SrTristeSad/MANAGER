@@ -1,0 +1,153 @@
+name: Automation v2 Authentication
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  auth:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo systemctl is-active --quiet manager-automation-v2.service
+          sudo manager automation v2 status | grep -q '^cryptographic_auth=1$'
+          sudo manager automation v2 status | grep -q '^credential_algorithm=ed25519$'
+          sudo manager automation v2 status | grep -q '^anti_replay=0$'
+          sudo managerctl describe --request-id auth-local-root-01 > /tmp/local-root.json
+
+      - name: Create principal and enroll first credential
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager automation v2 principal create auth-admin admin
+          sudo /opt/manager/modules/automation_credentials.sh --enroll auth-admin /tmp/auth-admin-v1.credential > /tmp/enroll-v1.txt
+          grep -q '^private_key_stored_server=0$' /tmp/enroll-v1.txt
+          key1="$(awk -F= '/^key_id=/{print $2}' /tmp/enroll-v1.txt)"
+          fp1="$(awk -F= '/^fingerprint=/{print substr($0,index($0,"=")+1)}' /tmp/enroll-v1.txt)"
+          test -n "$key1"
+          test -n "$fp1"
+          test "$(sudo stat -c '%a' /tmp/auth-admin-v1.credential)" = 600
+          sudo test -f "/etc/manager/automation/v2/credentials/auth-admin/${key1}.conf"
+          sudo test -f "/etc/manager/automation/v2/credentials/auth-admin/${key1}.pub"
+          test "$(sudo stat -c '%a' "/etc/manager/automation/v2/credentials/auth-admin/${key1}.conf")" = 600
+          test "$(sudo stat -c '%a' "/etc/manager/automation/v2/credentials/auth-admin/${key1}.pub")" = 600
+          sudo grep -q "^fingerprint=${fp1}$" "/etc/manager/automation/v2/credentials/auth-admin/${key1}.conf"
+          if sudo grep -R -E 'BEGIN PRIVATE KEY|private_key_pem' /etc/manager/automation/v2; then
+            echo 'server registry contains private credential material' >&2
+            exit 1
+          fi
+
+      - name: Require a valid signature
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo managerctl --credential /tmp/auth-admin-v1.credential describe --request-id auth-signed-good01 > /tmp/good.json
+          python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/good.json'))
+          assert r['ok'] is True and r['principal_id']=='auth-admin'
+          PY
+
+          set +e
+          sudo managerctl --principal auth-admin describe --request-id auth-unsigned-bad1 > /tmp/unsigned.json
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+
+          sudo python3 - <<'PY'
+          import json, os, subprocess, tempfile
+          p='/tmp/auth-admin-v1.credential'
+          q='/tmp/auth-admin-wrong.credential'
+          data=json.load(open(p))
+          fd,key=tempfile.mkstemp()
+          os.close(fd)
+          subprocess.check_call(['openssl','genpkey','-algorithm','ED25519','-out',key], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+          data['private_key_pem']=open(key).read()
+          os.unlink(key)
+          with open(q,'w') as f: json.dump(data,f,separators=(',',':'),sort_keys=True)
+          os.chmod(q,0o600)
+          PY
+          set +e
+          sudo managerctl --credential /tmp/auth-admin-wrong.credential describe --request-id auth-wrong-key-001 > /tmp/wrong.json
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+          python3 - <<'PY'
+          import json
+          for p in ['/tmp/unsigned.json','/tmp/wrong.json']:
+              r=json.load(open(p))
+              assert r['ok'] is False and r['code']==67
+          PY
+
+      - name: Rotate credential and fence old key
+        shell: bash
+        run: |
+          set -euxo pipefail
+          key1="$(sudo /opt/manager/modules/automation_credentials.sh --list auth-admin | awk '/auth-admin/ && $4==1 {print $2; exit}')"
+          test -n "$key1"
+          sudo /opt/manager/modules/automation_credentials.sh --rotate auth-admin /tmp/auth-admin-v2.credential > /tmp/rotate.txt
+          key2="$(awk -F= '/^key_id=/{print $2}' /tmp/rotate.txt)"
+          test -n "$key2"
+          test "$key1" != "$key2"
+          sudo grep -q '^enabled=0$' "/etc/manager/automation/v2/credentials/auth-admin/${key1}.conf"
+          sudo grep -q '^enabled=1$' "/etc/manager/automation/v2/credentials/auth-admin/${key2}.conf"
+
+          set +e
+          sudo managerctl --credential /tmp/auth-admin-v1.credential describe --request-id auth-old-after-rot1 > /tmp/old-after-rotate.json
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+          sudo managerctl --credential /tmp/auth-admin-v2.credential describe --request-id auth-new-after-rot1 > /tmp/new-after-rotate.json
+          python3 - <<'PY'
+          import json
+          assert json.load(open('/tmp/old-after-rotate.json'))['code']==67
+          assert json.load(open('/tmp/new-after-rotate.json'))['ok'] is True
+          PY
+
+      - name: Revoke active credential immediately
+        shell: bash
+        run: |
+          set -euxo pipefail
+          key2="$(sudo /opt/manager/modules/automation_credentials.sh --list auth-admin | awk '/auth-admin/ && $4==1 {print $2; exit}')"
+          test -n "$key2"
+          sudo /opt/manager/modules/automation_credentials.sh --revoke auth-admin "$key2"
+          sudo grep -q '^enabled=0$' "/etc/manager/automation/v2/credentials/auth-admin/${key2}.conf"
+          set +e
+          sudo managerctl --credential /tmp/auth-admin-v2.credential describe --request-id auth-revoked-key01 > /tmp/revoked.json
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+
+      - name: Audit authenticates without storing signatures or private keys
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo grep -q '"auth_scheme":"ed25519-v1"' /var/log/manager/automation-v2-audit.jsonl
+          sudo grep -q '"auth_decision":"allow"' /var/log/manager/automation-v2-audit.jsonl
+          sudo grep -q '"auth_decision":"deny"' /var/log/manager/automation-v2-audit.jsonl
+          if sudo grep -Eqi 'BEGIN PRIVATE|private_key|signature' /var/log/manager/automation-v2-audit.jsonl; then
+            echo 'audit leaked authentication secret material' >&2
+            exit 1
+          fi
+
+      - name: Purge removes server-side public credential registry only
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo test -f /tmp/auth-admin-v1.credential
+          sudo test -f /tmp/auth-admin-v2.credential
+          sudo /opt/manager/modules/automation_v2.sh --purge
+          sudo test ! -e /etc/manager/automation/v2/credentials
+          sudo test -f /tmp/auth-admin-v1.credential
+          sudo test -f /tmp/auth-admin-v2.credential
