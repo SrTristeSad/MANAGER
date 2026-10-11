@@ -90,6 +90,7 @@ FILES=(
   "modules/products.sh"
   "modules/provision.sh"
   "modules/connection_actions.sh"
+  "modules/automation_legacy.sh"
   "modules/policy_engine.sh"
   "modules/session_engine.sh"
   "modules/protocol_leases.sh"
@@ -217,6 +218,9 @@ fi
 "$INSTALL_DIR/modules/identity_usage.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O coletor de uso por identidade foi instalado parcialmente. Os protocolos continuam funcionando, mas os contadores podem não ser atualizados." >&2
 }
+"$INSTALL_DIR/modules/automation_legacy.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] O estado do Legacy v1 foi preservado, mas um listener previamente habilitado não pôde ser reanexado. Use: manager automation legacy status" >&2
+}
 if [[ -d "$ETC_DIR/proxy" ]]; then
   "$INSTALL_DIR/modules/proxies.sh" --reconcile >/dev/null 2>&1 || true
 fi
@@ -239,6 +243,7 @@ echo "Sessões ID:  manager --identity-sessions"
 echo "Leases:      manager --leases"
 echo "Uso ID:      manager --usage"
 echo "IPv6:        manager --ipv6-status"
+echo "Legacy:      manager automation legacy status"
 echo "Rollback:    manager-rollback"
 echo "Remover:     manager-uninstall"
 [[ -d "$ROLLBACK_DIR" ]] && echo "Código anterior preservado em: $ROLLBACK_DIR"
@@ -246,4 +251,5 @@ echo ""
 if [[ "${1:-}" != "--update" ]]; then
   echo "VPNs, DNS, proxies, firewall, Fail2ban, TLS, Speedtest, vnStat e demais módulos"
   echo "só instalam dependências quando você escolhe a função correspondente."
+  echo "Automation Legacy v1 também permanece desligada por padrão até enable explícito."
 fi
