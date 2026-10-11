@@ -29,8 +29,11 @@ echo "Versão rollback: $previous"
 read -r -p "Restaurar o código anterior? [s/N]: " answer
 [[ "$answer" =~ ^([sS]|[sS][iI][mM]|[yY]|[yY][eE][sS])$ ]] || exit 0
 
-# Hooks externos ao /opt precisam ser retirados pelo código que os criou antes
-# da troca. O policy engine é reconstruído abaixo pela versão restaurada.
+# Unidades/hooks externos ao /opt precisam ser retirados pelo código que os
+# criou antes da troca. O estado persistente de uso permanece em /var/lib.
+if [[ -x "$INSTALL_DIR/modules/identity_usage.sh" ]]; then
+  "$INSTALL_DIR/modules/identity_usage.sh" --detach >/dev/null 2>&1 || true
+fi
 if [[ -x "$INSTALL_DIR/modules/protocol_leases.sh" ]]; then
   "$INSTALL_DIR/modules/protocol_leases.sh" --detach >/dev/null 2>&1 || true
 fi
@@ -54,8 +57,8 @@ ln -sfn "$INSTALL_DIR/rollback.sh" /usr/local/sbin/manager-rollback
 ln -sfn "$INSTALL_DIR/uninstall.sh" /usr/local/sbin/manager-uninstall
 
 # Reaplica apenas os componentes disponíveis na versão que acabou de voltar.
-# Isso permite rollback 0.6.3 -> 0.6.2 sem deixar PAM/OpenVPN apontando para
-# um bridge ausente e também permite voltar para uma versão que possua o bridge.
+# Isso permite rollback para uma versão anterior sem deixar units/hooks
+# apontando para módulos ausentes.
 if [[ -x "$INSTALL_DIR/modules/session_engine.sh" ]]; then
   "$INSTALL_DIR/modules/session_engine.sh" --install >/dev/null 2>&1 || true
 fi
@@ -64,6 +67,9 @@ if [[ -x "$INSTALL_DIR/modules/policy_engine.sh" ]]; then
 fi
 if [[ -x "$INSTALL_DIR/modules/protocol_leases.sh" ]]; then
   "$INSTALL_DIR/modules/protocol_leases.sh" --install >/dev/null 2>&1 || true
+fi
+if [[ -x "$INSTALL_DIR/modules/identity_usage.sh" ]]; then
+  "$INSTALL_DIR/modules/identity_usage.sh" --install >/dev/null 2>&1 || true
 fi
 
 echo "[OK] Código restaurado para $previous. A versão $current ficou disponível como novo rollback."
