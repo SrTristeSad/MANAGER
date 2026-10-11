@@ -43,6 +43,9 @@ Uso:
   manager --leases [ID]           mostra leases locais ativas
   manager --usage [ID]            mostra tráfego/atividade consolidada por identidade
   manager --ipv6-status           mostra estado dual-stack, egress e IPv6 Guard
+  manager --node                  mostra identidade, metadados e capacidades do nó
+  manager --node-context          mostra country/region/pool/node para ACL/Colmeia
+  manager --node-set FIELD VALUE  altera metadado allowlisted do nó
   manager --diagnostics           abre o diagnóstico
   manager --version               mostra a versão
   manager --help                  mostra esta ajuda
@@ -198,6 +201,12 @@ case "${1:-}" in
     fi
     ;;
   --ipv6-status) exec "$MANAGER_HOME/modules/ipv6_guard.sh" --status ;;
+  --node) exec "$MANAGER_HOME/modules/node_metadata.sh" --show ;;
+  --node-context) exec "$MANAGER_HOME/modules/node_metadata.sh" --context ;;
+  --node-set)
+    [[ -n "${2:-}" ]] || { err "Uso: manager --node-set FIELD VALUE"; exit 64; }
+    exec "$MANAGER_HOME/modules/node_metadata.sh" --set "$2" "${3:-}"
+    ;;
   --diagnostics) exec "$MANAGER_HOME/modules/diagnostics.sh" ;;
   "") ;;
   *)
@@ -220,6 +229,7 @@ while true; do
   say " ${C_CYAN}25${C_RESET}) Hosts do proxy"
   say " ${C_CYAN}26${C_RESET}) Proxies e túneis"
   say " ${C_CYAN}35${C_RESET}) Estado IPv6 / dual-stack"
+  say " ${C_CYAN}36${C_RESET}) Identidade / metadados do nó"
   say ""
   say " ${C_WHITE}SEGURANÇA${C_RESET}"
   say "  ${C_CYAN}6${C_RESET}) Segurança / hardening SSH"
@@ -312,6 +322,7 @@ while true; do
       "$MANAGER_HOME/modules/openvpn.sh" --network-state 2>/dev/null || true
       pause
       ;;
+    36) run_module node_metadata.sh ;;
     90) self_update ;;
     0) clear 2>/dev/null || true; exit 0 ;;
     *) warn "Opção inválida"; sleep 1 ;;
