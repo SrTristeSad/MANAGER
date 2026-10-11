@@ -75,6 +75,7 @@ FILES=(
   "VERSION"
   "lib/common.sh"
   "lib/identity.sh"
+  "lib/product_policy.sh"
   "modules/system.sh"
   "modules/ssh_users.sh"
   "modules/ssh_keys.sh"
@@ -83,6 +84,7 @@ FILES=(
   "modules/resellers.sh"
   "modules/reseller_accounts.sh"
   "modules/connection_engine.sh"
+  "modules/products.sh"
   "modules/policy_engine.sh"
   "modules/session_engine.sh"
   "modules/protocol_leases.sh"
@@ -185,6 +187,9 @@ printf '%s\n' "$NEW_VERSION" > "$ETC_DIR/installed-version"
 chmod 0644 "$ETC_DIR/installed-version"
 
 "$INSTALL_DIR/modules/connection_engine.sh" --init >/dev/null
+"$INSTALL_DIR/modules/products.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] O motor de produtos/ACL/franquias foi instalado parcialmente. Identidades sem produto continuam usando a política base." >&2
+}
 "$INSTALL_DIR/modules/session_engine.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O Session/Lease Engine foi instalado, mas o timer de limpeza não pôde ser iniciado." >&2
 }
@@ -216,6 +221,7 @@ echo "Expirados:   manager --expired"
 echo "Sessões SSH: manager --ssh-sessions"
 echo "Proxies:     manager --proxy-status"
 echo "Identidades: manager --identities"
+echo "Produtos:    manager --products"
 echo "Sessões ID:  manager --identity-sessions"
 echo "Leases:      manager --leases"
 echo "Uso ID:      manager --usage"
