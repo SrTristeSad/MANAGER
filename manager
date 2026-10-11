@@ -33,6 +33,9 @@ Uso:
   manager --products              lista produtos/planos
   manager --product ID            mostra um produto/plano
   manager --product-assignment ID mostra plano, limites e franquia de uma identidade
+  manager --reseller-usage OWNER  mostra uso/cota total do revendedor por identidade
+  manager --reseller-product-quota OWNER PRODUCT
+                                  mostra uso/cota de um produto para o revendedor
   manager --provision ID PLAN [OWNER] [PROTOCOLS]
                                   cria identidade + plano + acessos em uma transação
   manager --revoke-identity ID    revoga acessos e preserva a identidade desativada
@@ -166,6 +169,14 @@ case "${1:-}" in
     [[ -n "${2:-}" ]] || { err "Informe o ID da identidade"; exit 64; }
     exec "$MANAGER_HOME/modules/products.sh" --assignment "$2"
     ;;
+  --reseller-usage)
+    [[ -n "${2:-}" ]] || { err "Informe o ID do revendedor"; exit 64; }
+    exec "$MANAGER_HOME/modules/resellers.sh" --usage-detail "$2"
+    ;;
+  --reseller-product-quota)
+    [[ -n "${2:-}" && -n "${3:-}" ]] || { err "Uso: manager --reseller-product-quota OWNER PRODUCT"; exit 64; }
+    exec "$MANAGER_HOME/modules/reseller_product_quotas.sh" --show "$2" "$3"
+    ;;
   --provision)
     [[ -n "${2:-}" && -n "${3:-}" ]] || { err "Uso: manager --provision ID PLAN [OWNER] [PROTOCOLS]"; exit 64; }
     run_provision_transaction --create "$2" "$3" "${4:-}" "${5:-}"
@@ -224,6 +235,7 @@ while true; do
   say " ${C_CYAN}30${C_RESET}) Session / Lease Engine"
   say " ${C_CYAN}32${C_RESET}) Produtos, planos, ACL e franquias"
   say " ${C_CYAN}33${C_RESET}) Provisionamento unificado / revogação"
+  say " ${C_CYAN}34${C_RESET}) Cotas de produto por revendedor"
   say ""
   say " ${C_WHITE}MONITORAMENTO E MANUTENÇÃO${C_RESET}"
   say " ${C_CYAN}10${C_RESET}) Tráfego e conexões"
@@ -287,6 +299,7 @@ while true; do
     31) run_module identity_usage.sh ;;
     32) run_module products.sh ;;
     33) run_provision_menu ;;
+    34) run_module reseller_product_quotas.sh ;;
     90) self_update ;;
     0) clear 2>/dev/null || true; exit 0 ;;
     *) warn "Opção inválida"; sleep 1 ;;
