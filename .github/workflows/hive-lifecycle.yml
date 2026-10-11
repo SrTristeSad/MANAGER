@@ -1,0 +1,93 @@
+name: Hive Network Lifecycle
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  uninstall-lifecycle:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo /opt/manager/modules/hive_lifecycle.sh --status > /tmp/hive-lifecycle-status
+          grep -q '^dropin=1$' /tmp/hive-lifecycle-status
+          grep -q '^helper=1$' /tmp/hive-lifecycle-status
+          sudo test -x /usr/local/libexec/manager-hive-lifecycle
+          sudo grep -q '^# MANAGER-HIVE-LIFECYCLE v1$' /etc/systemd/system/manager-automation-v2.service.d/90-manager-hive-network.conf
+
+      - name: Normal uninstall detaches runtime but preserves durable Hive state
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo install -d -m 0700 /etc/manager/hive/network
+          sudo install -d -m 0700 /etc/wireguard
+          printf '%s\n' '# MANAGER-HIVE-NETWORK v1' '[Interface]' 'PrivateKey = test-placeholder' | sudo tee /etc/wireguard/mgh0.conf >/dev/null
+          sudo chmod 600 /etc/wireguard/mgh0.conf
+          printf '%s\n' 'version=1' 'owner=manager' 'interface=mgh0' | sudo tee /etc/manager/hive/network/mgh0.owner >/dev/null
+          sudo chmod 600 /etc/manager/hive/network/mgh0.owner
+          printf '%s\n' '{"durable_test":true}' | sudo tee /etc/manager/hive/network/topology.json >/dev/null
+          sudo chmod 600 /etc/manager/hive/network/topology.json
+          sudo test -f /etc/manager/hive/network/node.key
+
+          sudo /opt/manager/uninstall.sh
+
+          sudo test ! -e /etc/wireguard/mgh0.conf
+          sudo test ! -e /etc/manager/hive/network/mgh0.owner
+          sudo test ! -e /etc/systemd/system/manager-automation-v2.service.d/90-manager-hive-network.conf
+          sudo test ! -e /usr/local/libexec/manager-hive-lifecycle
+          sudo test -f /etc/manager/hive/network/node.key
+          sudo test -f /etc/manager/hive/network/topology.json
+          sudo grep -q '"durable_test":true' /etc/manager/hive/network/topology.json
+
+  rollback-lifecycle:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree and stage pre-Hive rollback target
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo rm -rf /opt/manager.rollback
+          sudo cp -a /opt/manager /opt/manager.rollback
+          sudo rm -f /opt/manager.rollback/modules/hive_network.sh /opt/manager.rollback/modules/hive_lifecycle.sh
+          printf '%s\n' '0.8.0' | sudo tee /opt/manager.rollback/VERSION >/dev/null
+
+          sudo install -d -m 0700 /etc/manager/hive/network
+          sudo install -d -m 0700 /etc/wireguard
+          printf '%s\n' '# MANAGER-HIVE-NETWORK v1' '[Interface]' 'PrivateKey = test-placeholder' | sudo tee /etc/wireguard/mgh0.conf >/dev/null
+          sudo chmod 600 /etc/wireguard/mgh0.conf
+          printf '%s\n' 'version=1' 'owner=manager' 'interface=mgh0' | sudo tee /etc/manager/hive/network/mgh0.owner >/dev/null
+          sudo chmod 600 /etc/manager/hive/network/mgh0.owner
+          printf '%s\n' '{"durable_rollback_test":true}' | sudo tee /etc/manager/hive/network/topology.json >/dev/null
+          sudo chmod 600 /etc/manager/hive/network/topology.json
+          sudo test -f /etc/manager/hive/network/node.key
+
+      - name: Rollback to target without Hive Network leaves no dangling runtime
+        shell: bash
+        run: |
+          set -euxo pipefail
+          printf 's\n' | sudo /opt/manager/rollback.sh
+          test "$(sudo tr -d '[:space:]' < /opt/manager/VERSION)" = '0.8.0'
+          sudo test ! -e /opt/manager/modules/hive_network.sh
+          sudo test ! -e /opt/manager/modules/hive_lifecycle.sh
+          sudo test ! -e /etc/wireguard/mgh0.conf
+          sudo test ! -e /etc/manager/hive/network/mgh0.owner
+          sudo test ! -e /etc/systemd/system/manager-automation-v2.service.d/90-manager-hive-network.conf
+          sudo test ! -e /usr/local/libexec/manager-hive-lifecycle
+          sudo test -f /etc/manager/hive/network/node.key
+          sudo test -f /etc/manager/hive/network/topology.json
+          sudo grep -q '"durable_rollback_test":true' /etc/manager/hive/network/topology.json
