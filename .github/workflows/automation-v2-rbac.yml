@@ -26,6 +26,7 @@ jobs:
           sudo manager automation v2 status | grep -q '^rbac=1$'
           sudo manager automation v2 status | grep -q '^cryptographic_auth=1$'
           sudo manager automation v2 status | grep -q '^nonlocal_signature_required=1$'
+          sudo manager automation v2 status | grep -q '^anti_replay=1$'
 
       - name: Build authority objects
         shell: bash
@@ -216,12 +217,14 @@ jobs:
         run: |
           set -euxo pipefail
           sudo grep -q '"principal_id":"p-res"' /var/log/manager/automation-v2-audit.jsonl
-          sudo grep -q '"auth_scheme":"ed25519-v1"' /var/log/manager/automation-v2-audit.jsonl
+          sudo grep -q '"auth_scheme":"ed25519-v2"' /var/log/manager/automation-v2-audit.jsonl
           sudo grep -q '"auth_decision":"allow"' /var/log/manager/automation-v2-audit.jsonl
           sudo grep -q '"auth_decision":"deny"' /var/log/manager/automation-v2-audit.jsonl
+          sudo grep -q '"freshness_decision":"allow"' /var/log/manager/automation-v2-audit.jsonl
+          sudo grep -q '"replay_decision":"allow"' /var/log/manager/automation-v2-audit.jsonl
           sudo grep -q '"rbac_decision":"deny"' /var/log/manager/automation-v2-audit.jsonl
-          if sudo grep -Eqi 'ssh_password|private_key|BEGIN PRIVATE|signature|token' /var/log/manager/automation-v2-audit.jsonl; then
-            echo 'automation audit contains secret material' >&2
+          if sudo grep -Eqi 'ssh_password|private_key|BEGIN PRIVATE|signature|token|"nonce"' /var/log/manager/automation-v2-audit.jsonl; then
+            echo 'automation audit contains secret/replay material' >&2
             exit 1
           fi
 
