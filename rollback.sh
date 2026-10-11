@@ -31,6 +31,9 @@ read -r -p "Restaurar o código anterior? [s/N]: " answer
 
 # Unidades/hooks externos ao /opt precisam ser retirados pelo código que os
 # criou antes da troca. Estados persistentes permanecem em /etc/manager e /var/lib.
+if [[ -x "$INSTALL_DIR/modules/automation_legacy.sh" ]]; then
+  "$INSTALL_DIR/modules/automation_legacy.sh" --detach >/dev/null 2>&1 || true
+fi
 if [[ -x "$INSTALL_DIR/modules/identity_usage.sh" ]]; then
   "$INSTALL_DIR/modules/identity_usage.sh" --detach >/dev/null 2>&1 || true
 fi
@@ -93,6 +96,23 @@ else
 fi
 if [[ -x "$INSTALL_DIR/modules/identity_usage.sh" ]]; then
   "$INSTALL_DIR/modules/identity_usage.sh" --install >/dev/null 2>&1 || true
+fi
+if [[ -x "$INSTALL_DIR/modules/automation_legacy.sh" ]]; then
+  "$INSTALL_DIR/modules/automation_legacy.sh" --install >/dev/null 2>&1 || true
+else
+  systemctl disable --now manager-automation-legacy.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-automation-legacy.service \
+    /etc/ssh/sshd_config.d/64-manager-automation-legacy.conf
+  if id manager-legacy >/dev/null 2>&1; then
+    passwd -l manager-legacy >/dev/null 2>&1 || true
+  fi
+  systemctl daemon-reload || true
+  if command -v sshd >/dev/null 2>&1; then
+    install -d -m 0755 /run/sshd
+    if sshd -t; then
+      systemctl reload ssh >/dev/null 2>&1 || systemctl reload sshd >/dev/null 2>&1 || true
+    fi
+  fi
 fi
 
 echo "[OK] Código restaurado para $previous. A versão $current ficou disponível como novo rollback."
