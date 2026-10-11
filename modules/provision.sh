@@ -17,10 +17,10 @@ POLICY_MODULE="$MANAGER_HOME/modules/policy_engine.sh"
 SESSION_MODULE="$MANAGER_HOME/modules/session_engine.sh"
 RESELLER_MODULE="$MANAGER_HOME/modules/resellers.sh"
 RESELLER_PRODUCT_QUOTA_MODULE="$MANAGER_HOME/modules/reseller_product_quotas.sh"
+IPV6_GUARD_MODULE="$MANAGER_HOME/modules/ipv6_guard.sh"
 
 PROVISION_LOCK="$IDENTITY_ROOT/provision.lock"
 PROVISION_LOG="/var/log/manager/provision-events.log"
-
 SSH_LIMITS_FILE="/etc/security/limits.d/99-manager-ssh.conf"
 RESELLER_OWNERS_DIR="$MANAGER_ETC/access/owners"
 
@@ -29,10 +29,10 @@ WG_STATE_DIR="$MANAGER_ETC/wireguard"
 WG_CLIENT_DIR="$WG_STATE_DIR/clients"
 WG_CONF="$WG_DIR/wg0.conf"
 WG_NET="10.66.66"
+WG_NET6="fd66:66:66::"
 
-OVPN_NAME="manager"
 OVPN_DIR="/etc/openvpn/server"
-OVPN_CONF="$OVPN_DIR/$OVPN_NAME.conf"
+OVPN_CONF="$OVPN_DIR/manager.conf"
 OVPN_STATE_DIR="$MANAGER_ETC/openvpn"
 OVPN_EASYRSA_DIR="$OVPN_STATE_DIR/easy-rsa"
 OVPN_CLIENT_DIR="$OVPN_STATE_DIR/clients"
@@ -44,6 +44,7 @@ OVPN_CRL_FILE="$OVPN_DIR/manager-crl.pem"
 PROV_SSH_PASSWORD=""
 PROV_WG_PROFILE=""
 PROV_WG_IP=""
+PROV_WG_IP6=""
 PROV_OVPN_PROFILE=""
 
 provision_init() {
@@ -62,9 +63,7 @@ log_event() {
     "$(date -Is)" "$action" "$id" "${product:--}" "${owner:--}" "${protocols:--}" "$result" >> "$PROVISION_LOG"
 }
 
-valid_owner() {
-  [[ -z "${1:-}" || "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$ ]]
-}
+valid_owner() { [[ -z "${1:-}" || "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$ ]]; }
 
 normalize_protocols() {
   local input="${1:-}" item out="" seen=""
@@ -87,16 +86,13 @@ normalize_protocols() {
   printf '%s\n' "$out"
 }
 
-protocol_list_has() {
-  local list="$1" wanted="$2"
-  [[ ",$list," == *",$wanted,"* ]]
-}
+protocol_list_has() { [[ ",$1," == *",$2,"* ]]; }
 
 select_protocols() {
   local product="$1" requested="${2:-}" allowed selected item
   allowed="$(product_read "$product" protocols)"
   if [[ -z "$requested" ]]; then
-    if [[ "$allowed" == "*" ]]; then selected="ssh,wireguard,openvpn"; else selected="$allowed"; fi
+    [[ "$allowed" == "*" ]] && selected="ssh,wireguard,openvpn" || selected="$allowed"
   else
     selected="$(normalize_protocols "$requested")" || return 64
   fi
@@ -112,13 +108,12 @@ resource_conflict() {
   if protocol_list_has "$protocols" ssh && id "$id" >/dev/null 2>&1; then err "Usuário SSH já existe: $id"; return 65; fi
   if protocol_list_has "$protocols" wireguard && { [[ -e "$WG_CLIENT_DIR/$id.conf" ]] || [[ -e "$WG_CLIENT_DIR/$id.meta" ]]; }; then err "Cliente WireGuard já existe: $id"; return 65; fi
   if protocol_list_has "$protocols" openvpn && { [[ -e "$OVPN_CLIENT_DIR/$id.ovpn" ]] || [[ -e "$OVPN_META_DIR/$id.meta" ]]; }; then err "Cliente OpenVPN já existe: $id"; return 65; fi
-  return 0
 }
 
 preflight_protocols() {
   local protocols="$1"
   if protocol_list_has "$protocols" ssh; then
-    if ! command_exists useradd || ! command_exists chpasswd || ! command_exists userdel; then err "Ferramentas de usuário Linux ausentes"; return 69; fi
+    command_exists useradd && command_exists chpasswd && command_exists userdel || { err "Ferramentas de usuário Linux ausentes"; return 69; }
   fi
   if protocol_list_has "$protocols" wireguard; then
     command_exists wg || { err "wireguard-tools não está instalado"; return 69; }
@@ -134,8 +129,7 @@ preflight_owner() {
   local owner="$1" identity_id="$2" product="$3"
   [[ -n "$owner" ]] || return 0
   valid_owner "$owner" || { err "Proprietário inválido"; return 64; }
-  [[ -x "$RESELLER_MODULE" ]] || { err "Módulo de revenda ausente"; return 69; }
-  [[ -x "$RESELLER_PRODUCT_QUOTA_MODULE" ]] || { err "Módulo de cota de produto por revendedor ausente"; return 69; }
+  [[ -x "$RESELLER_MODULE" && -x "$RESELLER_PRODUCT_QUOTA_MODULE" ]] || { err "Módulos de revenda/cota ausentes"; return 69; }
   "$RESELLER_MODULE" --can-create "$owner" "$identity_id" >/dev/null 2>&1 || { err "Cota/estado não permite nova identidade para $owner"; return 73; }
   "$RESELLER_PRODUCT_QUOTA_MODULE" --can-assign "$owner" "$product" "$identity_id" >/dev/null 2>&1 || { err "Cota do produto $product não permite nova identidade para $owner"; return 73; }
 }
@@ -176,47 +170,63 @@ remove_ssh_resource() {
   remove_limit_entry "$user" || true
 }
 
+wg_ipv6_enabled() { [[ -f "$WG_STATE_DIR/ipv6-enabled" && "$(tr -d '[:space:]' < "$WG_STATE_DIR/ipv6-enabled")" == 1 ]]; }
+
 next_wg_octet() {
   local n
   install -d -m 0700 "$WG_CLIENT_DIR"
   for n in $(seq 2 254); do
-    if ! grep -Rqs "Address = $WG_NET.$n/32" "$WG_CLIENT_DIR" 2>/dev/null; then printf '%s\n' "$n"; return 0; fi
+    if ! grep -Rqs "Address = $WG_NET.$n/32" "$WG_CLIENT_DIR" 2>/dev/null && ! grep -Rqs "Address = $WG_NET.$n/32," "$WG_CLIENT_DIR" 2>/dev/null; then
+      printf '%s\n' "$n"
+      return 0
+    fi
   done
   return 1
 }
 
 create_wireguard_resource() {
-  local name="$1" octet ip priv pub psk server_pub endpoint port dns file
+  local name="$1" octet ip4 ip6="" address allowed priv pub psk server_pub endpoint port endpoint_port dns file
   install -d -m 0700 "$WG_CLIENT_DIR"
   file="$WG_CLIENT_DIR/$name.conf"
   [[ ! -e "$file" && ! -e "$WG_CLIENT_DIR/$name.meta" ]] || return 1
   octet="$(next_wg_octet)" || return 1
-  ip="$WG_NET.$octet"
+  ip4="$WG_NET.$octet"
+  address="$ip4/32"
+  allowed="0.0.0.0/0"
+  if wg_ipv6_enabled; then
+    ip6="$WG_NET6$octet"
+    address+=", $ip6/128"
+    allowed+=", ::/0"
+  fi
   priv="$(wg genkey)" || return 1
   pub="$(printf '%s' "$priv" | wg pubkey)" || return 1
   psk="$(wg genpsk)" || return 1
   server_pub="$(cat "$WG_DIR/server.pub")"
   endpoint="$(cat "$WG_STATE_DIR/endpoint")"
   port="$(cat "$WG_STATE_DIR/port")"
+  endpoint_port="$(format_host_port "$endpoint" "$port")"
   dns="1.1.1.1"
   if grep -q "^listen-address=$WG_NET.1$" /etc/dnsmasq.d/90-manager-adblock.conf 2>/dev/null; then dns="$WG_NET.1"; fi
+
   cat > "$file" <<EOF
 [Interface]
 PrivateKey = $priv
-Address = $ip/32
+Address = $address
 DNS = $dns
 
 [Peer]
 PublicKey = $server_pub
 PresharedKey = $psk
-Endpoint = $endpoint:$port
-AllowedIPs = 0.0.0.0/0
+Endpoint = $endpoint_port
+AllowedIPs = $allowed
 PersistentKeepalive = 25
 EOF
   chmod 0600 "$file"
   cat > "$WG_CLIENT_DIR/$name.meta" <<EOF
 name=$name
-ip=$ip
+ip=$ip4
+ip4=$ip4
+ip6=$ip6
 public_key=$pub
 EOF
   chmod 0600 "$WG_CLIENT_DIR/$name.meta"
@@ -226,13 +236,17 @@ EOF
 [Peer]
 PublicKey = $pub
 PresharedKey = $psk
-AllowedIPs = $ip/32
+AllowedIPs = $address
 # MANAGER-PEER-END $name
 EOF
   chmod 0600 "$WG_CONF"
-  if ! systemctl reload wg-quick@wg0 >/dev/null 2>&1 && ! systemctl restart wg-quick@wg0 >/dev/null 2>&1; then remove_wireguard_resource "$name"; return 1; fi
+  if ! systemctl reload wg-quick@wg0 >/dev/null 2>&1 && ! systemctl restart wg-quick@wg0 >/dev/null 2>&1; then
+    remove_wireguard_resource "$name"
+    return 1
+  fi
   PROV_WG_PROFILE="$file"
-  PROV_WG_IP="$ip"
+  PROV_WG_IP="$ip4"
+  PROV_WG_IP6="$ip6"
 }
 
 remove_wireguard_resource() {
@@ -258,7 +272,7 @@ extract_pem() {
 }
 
 create_openvpn_resource() {
-  local name="$1" endpoint port transport client_proto file
+  local name="$1" endpoint port transport client_proto file ipv6=0
   install -d -m 0700 "$OVPN_CLIENT_DIR" "$OVPN_META_DIR"
   file="$OVPN_CLIENT_DIR/$name.ovpn"
   [[ ! -e "$file" && ! -e "$OVPN_META_DIR/$name.meta" ]] || return 1
@@ -266,7 +280,8 @@ create_openvpn_resource() {
   endpoint="$(cat "$OVPN_STATE_DIR/endpoint")"
   port="$(cat "$OVPN_STATE_DIR/port")"
   transport="$(cat "$OVPN_STATE_DIR/transport")"
-  if [[ "$transport" == tcp ]]; then client_proto="tcp-client"; else client_proto="udp"; fi
+  [[ -f "$OVPN_STATE_DIR/ipv6-enabled" && "$(tr -d '[:space:]' < "$OVPN_STATE_DIR/ipv6-enabled")" == 1 ]] && ipv6=1
+  [[ "$transport" == tcp ]] && client_proto="tcp-client" || client_proto="udp"
   cat > "$file" <<EOF
 client
 dev tun
@@ -299,6 +314,7 @@ EOF
 name=$name
 created=$(date -Is)
 status=active
+ipv6=$ipv6
 EOF
   chmod 0600 "$OVPN_META_DIR/$name.meta"
   PROV_OVPN_PROFILE="$file"
@@ -327,9 +343,13 @@ rollback_fresh_identity() {
   if (( product_assigned == 1 )); then "$PRODUCT_MODULE" --unassign "$id" >/dev/null 2>&1 || true; fi
   rm -f "$(identity_file "$id")"
   [[ ! -x "$RESELLER_MODULE" ]] || "$RESELLER_MODULE" --release-identity "$id" >/dev/null 2>&1 || true
-  rm -f "$IDENTITY_ROOT/session-epochs/$id.epoch" 2>/dev/null || true
-  rm -f "/var/lib/manager/identity-usage/identities/$id.state" 2>/dev/null || true
+  rm -f "$IDENTITY_ROOT/session-epochs/$id.epoch" "/var/lib/manager/identity-usage/identities/$id.state" 2>/dev/null || true
   identity_signal_change
+}
+
+reconcile_runtime() {
+  "$PRODUCT_MODULE" --reconcile >/dev/null 2>&1 && "$POLICY_MODULE" --reconcile >/dev/null 2>&1 || return 1
+  [[ ! -x "$IPV6_GUARD_MODULE" ]] || "$IPV6_GUARD_MODULE" --reconcile >/dev/null 2>&1 || return 1
 }
 
 provision_impl() {
@@ -349,7 +369,7 @@ provision_impl() {
 
   plan_max="$(product_read "$product" max_sessions)"
   [[ "$plan_max" =~ ^[0-9]+$ ]] || plan_max=0
-  if (( plan_max > 0 )); then base_max="$plan_max"; else base_max=1; fi
+  (( plan_max > 0 )) && base_max="$plan_max" || base_max=1
 
   if ! "$CONNECTION_MODULE" --create "$id" "$owner" 0 "$base_max" "$protocols" >/dev/null; then log_event provision "$id" "$product" "$owner" "$protocols" identity-create-failed; return 70; fi
   if ! "$PRODUCT_MODULE" --assign "$id" "$product" >/dev/null; then rollback_fresh_identity "$id" 0 0 0 0; log_event provision "$id" "$product" "$owner" "$protocols" product-assign-failed; return 70; fi
@@ -362,27 +382,29 @@ provision_impl() {
     ssh_created=1
     if ! "$CONNECTION_MODULE" --bind "$id" ssh "$id" >/dev/null; then rollback_fresh_identity "$id" "$product_assigned" "$ssh_created" "$wg_created" "$ovpn_created"; log_event provision "$id" "$product" "$owner" "$protocols" ssh-bind-failed; return 70; fi
   fi
-
   if protocol_list_has "$protocols" wireguard; then
     if ! create_wireguard_resource "$id"; then rollback_fresh_identity "$id" "$product_assigned" "$ssh_created" "$wg_created" "$ovpn_created"; log_event provision "$id" "$product" "$owner" "$protocols" wireguard-create-failed; return 70; fi
     wg_created=1
     if ! "$CONNECTION_MODULE" --bind "$id" wireguard "$id" >/dev/null; then rollback_fresh_identity "$id" "$product_assigned" "$ssh_created" "$wg_created" "$ovpn_created"; log_event provision "$id" "$product" "$owner" "$protocols" wireguard-bind-failed; return 70; fi
   fi
-
   if protocol_list_has "$protocols" openvpn; then
     if ! create_openvpn_resource "$id"; then rollback_fresh_identity "$id" "$product_assigned" "$ssh_created" "$wg_created" "$ovpn_created"; log_event provision "$id" "$product" "$owner" "$protocols" openvpn-create-failed; return 70; fi
     ovpn_created=1
     if ! "$CONNECTION_MODULE" --bind "$id" openvpn "$id" >/dev/null; then rollback_fresh_identity "$id" "$product_assigned" "$ssh_created" "$wg_created" "$ovpn_created"; log_event provision "$id" "$product" "$owner" "$protocols" openvpn-bind-failed; return 70; fi
   fi
 
-  if ! "$PRODUCT_MODULE" --reconcile >/dev/null 2>&1 || ! "$POLICY_MODULE" --reconcile >/dev/null 2>&1; then rollback_fresh_identity "$id" "$product_assigned" "$ssh_created" "$wg_created" "$ovpn_created"; log_event provision "$id" "$product" "$owner" "$protocols" reconcile-failed; return 70; fi
+  if ! reconcile_runtime; then rollback_fresh_identity "$id" "$product_assigned" "$ssh_created" "$wg_created" "$ovpn_created"; log_event provision "$id" "$product" "$owner" "$protocols" reconcile-failed; return 70; fi
   if (( ssh_created == 1 )) && ! unlock_ssh_resource "$id"; then rollback_fresh_identity "$id" "$product_assigned" "$ssh_created" "$wg_created" "$ovpn_created"; log_event provision "$id" "$product" "$owner" "$protocols" ssh-unlock-failed; return 70; fi
 
   log_event provision "$id" "$product" "$owner" "$protocols" ok
   printf 'status=ok\nidentity_id=%s\nproduct_id=%s\nowner=%s\nprotocols=%s\nmax_sessions=%s\nexpires_epoch=%s\n' "$id" "$product" "$owner" "$protocols" "$effective_max" "$effective_expires"
-  if (( ssh_created == 1 )); then printf 'ssh_user=%s\nssh_password=%s\n' "$id" "$PROV_SSH_PASSWORD"; fi
-  if (( wg_created == 1 )); then printf 'wireguard_client=%s\nwireguard_ip=%s\nwireguard_profile=%s\n' "$id" "$PROV_WG_IP" "$PROV_WG_PROFILE"; fi
-  if (( ovpn_created == 1 )); then printf 'openvpn_client=%s\nopenvpn_profile=%s\n' "$id" "$PROV_OVPN_PROFILE"; fi
+  (( ssh_created == 0 )) || printf 'ssh_user=%s\nssh_password=%s\n' "$id" "$PROV_SSH_PASSWORD"
+  if (( wg_created == 1 )); then
+    printf 'wireguard_client=%s\nwireguard_ip=%s\nwireguard_ipv4=%s\nwireguard_ipv6=%s\nwireguard_profile=%s\n' "$id" "$PROV_WG_IP" "$PROV_WG_IP" "$PROV_WG_IP6" "$PROV_WG_PROFILE"
+  fi
+  if (( ovpn_created == 1 )); then
+    printf 'openvpn_client=%s\nopenvpn_ipv6=%s\nopenvpn_profile=%s\n' "$id" "$([[ -f "$OVPN_STATE_DIR/ipv6-enabled" ]] && cat "$OVPN_STATE_DIR/ipv6-enabled" || echo 0)" "$PROV_OVPN_PROFILE"
+  fi
 }
 
 clear_identity_bindings() {
@@ -400,6 +422,7 @@ revoke_impl() {
   "$CONNECTION_MODULE" --disable "$id" >/dev/null 2>&1 || failures=$((failures + 1))
   "$SESSION_MODULE" --revoke-all "$id" >/dev/null 2>&1 || true
   "$POLICY_MODULE" --reconcile >/dev/null 2>&1 || true
+  [[ ! -x "$IPV6_GUARD_MODULE" ]] || "$IPV6_GUARD_MODULE" --reconcile >/dev/null 2>&1 || true
   [[ -z "$ovpn_client" ]] || revoke_openvpn_resource "$ovpn_client" 0 || failures=$((failures + 1))
   [[ -z "$wg_client" ]] || remove_wireguard_resource "$wg_client" || failures=$((failures + 1))
   [[ -z "$ssh_user" ]] || remove_ssh_resource "$ssh_user" || failures=$((failures + 1))
@@ -407,6 +430,7 @@ revoke_impl() {
   clear_identity_bindings "$id" || failures=$((failures + 1))
   "$CONNECTION_MODULE" --disable "$id" >/dev/null 2>&1 || true
   "$POLICY_MODULE" --reconcile >/dev/null 2>&1 || true
+  [[ ! -x "$IPV6_GUARD_MODULE" ]] || "$IPV6_GUARD_MODULE" --reconcile >/dev/null 2>&1 || true
   if (( failures == 0 )) && [[ -n "$owner" && -x "$RESELLER_MODULE" ]]; then "$RESELLER_MODULE" --release-identity "$id" >/dev/null 2>&1 || failures=$((failures + 1)); fi
 
   if (( failures > 0 )); then log_event revoke "$id" "$product" "$owner" "$protocols" partial; err "Revogação terminou com $failures falha(s). A identidade permaneceu desativada."; return 70; fi
@@ -438,8 +462,10 @@ interactive_provision() {
   read -r -p "Protocolos (vazio = usar o produto): " protocols
   if output="$(flock -x "$PROVISION_LOCK" "$0" --create-unlocked "$id" "$product" "$owner" "$protocols")"; then
     ok "Provisionamento concluído"; say ""; printf '%s\n' "$output"
-    if grep -q '^ssh_password=' <<< "$output"; then say "\n${C_YELLOW}A senha SSH acima é exibida somente agora. Guarde-a em local seguro.${C_RESET}"; fi
-  else err "Provisionamento falhou; recursos criados nesta tentativa foram revertidos."; fi
+    grep -q '^ssh_password=' <<< "$output" && say "\n${C_YELLOW}A senha SSH acima é exibida somente agora. Guarde-a em local seguro.${C_RESET}"
+  else
+    err "Provisionamento falhou; recursos criados nesta tentativa foram revertidos."
+  fi
   pause
 }
 
@@ -451,7 +477,9 @@ interactive_revoke() {
   identity_exists "$id" || { err "Identidade não encontrada"; pause; return; }
   warn "SSH será removido, WireGuard será revogado e o certificado OpenVPN será revogado quando vinculados."
   warn "A identidade lógica permanece desativada para histórico/auditoria e sua vaga de revenda é liberada após revogação completa."
-  if confirm "Revogar definitivamente os acessos de $id?"; then if flock -x "$PROVISION_LOCK" "$0" --revoke-unlocked "$id"; then ok "Acessos revogados"; fi; fi
+  if confirm "Revogar definitivamente os acessos de $id?"; then
+    flock -x "$PROVISION_LOCK" "$0" --revoke-unlocked "$id" && ok "Acessos revogados"
+  fi
   pause
 }
 
