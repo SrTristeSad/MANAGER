@@ -4,7 +4,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 > O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva capacidades úteis, substitui implementações inseguras/obsoletas e prepara uma arquitetura própria para Automation v2, Telegram e Modo Colmeia.
 
-Versão atual: **0.6.2**.
+Versão atual: **0.6.3**.
 
 ## Princípios
 
@@ -15,38 +15,38 @@ Versão atual: **0.6.2**.
 - manter módulos opcionais realmente opcionais;
 - criar backup/rollback antes de mudanças críticas;
 - preservar configurações que não pertencem ao MANAGER sempre que possível;
-- compatibilidade com o legado não significa copiar fragilidades do legado;
-- integrações futuras devem usar operações estruturadas, nunca shell remoto arbitrário.
+- compatibilidade com legado não significa copiar fragilidades do legado;
+- integrações futuras usam operações estruturadas, nunca shell remoto arbitrário.
 
 ## Recursos atuais
 
 ### Servidor, SSH e VPN
 
-- informações do sistema: SO, kernel, uptime, memória, disco, carga, IPs e serviços;
-- usuários SSH: criar/remover, senha, validade, limite simultâneo, bloqueio, sessões e desconexão;
-- usuários teste com duração em minutos e remoção automática por `systemd timer`;
-- listagem e limpeza confirmada de expirados;
-- banner SSH por `sshd_config.d`, validado com `sshd -t`;
-- WireGuard com servidor `wg0`, clientes, revogação, QR Code e NAT específico;
-- OpenVPN com PKI Easy-RSA, clientes `.ovpn`, CRL e UDP/TCP;
+- informações do sistema, kernel, uptime, memória, disco, carga, IPs e serviços;
+- usuários SSH: criar/remover, senha, validade, limite simultâneo, bloqueio e sessões;
+- contas teste com duração em minutos e remoção automática;
+- limpeza confirmada de expirados;
+- banner SSH por `sshd_config.d`;
+- WireGuard com servidor, clientes, revogação, QR Code e NAT específico;
+- OpenVPN com Easy-RSA, perfis `.ovpn`, CRL e UDP/TCP;
 - DNS Ad Block com dnsmasq, whitelist/blacklist e atualização diária;
+- Squid privado, proxy TCP, WebSocket e TLS opcionais;
 - hosts de proxy gerenciados;
-- Squid privado, proxy TCP, WebSocket e TLS opcionais.
+- TLS/Let's Encrypt;
+- firewall, Fail2ban e hardening SSH.
 
 ### Contas e revenda
 
 - revendedor e subrevendedor;
-- hierarquia e bloqueio/reativação;
-- cotas;
+- hierarquia, bloqueio/reativação e cotas;
 - propriedade de contas SSH;
-- cota do revendedor incluindo contas dos seus subrevendedores;
-- criação de usuário SSH diretamente vinculada ao proprietário;
-- validação de cota antes e durante a criação para evitar corrida;
-- exportação/restauração segura de usuários SSH;
+- criação de usuário diretamente vinculada ao proprietário;
+- validação de cota antes e durante a criação;
+- exportação/restauração segura de usuários;
 - detector de estruturas conhecidas do SSHPlus antigo;
-- monitor moderno de sessões SSH com encerramento seletivo por TTY.
+- monitor de sessões SSH com encerramento seletivo por TTY.
 
-O estado de revenda fica em:
+Estado de revenda:
 
 ```text
 /etc/manager/access/
@@ -55,8 +55,6 @@ O estado de revenda fica em:
 ## Connection Engine
 
 A partir da série 0.6, a identidade lógica deixa de depender do `/etc/passwd`.
-
-Exemplo:
 
 ```text
 maria
@@ -70,25 +68,19 @@ maria
 └── openvpn_client = maria
 ```
 
-Uma identidade pode existir sem ser necessariamente um usuário Linux e pode agrupar diferentes recursos de conexão.
-
 Estado:
 
 ```text
 /etc/manager/connection/identities/
 ```
 
-As identidades não duplicam senhas, chaves privadas WireGuard ou certificados OpenVPN. Elas apenas vinculam a política aos recursos técnicos existentes.
+As identidades não duplicam senhas, chaves privadas WireGuard nem certificados OpenVPN. Elas vinculam política e recursos técnicos a uma única conta lógica.
 
-Documentação detalhada: [`docs/CONNECTION_ENGINE.md`](docs/CONNECTION_ENGINE.md).
+Documentação: [`docs/CONNECTION_ENGINE.md`](docs/CONNECTION_ENGINE.md).
 
-## Policy Enforcement — 0.6.1+
+## Policy Engine
 
-A política da identidade é aplicada aos protocolos vinculados.
-
-### Estado e expiração
-
-O estado efetivo pode ser:
+O estado efetivo de uma identidade pode ser:
 
 ```text
 active
@@ -96,7 +88,7 @@ disabled
 expired
 ```
 
-Uma identidade `disabled` ou `expired` deixa de ter seus recursos vinculados disponíveis conforme o protocolo.
+O Policy Engine aplica esse estado aos recursos reais.
 
 ### SSH
 
@@ -107,68 +99,41 @@ O MANAGER gera somente:
 /etc/security/limits.d/98-manager-identity.conf
 ```
 
-O primeiro usa `DenyUsers` para identidades inativas, cobrindo autenticação por senha e chave pública. O segundo aplica o limite local disponível para SSH.
-
-Antes de recarregar o OpenSSH, o MANAGER executa `sshd -t` e reverte a alteração se a configuração for recusada.
-
-Sessões SSH existentes de uma identidade que se torna inativa são encerradas seletivamente por TTY. `root` não é alvo dessa política.
+Identidades inativas são bloqueadas com `DenyUsers`. Antes de reload, `sshd -t` valida a configuração.
 
 ### WireGuard
 
-Uma identidade inativa tem o peer removido da interface `wg0` em runtime.
-
-O MANAGER **não apaga**:
-
-```text
-chave privada do cliente
-chave pública
-PSK
-arquivo de configuração
-registro do peer no estado persistente
-```
-
-Ao reativar a identidade, o peer pode ser reconstruído no runtime usando as credenciais existentes.
+Identidade inativa pode ter somente seu peer retirado do runtime de `wg0`, preservando chaves e arquivos de configuração.
 
 ### OpenVPN
 
-O OpenVPN recebe um `client-connect` gerenciado pelo MANAGER para consultar a política antes de aceitar uma nova conexão de um cliente vinculado.
+Uma identidade inativa não precisa ter o certificado revogado. O MANAGER consegue bloquear o recurso de forma reversível e preservar credenciais para futura reativação.
 
-Uma identidade desativada não tem o certificado revogado apenas por causa do bloqueio temporário. Se já estiver conectada, o MANAGER pode bloquear especificamente o tráfego daquele IP virtual até a política voltar a permitir acesso.
-
-Quando a instalação do hook exigiria reiniciar um OpenVPN com clientes ativos, o restart é adiado para não derrubar sessões válidas somente para instalar a integração.
-
-## Sessões observadas por identidade
-
-Visão consolidada:
+## Sessões observadas
 
 ```bash
 manager --identity-sessions
-```
-
-Uma identidade:
-
-```bash
 manager --identity-sessions maria
 ```
 
-Exemplo conceitual:
+Exemplo:
 
 ```text
 maria  active  ssh=0  wg=1  ovpn=0  total=1  max=1
 ```
 
-Essa visão descreve **conexões reais observadas** em SSH, WireGuard e OpenVPN.
+Essa visão responde: **o que os protocolos realmente estão vendo?**
 
-## Session / Lease Engine — 0.6.2
+## Session / Lease Engine
 
-A 0.6.2 adiciona uma segunda visão: **quem possui uma vaga de sessão autorizada**.
+A 0.6.2 introduziu a autoridade local de vagas.
 
 ```bash
 manager --leases
 manager --leases maria
 ```
 
-Cada lease contém:
+Uma lease contém:
 
 ```text
 session_id
@@ -182,85 +147,138 @@ heartbeat_epoch
 expires_epoch
 ```
 
-O `session_id` é gerado com 128 bits aleatórios do RNG do sistema.
-
-### Runtime e estado durável
-
 Leases ativas ficam somente em:
 
 ```text
 /run/manager-session-leases/active/
 ```
 
-Elas não entram em backup e não reaparecem após reboot.
-
-O fencing token persistente fica em:
+O fencing persistente fica em:
 
 ```text
-/etc/manager/connection/session-epochs/<identity>.epoch
+/etc/manager/connection/session-epochs/<id>.epoch
 ```
 
-Identidades e epochs são preservados por update, rollback e uninstall normal. `manager-uninstall --purge` continua sendo a operação explícita para remover esse estado.
+O Session Engine possui:
 
-### TTL e heartbeat
+- aquisição atômica local;
+- `max_sessions` sob lock;
+- retry idempotente;
+- TTL;
+- heartbeat;
+- release;
+- troca de sessão;
+- `session_epoch`;
+- fencing de geração antiga;
+- revogação automática quando política/recurso deixa de ser válido.
 
-TTL padrão:
+Documentação: [`docs/SESSION_ENGINE.md`](docs/SESSION_ENGINE.md).
+
+## Protocol Lease Bridge — 0.6.3
+
+Na 0.6.3 as leases passam a representar conexões reais, não apenas chamadas internas.
 
 ```text
-90 segundos
+SSH / WireGuard / OpenVPN
+            ↓
+   Protocol Lease Bridge
+            ↓
+       Session Engine
 ```
 
-Uma aplicação renova a autoridade com heartbeat. Se morrer sem executar `release`, a lease expira e a vaga volta automaticamente.
-
-### Idempotência
-
-Repetir `acquire` com a mesma combinação:
+Módulo:
 
 ```text
-identity + protocol + resource + device_id + session_epoch
+/opt/manager/modules/protocol_leases.sh
 ```
 
-renova a lease existente e devolve o mesmo `session_id`, em vez de consumir outra vaga.
+### SSH → lease
 
-### `max_sessions`
-
-O Lease Engine aplica `max_sessions` sob lock local. Assim, com:
+O MANAGER adiciona um bloco próprio de sessão em `/etc/pam.d/sshd` e usa:
 
 ```text
+/usr/local/libexec/manager-ssh-lease-hook
+```
+
+No `open_session`, uma conta vinculada precisa adquirir uma lease. No `close_session`, a reserva é liberada.
+
+O wrapper é fail-safe para não converter um rollback/recuperação incompleto em lockout do SSH administrativo.
+
+O reconciliador também adota sessões já abertas observadas por `who`.
+
+### OpenVPN → lease
+
+O OpenVPN não recebe shell root nem `sudo` amplo.
+
+O hook:
+
+```text
+/usr/local/libexec/manager-openvpn-lease-hook
+```
+
+trabalha com uma fila runtime:
+
+```text
+/run/manager-protocol-leases/openvpn-requests/
+/run/manager-protocol-leases/openvpn-responses/
+```
+
+Um processador privilegiado e allowlisted é acionado por:
+
+```text
+manager-openvpn-lease-queue.path
+manager-openvpn-lease-queue.service
+```
+
+Fluxo:
+
+```text
+client-connect
+      ↓
+hook sem root
+      ↓
+pedido validado
+      ↓
+Session Engine
+      ↓
+ALLOW / DENY
+```
+
+`client-disconnect` libera a reserva.
+
+### WireGuard → lease
+
+WireGuard não tem evento de login. O bridge usa o handshake recente como sinal de atividade.
+
+Um peer gerenciado só mantém tráfego encaminhado quando possui lease válida. Sem autorização, o MANAGER aplica bloqueio específico ao IP daquele peer; nunca há flush global do firewall. Se a regra específica não puder ser aplicada, o fallback remove somente aquele peer do runtime.
+
+### Heartbeat
+
+```text
+manager-protocol-leases.timer
+manager-protocol-leases.service
+```
+
+O reconciliador compara continuamente conexões reais e leases, renova as que continuam vivas e libera as que desapareceram.
+
+## O limite que prepara a Colmeia
+
+Hoje a autoridade de lease ainda é local na VPS. O modelo, porém, já representa o comportamento planejado para a Colmeia:
+
+```text
+Maria
+Plan Global
+allowed_nodes = BR-01, US-01, DE-01, FR-01, ...
 max_sessions = 1
 ```
 
-uma segunda lease independente é recusada enquanto a primeira estiver válida.
+Ela pode ter vários destinos disponíveis, mas apenas uma sessão autorizada se o plano permitir uma só.
 
-O Policy Engine continua mantendo as proteções nos protocolos reais. Na 0.6.2 os dois mecanismos coexistem para permitir migração sem quebrar clientes legados.
-
-### Switch e fencing
-
-`--switch` é usado quando uma identidade precisa trocar de sessão/destino:
-
-1. avança o `session_epoch`;
-2. revoga as leases da geração anterior;
-3. cria a nova lease;
-4. qualquer processo atrasado com o epoch antigo não consegue renovar autoridade.
-
-Esse é o mecanismo que será levado para o hub da Colmeia.
-
-### Mudança de política
-
-Se uma identidade com lease ativa:
-
-- for desabilitada;
-- expirar;
-- perder o protocolo usado;
-- perder/trocar o recurso vinculado;
-
-as leases incompatíveis são revogadas e o epoch avança. Reativar a conta depois não ressuscita uma autorização antiga.
-
-Documentação detalhada: [`docs/SESSION_ENGINE.md`](docs/SESSION_ENGINE.md).
+No futuro, o Hub substituirá a decisão local por um lock global sem mudar os conceitos de `session_id`, TTL, heartbeat e `session_epoch`.
 
 ## Reconciliação automática
 
-Policy Enforcement:
+Policy Engine:
 
 ```text
 manager-policy-reconcile.path
@@ -276,103 +294,13 @@ manager-session-cleanup.timer
 manager-session-cleanup.service
 ```
 
-Os watchers reagem às mudanças de identidade e os timers cobrem expiração, heartbeat, handshakes e mudanças de sessão.
-
-Reconciliação manual:
-
-```bash
-/opt/manager/modules/policy_engine.sh --reconcile
-/opt/manager/modules/session_engine.sh --reconcile
-```
-
-## Contratos de lease para Automation v2
-
-Aquisição:
-
-```bash
-/opt/manager/modules/session_engine.sh \
-  --acquire maria wireguard maria celular-maria 90
-```
-
-Heartbeat:
-
-```bash
-/opt/manager/modules/session_engine.sh \
-  --heartbeat <session_id> <epoch> 90
-```
-
-Release:
-
-```bash
-/opt/manager/modules/session_engine.sh \
-  --release <session_id> <epoch>
-```
-
-Troca com fencing:
-
-```bash
-/opt/manager/modules/session_engine.sh \
-  --switch maria wireguard maria celular-maria 90
-```
-
-Revogação administrativa:
-
-```bash
-/opt/manager/modules/session_engine.sh --revoke-all maria admin
-```
-
-Códigos iniciais do contrato:
+Protocol Lease Bridge:
 
 ```text
-64  argumento/política inválida
-66  identidade/recurso/lease inexistente
-67  protocolo/recurso não autorizado
-68  identidade desabilitada ou expirada
-69  max_sessions atingido
-70  fencing/session_epoch rejeitado
-```
-
-## Hosts de proxy
-
-Lista moderna:
-
-```text
-/etc/manager/proxy/hosts.txt
-```
-
-O módulo permite listar, adicionar, remover e importar domínios válidos de um `payload.txt` antigo sem copiar cegamente configurações legadas.
-
-```bash
-manager --proxy-hosts
-```
-
-## Proxies e túneis
-
-Estado:
-
-```text
-/etc/manager/proxy/
-```
-
-Disponíveis:
-
-- Squid privado em configuração própria do MANAGER;
-- TCP por `socat` para backend local;
-- WebSocket por `websockify` para backend local;
-- TLS por `stunnel4` para backend local.
-
-O Squid do MANAGER não nasce como proxy aberto. TCP/WebSocket/TLS encaminham somente para `127.0.0.1:<porta>` e não liberam UFW automaticamente.
-
-Reconciliação:
-
-```bash
-/opt/manager/modules/proxies.sh --reconcile
-```
-
-Status:
-
-```bash
-manager --proxy-status
+manager-protocol-leases.timer
+manager-protocol-leases.service
+manager-openvpn-lease-queue.path
+manager-openvpn-lease-queue.service
 ```
 
 ## Backup e migração
@@ -383,7 +311,7 @@ Backups de configuração ficam em:
 /var/backups/manager/
 ```
 
-O backup inclui, quando presentes:
+Incluem, quando presentes:
 
 ```text
 /etc/manager/access
@@ -394,15 +322,9 @@ DNS/TLS/banner/performance
 configurações próprias do MANAGER
 ```
 
-Os arquivos são restritos a root e acompanhados de SHA-256.
+Leases runtime **não** entram no backup. `session_epoch` e identidades persistem.
 
-A exportação de usuários Linux fica separada em:
-
-```text
-/var/backups/manager/users/
-```
-
-Ela preserva hash de autenticação existente, validade, shell, limite e proprietário, sem guardar senha em texto claro e sem substituir `/etc/passwd`, `/etc/shadow`, `/etc/group` ou `/etc/gshadow` inteiros durante restauração.
+A exportação de usuários Linux é separada e não guarda senha em texto claro nem substitui `/etc/passwd`/`/etc/shadow` inteiros durante restauração.
 
 O detector de legado reconhece estruturas como:
 
@@ -412,116 +334,51 @@ O detector de legado reconhece estruturas como:
 /root/backup.vps
 ```
 
-A conversão específica do SSHPlus continuará sendo assistida/controlada; o MANAGER não restaura cegamente arquivos de sistema antigos.
-
 ## Segurança
 
-- hardening OpenSSH por `sshd_config.d`;
+- hardening OpenSSH por drop-in;
 - Fail2ban;
 - UFW com proteção da porta SSH detectada;
 - atualizações automáticas de segurança;
-- TLS/Let's Encrypt via Certbot isolado;
-- chaves públicas SSH com fingerprints;
+- TLS/Let's Encrypt;
+- fingerprints de chaves públicas;
 - Squid sem `http_access allow all`;
 - nada de flush global de firewall;
 - credenciais VPN com permissões restritas;
-- Connection Engine root-only;
-- leases runtime em diretório root-only;
-- alterações SSH validadas antes de reload;
-- atualização baixada para arquivo temporário e validada com `bash -n`.
-
-## Monitoramento e manutenção
-
-- health check;
-- diagnóstico de rede/DNS/SSH/NTP/recursos;
-- tráfego/conexões e vnStat opcional;
-- monitor SSH;
-- logs;
-- backup/restore;
-- BBR + fq reversível;
-- manutenção APT/NTP/journal;
-- serviços;
-- Speedtest/ping com histórico;
-- self-update;
-- rollback;
-- uninstall conservador e `--purge` separado.
+- estado de identidade root-only;
+- OpenVPN não recebe acesso root ao Lease Engine;
+- hooks externos são removidos antes de uninstall/rollback;
+- self-update baixa e valida o instalador antes da execução.
 
 ## CLI
 
 ```text
-manager --health                  health check (0=OK, 1=aviso, 2=crítico)
+manager --health                  health check
 manager --status                  status dos serviços
 manager --expired                 contas SSH expiradas
 manager --ssh-sessions            sessões SSH
 manager --proxy-status            proxies/túneis
-manager --proxy-hosts             hosts permitidos no proxy
-manager --identities              identidades do Connection Engine
-manager --identity ID             detalhes de uma identidade
-manager --identity-sessions [ID]  sessões observadas por identidade
-manager --leases [ID]             leases/reservas locais
+manager --proxy-hosts             hosts do proxy
+manager --identities              identidades
+manager --identity ID             detalhes da identidade
+manager --identity-sessions [ID]  sessões reais observadas
+manager --leases [ID]             leases autorizadas
 manager --diagnostics             diagnóstico
 manager --version                 versão
 manager --help                    ajuda
 ```
 
-## Menu principal
-
-```text
-SERVIDOR E VPN
- 1) Informações do sistema
- 2) Usuários SSH
- 3) WireGuard VPN
- 4) OpenVPN
- 5) Bloqueio de anúncios DNS
-19) Banner SSH
-25) Hosts do proxy
-26) Proxies e túneis
-
-SEGURANÇA
- 6) Segurança / hardening SSH
- 7) Firewall
- 8) Fail2ban
- 9) TLS / Let's Encrypt
-18) Chaves públicas SSH
-
-CONTAS E REVENDA
-22) Monitor de sessões SSH
-23) Backup / migração de usuários
-24) Revendedores, subrevendedores e cotas
-27) Criar conta vinculada a revendedor
-28) Connection Engine / identidades
-29) Sessões observadas / reconciliar políticas
-30) Session / Lease Engine
-
-MONITORAMENTO E MANUTENÇÃO
-10) Tráfego e conexões
-11) Diagnóstico
-12) Backup e rollback
-13) Desempenho / BBR
-14) Logs
-15) Assistente / perfis
-16) Saúde do servidor
-17) Manutenção do sistema
-20) Serviços
-21) Speedtest / latência
-
-90) Atualizar MANAGER
- 0) Sair
-```
-
 ## Sistemas suportados
-
-Nesta implementação:
 
 - Ubuntu 22.04 ou superior;
 - Debian 12 ou superior;
-- `systemd` e `apt` são necessários.
+- `systemd` e `apt`.
 
-A matriz de testes será ampliada para as distribuições modernas previstas no roadmap.
+A matriz de CI será ampliada no roadmap para cobrir diretamente mais versões modernas.
 
 ## Instalação
 
-Evite executar instalador remoto diretamente por pipe. Baixe, valide e execute:
+Evite executar instalador remoto por pipe:
 
 ```bash
 sudo -i
@@ -547,7 +404,7 @@ menu
 
 ## Atualização, rollback e remoção
 
-Atualização pelo menu:
+Atualização:
 
 ```text
 90) Atualizar MANAGER
@@ -559,27 +416,23 @@ Rollback:
 manager-rollback
 ```
 
-Desinstalar o código preservando estado/configuração:
+O rollback desmonta hooks do Protocol Lease Bridge e enforcement antes da troca de código e reaplica somente os componentes disponíveis na versão restaurada.
+
+Desinstalar preservando estado:
 
 ```bash
 manager-uninstall
 ```
 
-O uninstall normal:
+O bridge é desanexado antes do Session Engine. Hooks PAM/OpenVPN, unidades runtime e leases temporárias são retirados; identidades e `session_epoch` ficam preservados.
 
-- descarta leases runtime;
-- desanexa hooks de policy/session que dependem de `/opt/manager`;
-- preserva identidades;
-- preserva `session_epoch`;
-- protege o estado durável do Connection Engine com snapshot defensivo durante a operação.
-
-Remover também o estado próprio do MANAGER:
+Purge explícito:
 
 ```bash
 manager-uninstall --purge
 ```
 
-O purge continua preservando pacotes do sistema, certificados Let's Encrypt, backups e regras UFW que não devem ser apagados implicitamente.
+Pacotes do sistema, certificados Let's Encrypt, backups, grupos potencialmente pré-existentes e regras UFW alheias ao MANAGER continuam sendo tratados conservadoramente.
 
 ## Roadmap
 
@@ -587,7 +440,7 @@ Plano detalhado: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ```text
 0.5.x  paridade SSHPlus útil
-0.6.x  Connection Engine, políticas, sessões e produtos
+0.6.x  Connection Engine, políticas, leases, produtos e ACL
 0.7.0  Legacy v1 + Automation v2
 0.8.0  Modo Colmeia
 0.9.0  Telegram Bot + Mini App
@@ -597,72 +450,44 @@ Plano detalhado: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ### Legacy v1
 
-Será **uma única conexão de compatibilidade** com o ecossistema `syncpainel`, não um adaptador diferente para cada versão de painel.
-
-Em instalação nova ficará desligado por padrão e poderá ser ativado/desativado completamente.
+Uma única camada de compatibilidade com o ecossistema `syncpainel`, desligada por padrão em instalações novas. Compatibilidade de protocolo não significa restaurar senha em texto claro, `chmod 777` ou flush destrutivo de firewall.
 
 ### Automation v2
 
-Será o protocolo novo, com ações estruturadas, RBAC, auditoria, idempotência, autenticação criptográfica, anti-replay e interface privilegiada controlada. Integrações não receberão shell arbitrário.
-
-O Session Engine da 0.6.2 já fornece a semântica local de `session.acquire`, heartbeat, release, switch e fencing que poderá ser exposta pelo futuro `managerd`.
+Ações estruturadas, RBAC, auditoria, idempotência, autenticação criptográfica, anti-replay e interface privilegiada controlada. Sem shell arbitrário para integrações.
 
 ### Colmeia
-
-A Colmeia poderá reunir VPS no mesmo datacenter, mesma cidade, mesmo país ou em vários países.
 
 Planejado:
 
 - identidade criptográfica por nó;
 - regiões/pools;
-- weighted load balancing;
-- capacidade por nó;
+- capacidade e health por nó;
+- drain/failover;
 - sticky sessions;
-- drain;
-- health/heartbeat;
-- failover;
 - sessão global por identidade/plano;
-- lease atômico e fencing;
-- comunicação autenticada/criptografada.
-
-Assim uma identidade poderá, por exemplo, ter acesso a dez servidores mas continuar com `max_sessions_global=1`.
-
-Na 0.6.2 a autoridade de lease ainda vive na VPS local. Na Colmeia, essa autoridade será movida para o hub para impedir que duas VPS concedam simultaneamente a mesma vaga global.
+- lease atômico e fencing global;
+- comunicação autenticada/criptografada;
+- nós iniciando conexão de controle para fora, sem abrir shell administrativo público.
 
 ### Telegram
 
-Administração remota futura por Telegram Bot + Telegram Mini App, sem painel web administrativo convencional. Identidade e autorização serão verificadas no backend.
+Administração futura por Bot + Mini App, sem painel web administrativo convencional obrigatório.
 
 ## Testes
 
-O CI executa:
+O CI cobre:
 
 - `bash -n`;
 - ShellCheck;
-- regressões contra padrões destrutivos;
+- padrões destrutivos de firewall/permissão;
 - regressão contra Squid aberto;
-- política segura de fontes do instalador;
+- política segura de fonte do instalador;
 - instalação/update/rollback/uninstall;
-- smoke tests das CLIs;
-- Connection Engine CRUD básico;
-- sessões observadas por identidade;
-- bloqueio e reativação de identidade SSH vinculada;
-- criação e listagem de leases;
-- `max_sessions=1`;
-- retry idempotente;
-- heartbeat e release;
-- TTL/expiração;
-- switch + fencing de epoch antigo;
-- revogação de lease por mudança de política;
-- persistência de identidades/epochs através de update, rollback e uninstall;
-- instalação e remoção das unidades de enforcement e lease.
-
-Roteiro adicional para VPS real:
-
-```text
-docs/TESTING.md
-```
+- Connection Engine e Policy Engine;
+- Session Engine: acquire, retry, heartbeat, TTL, switch e fencing;
+- Protocol Lease Bridge: instalação de hooks/unidades, admissão de sessão, limite `1/1`, release e cleanup de lifecycle.
 
 ## Origem
 
-O SSHPlus Manager original foi desenvolvido por **@crazy_vpn** e deu origem a vários forks comunitários. O MANAGER preserva a ideia de administração simples por terminal, mas evolui para uma arquitetura própria de identidade, automação e operação multi-servidor.
+O SSHPlus Manager original foi desenvolvido por **@crazy_vpn** e deu origem a vários forks comunitários. O MANAGER preserva a ideia de administração simples por terminal, mas evolui para uma arquitetura própria de identidade, automação, leases e operação multi-servidor.
