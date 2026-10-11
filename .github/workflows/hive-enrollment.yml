@@ -1,0 +1,126 @@
+name: Hive Node Enrollment
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hive-enrollment:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo test -x /opt/manager/modules/hive_identity.sh
+          sudo test -f /etc/manager/hive/node/node.key
+          test "$(sudo stat -c '%a' /etc/manager/hive/node/node.key)" = 600
+          sudo manager hive status | grep -q '^contract=manager-hive-node-identity-v1$'
+
+      - name: Initialize controller identity
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager hive controller init > /tmp/controller-init.log
+          grep -q '^controller_id=controller-' /tmp/controller-init.log
+          grep -q '^controller_fingerprint=SHA256:[a-f0-9]\{64\}$' /tmp/controller-init.log
+          test "$(sudo stat -c '%a' /etc/manager/hive/controller/controller.key)" = 600
+          sudo manager hive controller status | grep -q '^controller_initialized=1$'
+
+      - name: Create a second node and signed enrollment request
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo rm -rf /tmp/hive-node-b
+          sudo mkdir -m 700 /tmp/hive-node-b
+          sudo env MANAGER_ETC=/tmp/hive-node-b /opt/manager/modules/node_metadata.sh --init >/dev/null
+          sudo env MANAGER_ETC=/tmp/hive-node-b /opt/manager/modules/node_metadata.sh --set country BR
+          sudo env MANAGER_ETC=/tmp/hive-node-b /opt/manager/modules/node_metadata.sh --set region BR-SP
+          sudo env MANAGER_ETC=/tmp/hive-node-b /opt/manager/modules/node_metadata.sh --set pool BR-PREMIUM
+          sudo env MANAGER_ETC=/tmp/hive-node-b /opt/manager/modules/hive_identity.sh --request /tmp/node-b.request.json > /tmp/request.log
+          grep -q '^node_id=node-' /tmp/request.log
+          sudo test -f /tmp/node-b.request.json
+          test "$(sudo stat -c '%a' /tmp/node-b.request.json)" = 600
+          if sudo grep -q 'PRIVATE KEY' /tmp/node-b.request.json; then exit 1; fi
+          sudo grep -q 'BEGIN PUBLIC KEY' /tmp/node-b.request.json
+
+      - name: Reject a tampered node request
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo python3 - <<'PY'
+          import json
+          src='/tmp/node-b.request.json'; dst='/tmp/node-b.tampered.json'
+          with open(src) as f: data=json.load(f)
+          data['metadata']['region']='EVIL'
+          with open(dst,'w') as f: json.dump(data,f,separators=(',',':'),sort_keys=True)
+          PY
+          sudo chmod 600 /tmp/node-b.tampered.json
+          if sudo manager hive controller approve /tmp/node-b.tampered.json /tmp/tampered.bundle.json; then exit 1; fi
+          sudo test ! -e /tmp/tampered.bundle.json
+
+      - name: Approve node and pin controller fingerprint
+        shell: bash
+        run: |
+          set -euxo pipefail
+          fp="$(sudo manager hive controller fingerprint)"
+          sudo manager hive controller approve /tmp/node-b.request.json /tmp/node-b.bundle.json > /tmp/approve.log
+          node_id="$(awk -F= '$1=="node_id" {print $2}' /tmp/approve.log)"
+          test -n "$node_id"
+          grep -q '^node_epoch=1$' /tmp/approve.log
+          sudo manager hive controller show "$node_id" > /tmp/controller-node.log
+          grep -q '^enabled=1$' /tmp/controller-node.log
+          grep -q '^node_epoch=1$' /tmp/controller-node.log
+          if sudo env MANAGER_ETC=/tmp/hive-node-b /opt/manager/modules/hive_identity.sh --accept /tmp/node-b.bundle.json SHA256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; then exit 1; fi
+          sudo env MANAGER_ETC=/tmp/hive-node-b /opt/manager/modules/hive_identity.sh --accept /tmp/node-b.bundle.json "$fp" > /tmp/accept.log
+          grep -q '^enrolled=1$' /tmp/accept.log
+          grep -q '^node_epoch=1$' /tmp/accept.log
+          sudo env MANAGER_ETC=/tmp/hive-node-b /opt/manager/modules/hive_identity.sh --status | grep -q '^enrolled=1$'
+
+      - name: Revoke and require explicit reenrollment
+        shell: bash
+        run: |
+          set -euxo pipefail
+          fp="$(sudo manager hive controller fingerprint)"
+          node_id="$(sudo env MANAGER_ETC=/tmp/hive-node-b /opt/manager/modules/hive_identity.sh --status | awk -F= '$1=="node_id" {print $2}')"
+          sudo manager hive controller revoke "$node_id" compromised > /tmp/revoke.log
+          grep -q '^node_epoch=2$' /tmp/revoke.log
+          sudo manager hive controller show "$node_id" | grep -q '^enabled=0$'
+          if sudo manager hive controller approve /tmp/node-b.request.json /tmp/node-b.after-revoke.bundle.json; then exit 1; fi
+          sudo manager hive controller reenroll /tmp/node-b.request.json /tmp/node-b.reenroll.bundle.json > /tmp/reenroll.log
+          grep -q '^node_epoch=3$' /tmp/reenroll.log
+          sudo env MANAGER_ETC=/tmp/hive-node-b /opt/manager/modules/hive_identity.sh --accept /tmp/node-b.reenroll.bundle.json "$fp" > /tmp/reaccept.log
+          grep -q '^node_epoch=3$' /tmp/reaccept.log
+          if sudo env MANAGER_ETC=/tmp/hive-node-b /opt/manager/modules/hive_identity.sh --accept /tmp/node-b.bundle.json "$fp"; then exit 1; fi
+
+      - name: Preserve Hive trust state through uninstall and reinstall
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          controller_before="$(sudo sha256sum /etc/manager/hive/controller/controller.key | awk '{print $1}')"
+          node_before="$(sudo sha256sum /etc/manager/hive/node/node.key | awk '{print $1}')"
+          sudo /opt/manager/uninstall.sh
+          sudo test -f /etc/manager/hive/controller/controller.key
+          sudo test -f /etc/manager/hive/node/node.key
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          controller_after="$(sudo sha256sum /etc/manager/hive/controller/controller.key | awk '{print $1}')"
+          node_after="$(sudo sha256sum /etc/manager/hive/node/node.key | awk '{print $1}')"
+          test "$controller_before" = "$controller_after"
+          test "$node_before" = "$node_after"
+          sudo manager hive controller status | grep -q '^controller_initialized=1$'
+
+      - name: Purge removes server-side Hive trust state
+        shell: bash
+        run: |
+          set -euxo pipefail
+          printf 'PURGAR\n' | sudo /opt/manager/uninstall.sh --purge
+          sudo test ! -e /etc/manager/hive
