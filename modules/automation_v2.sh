@@ -70,8 +70,6 @@ install_v2() {
   write_service
   systemctl enable --now manager-automation-v2.service >/dev/null
 
-  # Type=simple pode ficar active antes do bind() do processo Python. O install
-  # só termina quando a interface realmente existe e está root-only.
   for _ in {1..50}; do
     if [[ -S "$SOCKET_FILE" ]]; then
       socket_mode="$(stat -c '%a' "$SOCKET_FILE" 2>/dev/null || true)"
@@ -116,7 +114,7 @@ show_status() {
     "$SOCKET_FILE" "$socket_mode" "$service_state" "$socket_state"
   printf 'remote_transport=0\narbitrary_shell=0\n'
   printf 'rbac=0\ncryptographic_auth=0\nanti_replay=0\nrate_limit=0\n'
-  printf 'idempotency=1\naudit=1\n'
+  printf 'idempotency=1\naudit=1\nsecret_replay=0\n'
 }
 
 serve_v2() {
@@ -146,6 +144,7 @@ MAX_REQUEST = 65536
 IDEMPOTENCY_TTL = 7 * 24 * 60 * 60
 REQUEST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+SENSITIVE_RE = re.compile(r"(?i)(password|passwd|secret|private[_-]?key|credential|token)")
 ACTIONS = {
     "system.describe",
     "node.usage",
@@ -256,6 +255,43 @@ def cache_path(request_id):
     return os.path.join(IDEMPOTENCY_DIR, request_id + ".json")
 
 
+def sanitize_stdout(text):
+    kept = []
+    for raw in text.splitlines():
+        if "=" in raw:
+            key = raw.split("=", 1)[0]
+            if SENSITIVE_RE.search(key):
+                continue
+        kept.append(raw)
+    if not kept:
+        return ""
+    suffix = "\n" if text.endswith("\n") else ""
+    return "\n".join(kept) + suffix
+
+
+def cacheable_response(response):
+    safe = json.loads(json.dumps(response))
+    redacted = False
+    result = safe.get("result")
+    if isinstance(result, dict):
+        data = result.get("data")
+        if isinstance(data, dict):
+            for key in list(data):
+                if SENSITIVE_RE.search(key):
+                    data.pop(key, None)
+                    redacted = True
+        stdout = result.get("stdout")
+        if isinstance(stdout, str):
+            sanitized = sanitize_stdout(stdout)
+            if sanitized != stdout:
+                redacted = True
+                result["stdout"] = sanitized
+    if redacted:
+        safe["secret_replay_available"] = False
+        safe["secret_returned_once"] = True
+    return safe
+
+
 def load_cache(request_id, req_hash):
     path = cache_path(request_id)
     try:
@@ -283,7 +319,7 @@ def save_cache(request_id, req_hash, response):
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(
-                {"request_hash": req_hash, "response": response},
+                {"request_hash": req_hash, "response": cacheable_response(response)},
                 fh,
                 sort_keys=True,
                 separators=(",", ":"),
