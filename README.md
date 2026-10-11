@@ -4,7 +4,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 > O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva capacidades úteis, substitui implementações inseguras/obsoletas e prepara uma arquitetura própria para Automation v2, Telegram e Modo Colmeia.
 
-Versão atual: **0.6.1**.
+Versão atual: **0.6.2**.
 
 ## Princípios
 
@@ -82,9 +82,9 @@ As identidades não duplicam senhas, chaves privadas WireGuard ou certificados O
 
 Documentação detalhada: [`docs/CONNECTION_ENGINE.md`](docs/CONNECTION_ENGINE.md).
 
-## Policy Enforcement — 0.6.1
+## Policy Enforcement — 0.6.1+
 
-A política da identidade agora é aplicada aos protocolos vinculados.
+A política da identidade é aplicada aos protocolos vinculados.
 
 ### Estado e expiração
 
@@ -137,7 +137,7 @@ Uma identidade desativada não tem o certificado revogado apenas por causa do bl
 
 Quando a instalação do hook exigiria reiniciar um OpenVPN com clientes ativos, o restart é adiado para não derrubar sessões válidas somente para instalar a integração.
 
-## Sessões por identidade
+## Sessões observadas por identidade
 
 Visão consolidada:
 
@@ -157,22 +157,110 @@ Exemplo conceitual:
 maria  active  ssh=0  wg=1  ovpn=0  total=1  max=1
 ```
 
-O Connection Engine observa SSH, WireGuard e OpenVPN sob a mesma identidade.
+Essa visão descreve **conexões reais observadas** em SSH, WireGuard e OpenVPN.
+
+## Session / Lease Engine — 0.6.2
+
+A 0.6.2 adiciona uma segunda visão: **quem possui uma vaga de sessão autorizada**.
+
+```bash
+manager --leases
+manager --leases maria
+```
+
+Cada lease contém:
+
+```text
+session_id
+identity_id
+protocol
+resource
+device_id
+session_epoch
+created_epoch
+heartbeat_epoch
+expires_epoch
+```
+
+O `session_id` é gerado com 128 bits aleatórios do RNG do sistema.
+
+### Runtime e estado durável
+
+Leases ativas ficam somente em:
+
+```text
+/run/manager-session-leases/active/
+```
+
+Elas não entram em backup e não reaparecem após reboot.
+
+O fencing token persistente fica em:
+
+```text
+/etc/manager/connection/session-epochs/<identity>.epoch
+```
+
+Identidades e epochs são preservados por update, rollback e uninstall normal. `manager-uninstall --purge` continua sendo a operação explícita para remover esse estado.
+
+### TTL e heartbeat
+
+TTL padrão:
+
+```text
+90 segundos
+```
+
+Uma aplicação renova a autoridade com heartbeat. Se morrer sem executar `release`, a lease expira e a vaga volta automaticamente.
+
+### Idempotência
+
+Repetir `acquire` com a mesma combinação:
+
+```text
+identity + protocol + resource + device_id + session_epoch
+```
+
+renova a lease existente e devolve o mesmo `session_id`, em vez de consumir outra vaga.
 
 ### `max_sessions`
 
-Na 0.6.1 o limite já começa a valer **localmente**:
+O Lease Engine aplica `max_sessions` sob lock local. Assim, com:
 
-- SSH recebe o número de vagas restante via `maxlogins`;
-- OpenVPN consulta o total antes de uma nova conexão;
-- WireGuard não é reativado para uma nova sessão quando as vagas já estão ocupadas por outro protocolo;
-- desativação/expiração continua tendo precedência sobre o limite.
+```text
+max_sessions = 1
+```
 
-Isso ainda não é o futuro limite global multi-VPS. Protocolos independentes podem ter pequenas janelas de corrida local. A garantia forte entre servidores será feita pela Colmeia com lease atômico/fencing.
+uma segunda lease independente é recusada enquanto a primeira estiver válida.
+
+O Policy Engine continua mantendo as proteções nos protocolos reais. Na 0.6.2 os dois mecanismos coexistem para permitir migração sem quebrar clientes legados.
+
+### Switch e fencing
+
+`--switch` é usado quando uma identidade precisa trocar de sessão/destino:
+
+1. avança o `session_epoch`;
+2. revoga as leases da geração anterior;
+3. cria a nova lease;
+4. qualquer processo atrasado com o epoch antigo não consegue renovar autoridade.
+
+Esse é o mecanismo que será levado para o hub da Colmeia.
+
+### Mudança de política
+
+Se uma identidade com lease ativa:
+
+- for desabilitada;
+- expirar;
+- perder o protocolo usado;
+- perder/trocar o recurso vinculado;
+
+as leases incompatíveis são revogadas e o epoch avança. Reativar a conta depois não ressuscita uma autorização antiga.
+
+Documentação detalhada: [`docs/SESSION_ENGINE.md`](docs/SESSION_ENGINE.md).
 
 ## Reconciliação automática
 
-O enforcement é mantido por:
+Policy Enforcement:
 
 ```text
 manager-policy-reconcile.path
@@ -180,12 +268,68 @@ manager-policy-reconcile.timer
 manager-policy-reconcile.service
 ```
 
-O watcher reage a mudanças de identidade e o timer periódico cobre expiração, handshakes e mudanças de sessão.
+Session Engine:
 
-Também é possível reconciliar manualmente pelo menu ou por:
+```text
+manager-session-reconcile.path
+manager-session-cleanup.timer
+manager-session-cleanup.service
+```
+
+Os watchers reagem às mudanças de identidade e os timers cobrem expiração, heartbeat, handshakes e mudanças de sessão.
+
+Reconciliação manual:
 
 ```bash
 /opt/manager/modules/policy_engine.sh --reconcile
+/opt/manager/modules/session_engine.sh --reconcile
+```
+
+## Contratos de lease para Automation v2
+
+Aquisição:
+
+```bash
+/opt/manager/modules/session_engine.sh \
+  --acquire maria wireguard maria celular-maria 90
+```
+
+Heartbeat:
+
+```bash
+/opt/manager/modules/session_engine.sh \
+  --heartbeat <session_id> <epoch> 90
+```
+
+Release:
+
+```bash
+/opt/manager/modules/session_engine.sh \
+  --release <session_id> <epoch>
+```
+
+Troca com fencing:
+
+```bash
+/opt/manager/modules/session_engine.sh \
+  --switch maria wireguard maria celular-maria 90
+```
+
+Revogação administrativa:
+
+```bash
+/opt/manager/modules/session_engine.sh --revoke-all maria admin
+```
+
+Códigos iniciais do contrato:
+
+```text
+64  argumento/política inválida
+66  identidade/recurso/lease inexistente
+67  protocolo/recurso não autorizado
+68  identidade desabilitada ou expirada
+69  max_sessions atingido
+70  fencing/session_epoch rejeitado
 ```
 
 ## Hosts de proxy
@@ -282,6 +426,7 @@ A conversão específica do SSHPlus continuará sendo assistida/controlada; o MA
 - nada de flush global de firewall;
 - credenciais VPN com permissões restritas;
 - Connection Engine root-only;
+- leases runtime em diretório root-only;
 - alterações SSH validadas antes de reload;
 - atualização baixada para arquivo temporário e validada com `bash -n`.
 
@@ -304,18 +449,19 @@ A conversão específica do SSHPlus continuará sendo assistida/controlada; o MA
 ## CLI
 
 ```text
-manager --health                 health check (0=OK, 1=aviso, 2=crítico)
-manager --status                 status dos serviços
-manager --expired                contas SSH expiradas
-manager --ssh-sessions           sessões SSH
-manager --proxy-status           proxies/túneis
-manager --proxy-hosts            hosts permitidos no proxy
-manager --identities             identidades do Connection Engine
-manager --identity ID            detalhes de uma identidade
-manager --identity-sessions [ID] sessões agregadas por identidade
-manager --diagnostics            diagnóstico
-manager --version                versão
-manager --help                   ajuda
+manager --health                  health check (0=OK, 1=aviso, 2=crítico)
+manager --status                  status dos serviços
+manager --expired                 contas SSH expiradas
+manager --ssh-sessions            sessões SSH
+manager --proxy-status            proxies/túneis
+manager --proxy-hosts             hosts permitidos no proxy
+manager --identities              identidades do Connection Engine
+manager --identity ID             detalhes de uma identidade
+manager --identity-sessions [ID]  sessões observadas por identidade
+manager --leases [ID]             leases/reservas locais
+manager --diagnostics             diagnóstico
+manager --version                 versão
+manager --help                    ajuda
 ```
 
 ## Menu principal
@@ -344,7 +490,8 @@ CONTAS E REVENDA
 24) Revendedores, subrevendedores e cotas
 27) Criar conta vinculada a revendedor
 28) Connection Engine / identidades
-29) Sessões / reconciliar políticas de identidade
+29) Sessões observadas / reconciliar políticas
+30) Session / Lease Engine
 
 MONITORAMENTO E MANUTENÇÃO
 10) Tráfego e conexões
@@ -418,7 +565,13 @@ Desinstalar o código preservando estado/configuração:
 manager-uninstall
 ```
 
-O enforcement de identidades é desanexado antes de remover o código, evitando deixar hooks dependentes de `/opt/manager` quebrados. O estado em `/etc/manager` é preservado e pode voltar a ser aplicado em uma reinstalação.
+O uninstall normal:
+
+- descarta leases runtime;
+- desanexa hooks de policy/session que dependem de `/opt/manager`;
+- preserva identidades;
+- preserva `session_epoch`;
+- protege o estado durável do Connection Engine com snapshot defensivo durante a operação.
 
 Remover também o estado próprio do MANAGER:
 
@@ -452,6 +605,8 @@ Em instalação nova ficará desligado por padrão e poderá ser ativado/desativ
 
 Será o protocolo novo, com ações estruturadas, RBAC, auditoria, idempotência, autenticação criptográfica, anti-replay e interface privilegiada controlada. Integrações não receberão shell arbitrário.
 
+O Session Engine da 0.6.2 já fornece a semântica local de `session.acquire`, heartbeat, release, switch e fencing que poderá ser exposta pelo futuro `managerd`.
+
 ### Colmeia
 
 A Colmeia poderá reunir VPS no mesmo datacenter, mesma cidade, mesmo país ou em vários países.
@@ -472,6 +627,8 @@ Planejado:
 
 Assim uma identidade poderá, por exemplo, ter acesso a dez servidores mas continuar com `max_sessions_global=1`.
 
+Na 0.6.2 a autoridade de lease ainda vive na VPS local. Na Colmeia, essa autoridade será movida para o hub para impedir que duas VPS concedam simultaneamente a mesma vaga global.
+
 ### Telegram
 
 Administração remota futura por Telegram Bot + Telegram Mini App, sem painel web administrativo convencional. Identidade e autorização serão verificadas no backend.
@@ -488,9 +645,17 @@ O CI executa:
 - instalação/update/rollback/uninstall;
 - smoke tests das CLIs;
 - Connection Engine CRUD básico;
-- sessões agregadas por identidade;
+- sessões observadas por identidade;
 - bloqueio e reativação de identidade SSH vinculada;
-- instalação e remoção das unidades de enforcement.
+- criação e listagem de leases;
+- `max_sessions=1`;
+- retry idempotente;
+- heartbeat e release;
+- TTL/expiração;
+- switch + fencing de epoch antigo;
+- revogação de lease por mudança de política;
+- persistência de identidades/epochs através de update, rollback e uninstall;
+- instalação e remoção das unidades de enforcement e lease.
 
 Roteiro adicional para VPS real:
 
