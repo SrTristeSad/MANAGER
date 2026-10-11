@@ -159,8 +159,12 @@ detach_lifecycle() {
 
 status_lifecycle() {
   local dropin="0" helper="0"
-  [[ -f "$DROPIN_FILE" && ! -L "$DROPIN_FILE" && "$(first_line "$DROPIN_FILE")" == "$DROPIN_MARKER" ]] && dropin="1"
-  helper_owned && helper="1" || true
+  if [[ -f "$DROPIN_FILE" && ! -L "$DROPIN_FILE" && "$(first_line "$DROPIN_FILE")" == "$DROPIN_MARKER" ]]; then
+    dropin="1"
+  fi
+  if helper_owned; then
+    helper="1"
+  fi
   printf 'contract=manager-hive-lifecycle-v1\ndropin=%s\nhelper=%s\nautomation_service=manager-automation-v2.service\n' "$dropin" "$helper"
 }
 
