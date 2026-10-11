@@ -18,6 +18,7 @@ CLEANUP_SERVICE="/etc/systemd/system/manager-session-cleanup.service"
 CLEANUP_TIMER="/etc/systemd/system/manager-session-cleanup.timer"
 RECONCILE_PATH="/etc/systemd/system/manager-session-reconcile.path"
 DEFAULT_TTL="${MANAGER_SESSION_TTL:-90}"
+NODE_METADATA_MODULE="$MANAGER_HOME/modules/node_metadata.sh"
 
 session_init() {
   identity_init
@@ -55,6 +56,29 @@ binding_for() {
     openvpn) identity_read "$2" openvpn_client ;;
     *) return 1 ;;
   esac
+}
+
+node_context_value() {
+  local context="$1" key="$2"
+  awk -F= -v k="$key" '$1==k {sub(/^[^=]*=/,""); print; exit}' <<< "$context"
+}
+
+authorize_node_context() {
+  local identity="$1" protocol="$2" quiet="${3:-0}" context="" region="" pool="" node=""
+  declare -F product_context_authorized >/dev/null 2>&1 || return 0
+  if [[ -x "$NODE_METADATA_MODULE" ]]; then
+    context="$($NODE_METADATA_MODULE --context 2>/dev/null || true)"
+    region="$(node_context_value "$context" region)"
+    pool="$(node_context_value "$context" pool)"
+    node="$(node_context_value "$context" node)"
+  fi
+  if product_context_authorized "$identity" "$protocol" "$region" "$pool" "$node"; then
+    return 0
+  fi
+  if [[ "$quiet" != 1 ]]; then
+    err "Produto/ACL não autoriza $protocol para $identity neste nó (region=${region:--}, pool=${pool:--}, node=${node:--})"
+  fi
+  return 73
 }
 
 event_log() {
@@ -180,6 +204,10 @@ reconcile_leases_locked() {
       invalidate["$identity"]="protocol-denied"
       continue
     fi
+    if ! authorize_node_context "$identity" "$protocol" 1; then
+      invalidate["$identity"]="acl-context"
+      continue
+    fi
     bound="$(binding_for "$protocol" "$identity")"
     if [[ -z "$bound" || "$bound" != "$resource" ]]; then
       invalidate["$identity"]="binding-changed"
@@ -203,6 +231,7 @@ validate_identity_resource() {
   state="$(identity_effective_state "$identity")"
   [[ "$state" == active ]] || { err "Identidade $identity está $state"; return 68; }
   identity_has_protocol "$identity" "$protocol" || { err "$protocol não é permitido para $identity"; return 67; }
+  authorize_node_context "$identity" "$protocol" || return $?
   bound="$(binding_for "$protocol" "$identity")"
   [[ -n "$bound" ]] || { err "Identidade $identity não possui recurso $protocol vinculado"; return 66; }
   [[ "$bound" == "$resource" ]] || { err "Recurso $resource não pertence a $identity em $protocol"; return 67; }
@@ -286,7 +315,7 @@ acquire_locked() {
   now="$(date +%s)"
   expires=$((now + ttl))
   write_lease_locked "$session_id" "$identity" "$protocol" "$resource" "$device" "$current_epoch" "$now" "$now" "$expires"
-  event_log ACQUIRE "$identity" "$session_id" "$current_epoch" "$protocol" "$resource" "$device" local
+  event_log ACQUIRE "$identity" "$session_id" "$current_epoch" "$protocol" "$resource" "$device" node-acl
   print_lease_token "$session_id"
 }
 
@@ -311,7 +340,7 @@ heartbeat_locked() {
   now="$(date +%s)"
   expires=$((now + ttl))
   write_lease_locked "$session_id" "$identity" "$protocol" "$resource" "$device" "$stored_epoch" "$created" "$now" "$expires"
-  event_log HEARTBEAT "$identity" "$session_id" "$stored_epoch" "$protocol" "$resource" "$device" local
+  event_log HEARTBEAT "$identity" "$session_id" "$stored_epoch" "$protocol" "$resource" "$device" node-acl
   print_lease_token "$session_id"
 }
 
