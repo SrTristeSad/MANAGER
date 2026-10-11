@@ -4,7 +4,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 > O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva capacidades úteis, substitui implementações inseguras/obsoletas e prepara uma arquitetura própria para Automation v2, Telegram e Modo Colmeia.
 
-Versão atual: **0.6.9**.
+Versão atual: **0.6.10**.
 
 ## Princípios
 
@@ -32,6 +32,7 @@ Versão atual: **0.6.9**.
 - IPv6 Guard ligado ao Policy/Session Engine para impedir bypass de limites pelo tráfego IPv6;
 - UFW configurado para administrar IPv4 e IPv6 quando usado pelo MANAGER;
 - identidade persistente do nó com região, pool, capacidade e capacidades detectadas;
+- ACL de produto resolve automaticamente `region`, `pool` e `node_id` do nó local;
 - DNS Ad Block com dnsmasq, whitelist/blacklist e atualização diária;
 - Squid privado, proxy TCP, WebSocket e TLS opcionais;
 - hosts de proxy gerenciados;
@@ -372,6 +373,36 @@ País não define Colmeia: vários nós do mesmo país, cidade ou provedor podem
 
 Documentação: [`docs/NODE_METADATA.md`](docs/NODE_METADATA.md).
 
+## ACL automática por nó — 0.6.10
+
+A autorização de produto agora usa automaticamente o contexto persistente da própria VPS. Quando região, pool e nó não são passados explicitamente, o Product Policy lê:
+
+```text
+region
+pool
+node_id
+```
+
+de `/etc/manager/connection/node/node.conf`.
+
+Assim, a chamada local pode ser reduzida a:
+
+```bash
+/opt/manager/modules/products.sh --authorize maria wireguard
+```
+
+Um plano limitado a `BR-SP`, `BRASIL-PREMIUM` e a um `node_id` específico só é aceito quando o servidor atual corresponde às três dimensões. ACL restrita com metadado local ausente falha fechada; `*` continua significando qualquer valor.
+
+A forma explícita anterior continua compatível:
+
+```bash
+/opt/manager/modules/products.sh --authorize maria wireguard BR-SP BRASIL-PREMIUM node-abc123
+```
+
+O Session Engine também recusa novas leases quando o nó local está fora da região, pool ou lista de nós do produto. `country` continua sendo apenas metadado: o MANAGER não transforma país em região automaticamente.
+
+Documentação: [`docs/NODE_PRODUCT_ACL.md`](docs/NODE_PRODUCT_ACL.md).
+
 ## O limite que prepara a Colmeia
 
 Hoje autoridade de lease, produto, accounting e cota de revenda ainda é local na VPS. O modelo já representa o comportamento planejado para a Colmeia:
@@ -383,7 +414,7 @@ allowed_regions = BR, US, DE, FR, ...
 max_sessions = 1
 ```
 
-O MANAGER já possui o objeto persistente de nó (`node_id`, região, pool, capacidade e protocolos). No futuro, o Hub substituirá locks locais por autoridade global e adicionará heartbeat, scheduler e identidade criptográfica sem mudar os conceitos de produto, ACL, identidade, cota, `session_id`, TTL, heartbeat e `session_epoch`.
+O MANAGER já possui o objeto persistente de nó (`node_id`, região, pool, capacidade e protocolos) e já usa o contexto do nó para autorizar produtos e novas leases. No futuro, o Hub substituirá locks locais por autoridade global e adicionará heartbeat, scheduler e identidade criptográfica sem mudar os conceitos de produto, ACL, identidade, cota, `session_id`, TTL, heartbeat e `session_epoch`.
 
 ## Backup e migração
 
@@ -422,6 +453,7 @@ O detector de legado reconhece estruturas como `/root/usuarios.db`, `/etc/SSHPlu
 - franquia SSH não é bloqueada com dados incompletos;
 - provisionamento não registra senha/chaves privadas no audit log;
 - metadados do nó usam campos allowlisted e não oferecem shell/comando arbitrário;
+- ACL restrita de região/pool/nó falha fechada quando o contexto necessário está ausente;
 - self-update baixa e valida o instalador antes da execução.
 
 ## CLI
@@ -518,7 +550,7 @@ Plano detalhado: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ```text
 0.5.x  paridade SSHPlus útil
-0.6.x  Connection Engine, políticas, leases, accounting, produtos, provisionamento, revenda, dual-stack e metadados de nó
+0.6.x  Connection Engine, políticas, leases, accounting, produtos, provisionamento, revenda, dual-stack, metadados e ACL automática de nó
 0.7.0  Legacy v1 + Automation v2
 0.8.0  Modo Colmeia
 0.9.0  Telegram Bot + Mini App
@@ -536,7 +568,7 @@ Ações estruturadas, RBAC, auditoria, idempotência, autenticação criptográf
 
 ### Colmeia
 
-O objeto local de nó já existe. Planejado a partir dele: identidade criptográfica por nó, heartbeat/health, regiões/pools, capacidade real, drain/failover, sticky sessions, scheduler weighted least-loaded, sessão global por identidade/plano, cota global de revenda, lease/fencing global, agregação de uso e comunicação autenticada/criptografada.
+O objeto local de nó e a aplicação local das ACLs já existem. Planejado a partir deles: identidade criptográfica por nó, heartbeat/health, regiões/pools, capacidade real, drain/failover, sticky sessions, scheduler weighted least-loaded, sessão global por identidade/plano, cota global de revenda, lease/fencing global, agregação de uso e comunicação autenticada/criptografada.
 
 ### Telegram
 
@@ -558,7 +590,8 @@ O CI cobre:
 - Unified Provisioning e revogação;
 - cotas de revenda por identidade, hierarquia pai/subrevendedor, produtos, adoção de SSH legado, migração e persistência;
 - IPv6 dual-stack, endpoint literal IPv6, guard por lease e persistência no lifecycle;
-- identidade/metadados do nó, campos imutáveis, validação, persistência de `node_id` e uninstall/reinstall.
+- identidade/metadados do nó, campos imutáveis, validação, persistência de `node_id` e uninstall/reinstall;
+- contexto ACL automático do nó, compatibilidade com contexto explícito, fail-closed e recusa de lease fora de `region`, `pool` ou `node_id`.
 
 ## Origem
 
