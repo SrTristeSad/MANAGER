@@ -4,7 +4,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 > O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva capacidades úteis, substitui implementações inseguras/obsoletas e prepara uma arquitetura própria para Automation v2, Telegram e Modo Colmeia.
 
-Versão atual: **0.6.7**.
+Versão atual: **0.6.8**.
 
 ## Princípios
 
@@ -27,8 +27,10 @@ Versão atual: **0.6.7**.
 - contas teste com duração em minutos e remoção automática;
 - limpeza confirmada de expirados;
 - banner SSH por `sshd_config.d`;
-- WireGuard com servidor, clientes, revogação, QR Code e NAT específico;
-- OpenVPN com Easy-RSA, perfis `.ovpn`, CRL e UDP/TCP;
+- WireGuard com servidor, clientes, revogação, QR Code e dual-stack IPv4/IPv6 quando a VPS possui saída IPv6 real;
+- OpenVPN com Easy-RSA, perfis `.ovpn`, CRL, UDP/TCP e `server-ipv6` opcional;
+- IPv6 Guard ligado ao Policy/Session Engine para impedir bypass de limites pelo tráfego IPv6;
+- UFW configurado para administrar IPv4 e IPv6 quando usado pelo MANAGER;
 - DNS Ad Block com dnsmasq, whitelist/blacklist e atualização diária;
 - Squid privado, proxy TCP, WebSocket e TLS opcionais;
 - hosts de proxy gerenciados;
@@ -307,6 +309,34 @@ O `products.sh --assign` também verifica a cota por produto, portanto o limite 
 
 Documentação: [`docs/RESELLER_QUOTAS.md`](docs/RESELLER_QUOTAS.md).
 
+## IPv6 / dual-stack — 0.6.8
+
+O MANAGER só habilita IPv6 em uma VPN quando a VPS possui rota IPv6 padrão e endereço global utilizável. Sem isso, WireGuard/OpenVPN continuam IPv4-only e não anunciam `::/0` sem conectividade real.
+
+WireGuard usa:
+
+```text
+fd66:66:66::/64
+```
+
+OpenVPN usa:
+
+```text
+fd66:8::/64
+```
+
+O modo portátil atual usa ULA + NAT66. Instalações WireGuard/OpenVPN já gerenciadas podem ser reconciliadas para dual-stack sem recriar identidades e, no caso do WireGuard, sem trocar chaves dos clientes.
+
+O `IPv6 Guard` não substitui o Session Engine. Ele espelha a decisão de lease/política no forwarding IPv6 e cria somente regras específicas por identidade, removendo-as quando a lease volta a ser válida.
+
+```bash
+manager --ipv6-status
+```
+
+O provisionamento unificado herda o estado dual-stack do servidor. WireGuard retorna `wireguard_ipv4` e `wireguard_ipv6`, mantendo `wireguard_ip` como alias compatível do IPv4.
+
+Documentação: [`docs/IPV6.md`](docs/IPV6.md).
+
 ## O limite que prepara a Colmeia
 
 Hoje autoridade de lease, produto, accounting e cota de revenda ainda é local na VPS. O modelo já representa o comportamento planejado para a Colmeia:
@@ -333,7 +363,7 @@ estado WireGuard/OpenVPN
 DNS/TLS/banner/performance
 ```
 
-Slots de identidade e cotas por produto estão sob `/etc/manager/access`, portanto participam do backup existente. Leases runtime e snapshots de contadores não entram no backup.
+Slots de identidade e cotas por produto estão sob `/etc/manager/access`, portanto participam do backup existente. Estado dual-stack fica nos diretórios WireGuard/OpenVPN dentro de `/etc/manager`; leases e regras runtime não entram no backup.
 
 A exportação de usuários Linux é separada e não guarda senha em texto claro nem substitui `/etc/passwd`/`etc/shadow` inteiros durante restauração.
 
@@ -343,15 +373,16 @@ O detector de legado reconhece estruturas como `/root/usuarios.db`, `/etc/SSHPlu
 
 - hardening OpenSSH por drop-in;
 - Fail2ban;
-- UFW com proteção da porta SSH detectada;
+- UFW com proteção da porta SSH detectada e cobertura IPv6 habilitada;
 - atualizações automáticas de segurança;
 - TLS/Let's Encrypt;
 - fingerprints de chaves públicas;
 - Squid sem `http_access allow all`;
-- nada de flush global de firewall;
+- nada de flush global de firewall IPv4 ou IPv6;
 - credenciais VPN com permissões restritas;
 - estado de identidade, produto, revenda e accounting restritos a root;
 - OpenVPN não recebe acesso root ao Lease Engine;
+- IPv6 Guard cria/remova somente regras específicas da identidade;
 - hooks externos são removidos antes de uninstall/rollback;
 - franquia SSH não é bloqueada com dados incompletos;
 - provisionamento não registra senha/chaves privadas no audit log;
@@ -380,6 +411,7 @@ manager --revoke-identity ID      revoga acessos e preserva identidade desativad
 manager --identity-sessions [ID]  sessões reais observadas
 manager --leases [ID]             leases autorizadas
 manager --usage [ID]              tráfego/atividade consolidada
+manager --ipv6-status             estado dual-stack e IPv6 Guard
 manager --diagnostics             diagnóstico
 manager --version                 versão
 manager --help                    ajuda
@@ -431,7 +463,7 @@ Desinstalar preservando estado:
 manager-uninstall
 ```
 
-Identidades, produtos, cotas/slots de revenda, ACL, baseline de franquia, `session_epoch` e histórico consolidado de uso ficam preservados no uninstall normal.
+Identidades, produtos, cotas/slots de revenda, ACL, baseline de franquia, `session_epoch`, estado dual-stack e histórico consolidado de uso ficam preservados no uninstall normal. Regras runtime do IPv6 Guard são removidas e recriadas na reinstalação.
 
 Purge explícito:
 
@@ -439,7 +471,7 @@ Purge explícito:
 manager-uninstall --purge
 ```
 
-O purge remove também o estado em `/etc/manager` e o histórico em `/var/lib/manager/identity-usage`. Pacotes do sistema, certificados Let's Encrypt, backups, grupos potencialmente pré-existentes e regras UFW alheias ao MANAGER continuam sendo tratados conservadoramente.
+O purge remove também o estado em `/etc/manager` e o histórico em `/var/lib/manager/identity-usage`, restaurando o forwarding IPv4/IPv6 anterior quando conhecido. Pacotes do sistema, certificados Let's Encrypt, backups, grupos potencialmente pré-existentes e regras UFW alheias ao MANAGER continuam sendo tratados conservadoramente.
 
 ## Roadmap
 
@@ -447,7 +479,7 @@ Plano detalhado: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ```text
 0.5.x  paridade SSHPlus útil
-0.6.x  Connection Engine, políticas, leases, accounting, produtos, provisionamento e revenda
+0.6.x  Connection Engine, políticas, leases, accounting, produtos, provisionamento, revenda e dual-stack
 0.7.0  Legacy v1 + Automation v2
 0.8.0  Modo Colmeia
 0.9.0  Telegram Bot + Mini App
@@ -485,7 +517,8 @@ O CI cobre:
 - Identity Usage e persistência;
 - Product Policy, ACL e franquias;
 - Unified Provisioning e revogação;
-- cotas de revenda por identidade, hierarquia pai/subrevendedor, produtos, adoção de SSH legado, migração e persistência.
+- cotas de revenda por identidade, hierarquia pai/subrevendedor, produtos, adoção de SSH legado, migração e persistência;
+- IPv6 dual-stack, endpoint literal IPv6, guard por lease e persistência no lifecycle.
 
 ## Origem
 
