@@ -8,6 +8,7 @@ source "$MANAGER_HOME/lib/common.sh"
 require_root
 
 STATE_DIR="$MANAGER_ETC/automation/v2"
+PRINCIPALS_DIR="$STATE_DIR/principals"
 DATA_DIR="/var/lib/manager/automation-v2"
 IDEMPOTENCY_DIR="$DATA_DIR/idempotency"
 AUDIT_DIR="/var/log/manager"
@@ -17,6 +18,9 @@ SOCKET_FILE="$RUNTIME_DIR/manager.sock"
 SERVICE_FILE="/etc/systemd/system/manager-automation-v2.service"
 CONNECTION_ACTIONS="$MANAGER_HOME/modules/connection_actions.sh"
 NODE_USAGE="$MANAGER_HOME/modules/node_usage.sh"
+PRINCIPALS_MODULE="$MANAGER_HOME/modules/automation_principals.sh"
+RESELLERS_DIR="$MANAGER_ETC/access/resellers"
+IDENTITY_DIR="$MANAGER_ETC/connection/identities"
 CONTRACT="manager-automation-v2-local-v1"
 
 case "$(basename "$0")" in
@@ -28,6 +32,8 @@ ensure_dirs() {
   install -d -m 0700 "$STATE_DIR" "$DATA_DIR" "$IDEMPOTENCY_DIR" "$AUDIT_DIR"
   touch "$AUDIT_FILE"
   chmod 0600 "$AUDIT_FILE"
+  [[ -x "$PRINCIPALS_MODULE" ]] || { err "Registry de principals ausente: $PRINCIPALS_MODULE"; return 69; }
+  "$PRINCIPALS_MODULE" --init >/dev/null
 }
 
 ensure_dependencies() {
@@ -113,7 +119,7 @@ show_status() {
   printf 'socket=%s\nsocket_mode=%s\nservice=%s\nsocket_state=%s\n' \
     "$SOCKET_FILE" "$socket_mode" "$service_state" "$socket_state"
   printf 'remote_transport=0\narbitrary_shell=0\n'
-  printf 'rbac=0\ncryptographic_auth=0\nanti_replay=0\nrate_limit=0\n'
+  printf 'rbac=1\nprincipal_assertion=root-local\ncryptographic_auth=0\nanti_replay=0\nrate_limit=0\n'
   printf 'idempotency=1\naudit=1\nsecret_replay=0\n'
 }
 
@@ -124,7 +130,8 @@ serve_v2() {
   [[ -x "$NODE_USAGE" ]] || { err "Agregador do nó ausente: $NODE_USAGE"; exit 69; }
 
   exec python3 - "$SOCKET_FILE" "$IDEMPOTENCY_DIR" "$AUDIT_FILE" \
-    "$CONNECTION_ACTIONS" "$NODE_USAGE" "$CONTRACT" <<'PY'
+    "$CONNECTION_ACTIONS" "$NODE_USAGE" "$CONTRACT" "$PRINCIPALS_DIR" \
+    "$RESELLERS_DIR" "$IDENTITY_DIR" <<'PY'
 import hashlib
 import json
 import os
@@ -138,11 +145,22 @@ import sys
 import tempfile
 import time
 
-SOCKET_FILE, IDEMPOTENCY_DIR, AUDIT_FILE, CONNECTION_ACTIONS, NODE_USAGE, CONTRACT = sys.argv[1:]
+(
+    SOCKET_FILE,
+    IDEMPOTENCY_DIR,
+    AUDIT_FILE,
+    CONNECTION_ACTIONS,
+    NODE_USAGE,
+    CONTRACT,
+    PRINCIPALS_DIR,
+    RESELLERS_DIR,
+    IDENTITY_DIR,
+) = sys.argv[1:]
 VERSION = 1
 MAX_REQUEST = 65536
 IDEMPOTENCY_TTL = 7 * 24 * 60 * 60
 REQUEST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
+PRINCIPAL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 SENSITIVE_RE = re.compile(r"(?i)(password|passwd|secret|private[_-]?key|credential|token)")
 ACTIONS = {
@@ -159,8 +177,8 @@ def line(obj):
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
 
 
-def response_error(request_id, action_id, code, message):
-    return {
+def response_error(request_id, action_id, code, message, principal=None, principal_id=None):
+    result = {
         "contract": CONTRACT,
         "version": VERSION,
         "request_id": request_id,
@@ -170,14 +188,25 @@ def response_error(request_id, action_id, code, message):
         "error": str(message)[:4096],
         "cached": False,
     }
+    if principal is not None:
+        result["principal_id"] = principal["principal_id"]
+        result["principal_role"] = principal["role"]
+    elif principal_id:
+        result["principal_id"] = str(principal_id)[:128]
+    return result
 
 
-def audit(request_id, action_id, uid, response, cached=False):
+def audit(request_id, action_id, uid, response, principal=None, decision="deny", reason="", cached=False):
     event = {
         "ts_epoch": int(time.time()),
         "request_id": request_id,
         "action_id": action_id,
         "peer_uid": uid,
+        "principal_id": principal["principal_id"] if principal else response.get("principal_id", ""),
+        "principal_role": principal["role"] if principal else "",
+        "principal_subject": principal["subject"] if principal else "",
+        "rbac_decision": decision,
+        "rbac_reason": str(reason)[:256],
         "ok": bool(response.get("ok", False)),
         "code": int(response.get("code", 70)),
         "cached": bool(cached),
@@ -196,6 +225,157 @@ def parse_kv(text):
         if KEY_RE.fullmatch(key):
             data[key] = value
     return data
+
+
+def read_conf(path, strict=False):
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(st.st_mode):
+        raise RuntimeError("registro não é arquivo regular")
+    if strict:
+        if st.st_uid != 0:
+            raise RuntimeError("registro de principal não pertence a root")
+        if stat.S_IMODE(st.st_mode) & 0o077:
+            raise RuntimeError("registro de principal possui permissões excessivas")
+    data = {}
+    with open(path, "r", encoding="utf-8") as fh:
+        for raw in fh:
+            raw = raw.rstrip("\n")
+            if "=" not in raw:
+                continue
+            key, value = raw.split("=", 1)
+            if KEY_RE.fullmatch(key):
+                data[key] = value
+    return data
+
+
+def reseller_record(reseller_id):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,47}", reseller_id or ""):
+        return None
+    return read_conf(os.path.join(RESELLERS_DIR, reseller_id + ".conf"))
+
+
+def identity_record(identity_id):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,47}", identity_id or ""):
+        return None
+    return read_conf(os.path.join(IDENTITY_DIR, identity_id + ".conf"))
+
+
+def load_principal(principal_id):
+    if not isinstance(principal_id, str) or not PRINCIPAL_RE.fullmatch(principal_id):
+        raise PermissionError("principal_id inválido")
+    data = read_conf(os.path.join(PRINCIPALS_DIR, principal_id + ".conf"), strict=True)
+    if data is None:
+        raise PermissionError("principal desconhecido")
+    if data.get("principal_id") != principal_id:
+        raise PermissionError("registro de principal inconsistente")
+    if data.get("version") != "1" or data.get("enabled") != "1":
+        raise PermissionError("principal desabilitado")
+    role = data.get("role", "")
+    subject = data.get("subject", "")
+    products = data.get("products", "")
+    if role == "admin":
+        if subject != "*":
+            raise PermissionError("principal admin inválido")
+        products = "*"
+    elif role in {"reseller", "subreseller"}:
+        record = reseller_record(subject)
+        if record is None or record.get("role") != role:
+            raise PermissionError("subject de revenda inválido")
+        if record.get("enabled") != "1":
+            raise PermissionError("subject de revenda desabilitado")
+        if not products or products == "-":
+            raise PermissionError("escopo de produtos inválido")
+    elif role == "user":
+        if identity_record(subject) is None:
+            raise PermissionError("identidade vinculada ao principal não existe")
+        products = "-"
+    else:
+        raise PermissionError("role de principal inválida")
+    return {
+        "principal_id": principal_id,
+        "role": role,
+        "subject": subject,
+        "products": products,
+    }
+
+
+def product_allowed(principal, plan):
+    if principal["role"] == "admin":
+        return True
+    if principal["role"] not in {"reseller", "subreseller"}:
+        return False
+    scope = principal["products"]
+    if scope == "*":
+        return True
+    return plan in {item for item in scope.split(",") if item}
+
+
+def owner_allowed(principal, owner):
+    role = principal["role"]
+    subject = principal["subject"]
+    if role == "admin":
+        return True
+    if role == "subreseller":
+        return owner == subject
+    if role == "reseller":
+        if owner == subject:
+            return True
+        record = reseller_record(owner)
+        return bool(record and record.get("role") == "subreseller" and record.get("parent") == subject)
+    return False
+
+
+def identity_allowed(principal, identity_id):
+    role = principal["role"]
+    if role == "admin":
+        return True
+    if role == "user":
+        return identity_id == principal["subject"]
+    record = identity_record(identity_id)
+    if record is None:
+        return False
+    return owner_allowed(principal, record.get("owner", ""))
+
+
+def authorize(principal, action_id, params):
+    role = principal["role"]
+    normalized = dict(params)
+    if action_id == "system.describe":
+        return True, normalized, "system-describe"
+    if action_id == "node.usage":
+        return role == "admin", normalized, "node-usage-admin-only"
+    if action_id in {"connection.preflight", "connection.create"}:
+        if role not in {"admin", "reseller", "subreseller"}:
+            return False, normalized, "role-cannot-create"
+        plan = normalized.get("plan", "")
+        if isinstance(plan, str) and plan and not product_allowed(principal, plan):
+            return False, normalized, "product-out-of-scope"
+        if role in {"reseller", "subreseller"}:
+            owner = normalized.get("owner", "")
+            if not isinstance(owner, str):
+                return True, normalized, "parameter-validation-pending"
+            if not owner:
+                owner = principal["subject"]
+                normalized["owner"] = owner
+            if not owner_allowed(principal, owner):
+                return False, normalized, "owner-out-of-scope"
+        return True, normalized, "create-scope-allowed"
+    if action_id == "connection.status":
+        identity_id = normalized.get("id", "")
+        if not isinstance(identity_id, str) or not identity_id:
+            return True, normalized, "parameter-validation-pending"
+        return identity_allowed(principal, identity_id), normalized, "identity-scope"
+    if action_id == "connection.revoke":
+        if role == "user":
+            return False, normalized, "user-cannot-revoke"
+        identity_id = normalized.get("id", "")
+        if not isinstance(identity_id, str) or not identity_id:
+            return True, normalized, "parameter-validation-pending"
+        return identity_allowed(principal, identity_id), normalized, "identity-scope"
+    return False, normalized, "action-not-authorized"
 
 
 def string_param(params, key, required=True):
@@ -241,9 +421,9 @@ def command_for(action_id, params):
     raise ValueError("ação não permitida")
 
 
-def request_hash(action_id, params):
+def request_hash(principal_id, action_id, params):
     raw = json.dumps(
-        {"version": VERSION, "action_id": action_id, "params": params},
+        {"version": VERSION, "principal_id": principal_id, "action_id": action_id, "params": params},
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -357,35 +537,51 @@ def prune_cache():
 def execute(request, uid):
     request_id = request.get("request_id", "")
     action_id = request.get("action_id", "")
+    principal_id = request.get("principal_id", "local-root")
     params = request.get("params", {})
 
     if request.get("version") != VERSION:
-        return response_error(str(request_id), str(action_id), 64, "versão de envelope não suportada")
+        return response_error(str(request_id), str(action_id), 64, "versão de envelope não suportada", principal_id=principal_id)
     if not isinstance(request_id, str) or not REQUEST_RE.fullmatch(request_id):
-        return response_error(str(request_id), str(action_id), 64, "request_id inválido")
+        return response_error(str(request_id), str(action_id), 64, "request_id inválido", principal_id=principal_id)
     if not isinstance(action_id, str) or action_id not in ACTIONS:
-        return response_error(request_id, str(action_id), 64, "action_id não permitido")
+        return response_error(request_id, str(action_id), 64, "action_id não permitido", principal_id=principal_id)
     if uid != 0:
-        return response_error(request_id, action_id, 67, "peer não autorizado")
+        result = response_error(request_id, action_id, 67, "peer não autorizado", principal_id=principal_id)
+        audit(request_id, action_id, uid, result, decision="deny", reason="peer-uid")
+        return result
     if not isinstance(params, dict):
-        return response_error(request_id, action_id, 64, "params deve ser objeto")
+        return response_error(request_id, action_id, 64, "params deve ser objeto", principal_id=principal_id)
 
-    req_hash = request_hash(action_id, params)
+    try:
+        principal = load_principal(principal_id)
+    except (PermissionError, RuntimeError) as exc:
+        result = response_error(request_id, action_id, 67, str(exc), principal_id=principal_id)
+        audit(request_id, action_id, uid, result, decision="deny", reason="principal-invalid")
+        return result
+
+    allowed, params, rbac_reason = authorize(principal, action_id, params)
+    if not allowed:
+        result = response_error(request_id, action_id, 67, "ação fora do escopo RBAC", principal=principal)
+        audit(request_id, action_id, uid, result, principal=principal, decision="deny", reason=rbac_reason)
+        return result
+
+    req_hash = request_hash(principal["principal_id"], action_id, params)
     cached = load_cache(request_id, req_hash)
     if cached == "conflict":
-        result = response_error(request_id, action_id, 65, "request_id reutilizado com payload diferente")
-        audit(request_id, action_id, uid, result)
+        result = response_error(request_id, action_id, 65, "request_id reutilizado com payload/principal diferente", principal=principal)
+        audit(request_id, action_id, uid, result, principal=principal, decision="allow", reason=rbac_reason)
         return result
     if isinstance(cached, dict):
-        audit(request_id, action_id, uid, cached, cached=True)
+        audit(request_id, action_id, uid, cached, principal=principal, decision="allow", reason=rbac_reason, cached=True)
         return cached
 
     try:
         cmd = command_for(action_id, params)
     except ValueError as exc:
-        result = response_error(request_id, action_id, 64, str(exc))
+        result = response_error(request_id, action_id, 64, str(exc), principal=principal)
         save_cache(request_id, req_hash, result)
-        audit(request_id, action_id, uid, result)
+        audit(request_id, action_id, uid, result, principal=principal, decision="allow", reason=rbac_reason)
         return result
 
     env = os.environ.copy()
@@ -406,6 +602,8 @@ def execute(request, uid):
             "version": VERSION,
             "request_id": request_id,
             "action_id": action_id,
+            "principal_id": principal["principal_id"],
+            "principal_role": principal["role"],
             "ok": proc.returncode == 0,
             "code": int(proc.returncode),
             "result": {"data": parse_kv(proc.stdout), "stdout": proc.stdout[:65536]},
@@ -414,10 +612,10 @@ def execute(request, uid):
         if proc.stderr:
             result["stderr"] = proc.stderr[:8192]
     except subprocess.TimeoutExpired:
-        result = response_error(request_id, action_id, 70, "tempo limite da operação excedido")
+        result = response_error(request_id, action_id, 70, "tempo limite da operação excedido", principal=principal)
 
     save_cache(request_id, req_hash, result)
-    audit(request_id, action_id, uid, result)
+    audit(request_id, action_id, uid, result, principal=principal, decision="allow", reason=rbac_reason)
     return result
 
 
@@ -496,7 +694,25 @@ import uuid
 socket_file = sys.argv[1]
 args = sys.argv[2:]
 if not args:
-    print("Uso: managerctl ACTION [key=value ...] [--request-id ID]", file=sys.stderr)
+    print("Uso: managerctl [--principal ID] ACTION [key=value ...] [--request-id ID]", file=sys.stderr)
+    raise SystemExit(64)
+
+principal_id = "local-root"
+if args and args[0] == "--principal":
+    if len(args) < 3:
+        print("--principal exige ID e ACTION", file=sys.stderr)
+        raise SystemExit(64)
+    principal_id = args[1]
+    args = args[2:]
+elif args and args[0].startswith("--principal="):
+    principal_id = args[0].split("=", 1)[1]
+    args = args[1:]
+
+if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}", principal_id):
+    print("principal_id inválido", file=sys.stderr)
+    raise SystemExit(64)
+if not args:
+    print("ACTION ausente", file=sys.stderr)
     raise SystemExit(64)
 
 action = "system.describe" if args[0] == "describe" else args[0]
@@ -525,6 +741,7 @@ while i < len(args):
 request = {
     "version": 1,
     "request_id": request_id or str(uuid.uuid4()),
+    "principal_id": principal_id,
     "action_id": action,
     "params": params,
 }
@@ -573,7 +790,7 @@ case "${1:-}" in
     ;;
   "") show_status ;;
   *)
-    err "Uso: automation_v2.sh {--install|--detach|--purge|--status|--serve|--call ACTION [key=value ...]}"
+    err "Uso: automation_v2.sh {--install|--detach|--purge|--status|--serve|--call [--principal ID] ACTION [key=value ...]}"
     exit 64
     ;;
 esac
