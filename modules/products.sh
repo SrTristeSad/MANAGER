@@ -13,6 +13,7 @@ require_root
 
 PRODUCT_SERVICE="/etc/systemd/system/manager-product-policy.service"
 PRODUCT_TIMER="/etc/systemd/system/manager-product-policy.timer"
+RESELLER_PRODUCT_QUOTA_MODULE="$MANAGER_HOME/modules/reseller_product_quotas.sh"
 
 product_init() {
   identity_init
@@ -236,11 +237,26 @@ init_quota_for_assignment() {
   write_quota_state "$identity" "$product" "$cycle" "$total" 0 "$quota" 0 "$enforceable" "$action" "$now"
 }
 
+reseller_product_allows_assignment() {
+  local identity="$1" product="$2" owner
+  owner="$(identity_read "$identity" owner)"
+  [[ -n "$owner" ]] || return 0
+  [[ -x "$RESELLER_PRODUCT_QUOTA_MODULE" ]] || {
+    err "Módulo de cota de produto por revendedor ausente"
+    return 69
+  }
+  if ! "$RESELLER_PRODUCT_QUOTA_MODULE" --can-assign "$owner" "$product" "$identity" >/dev/null 2>&1; then
+    err "Cota do produto $product esgotada ou indisponível para $owner"
+    return 73
+  fi
+}
+
 assign_product_impl() {
   local identity="$1" product="$2" base_max base_protocols base_expires assigned calculated
   identity_valid_id "$identity" || return 64
   identity_exists "$identity" || { err "Identidade não encontrada: $identity"; return 66; }
   product_exists "$product" || { err "Produto não encontrado: $product"; return 66; }
+  reseller_product_allows_assignment "$identity" "$product" || return $?
 
   base_max="$(assignment_base_value "$identity" base_max_sessions max_sessions)"
   base_protocols="$(assignment_base_value "$identity" base_protocols protocols)"
