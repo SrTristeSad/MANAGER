@@ -101,7 +101,7 @@ Concluído:
 - tratamento de reset/restart dos contadores absolutos sem zerar o acumulado da identidade;
 - última atividade/protocolo/recurso alimentados pelas leases reais;
 - SSH participa de sessão e atividade, mas bytes ficam explicitamente não medidos para evitar números falsos derivados de tráfego genérico do UID;
-- indicador `traffic_complete` diferencia totals completos de medições parciais;
+- indicador `traffic_complete` diferencia totais completos de medições parciais;
 - estado persistente em `/var/lib/manager/identity-usage` e snapshots de origem separados;
 - `manager --usage [ID]`, menu próprio e integração com `Tráfego e conexões`;
 - coleta periódica por systemd;
@@ -109,17 +109,40 @@ Concluído:
 - uninstall normal preserva o histórico e `--purge` remove explicitamente;
 - CI dedicado cobre baseline, delta, reset, vínculo, persistência e purge.
 
+### 0.6.5 — Produtos, planos, ACL e franquias
+
+Concluído:
+
+- catálogo de produtos/planos separado das credenciais técnicas;
+- vínculo de um produto a uma identidade MANAGER;
+- preservação dos valores base de `max_sessions`, protocolos e expiração antes de aplicar o produto;
+- produto restringe protocolos pela interseção com a política base e nunca amplia privilégios silenciosamente;
+- produto pode reduzir `max_sessions` e duração/expiração;
+- desvincular produto restaura a política base registrada;
+- produto desabilitado produz estado efetivo `product-disabled`;
+- franquia em bytes com ciclos `monthly` e `lifetime`;
+- baseline no momento da atribuição/reset para não cobrar tráfego anterior retroativamente;
+- ações `warn` e `block` ao exceder franquia;
+- `quota-exceeded` integra-se ao mesmo `identity_effective_state` consumido pelo Policy e Session Engine;
+- franquia com SSH vinculado é marcada como não-enforçável enquanto os bytes SSH não forem medidos de forma confiável;
+- ACL de protocolo, região, pool e nó;
+- protocolo já é aplicado automaticamente pela política efetiva da identidade;
+- região/pool/nó possuem contrato de autorização pronto para o contexto futuro da Colmeia;
+- `manager --products`, `manager --product ID` e `manager --product-assignment ID`;
+- reconciliador periódico `manager-product-policy.timer`;
+- catálogo, vínculos e baseline ficam sob `/etc/manager/connection`, entrando no backup/lifecycle existente;
+- CI dedicado cobre ACL, limite de sessões, `warn/block`, franquia, SSH parcial, restauração da política base, uninstall/reinstall e purge.
+
 ### Próximos itens 0.6.x
 
 Antes da Automation v2, a base comum ainda deve ganhar:
 
-1. ACL/políticas independentes do protocolo;
-2. produto/plano e cotas baseadas em **identidade**, incluindo períodos/franquias de tráfego quando configurados;
-3. provisionamento/revogação de SSH, WireGuard e OpenVPN pelo próprio Connection Engine;
-4. cotas de revenda baseadas em **produto/identidade**, não somente usuário Linux;
-5. IPv6 completo;
-6. metadados de endpoint/nó/região que serão consumidos pela Colmeia;
-7. agregação futura de uso por nó sem tratar o accounting local da 0.6.4 como faturamento global.
+1. provisionamento/revogação de SSH, WireGuard e OpenVPN pelo próprio Connection Engine;
+2. cotas de revenda baseadas em **produto/identidade**, não somente usuário Linux;
+3. IPv6 completo;
+4. metadados de endpoint/nó/região que serão consumidos pela Colmeia;
+5. passagem automática do contexto `region/pool/node` para a autorização de conexão;
+6. agregação futura de uso por nó sem tratar o accounting local como faturamento global.
 
 ## 0.7.0 — Automation Engine
 
@@ -158,7 +181,7 @@ Novo protocolo oficial para integrações futuras:
 - `managerd`/`managerctl` ou mecanismo equivalente;
 - nenhuma execução remota de shell arbitrário.
 
-O Protocol Lease Bridge da 0.6.3 continua sendo a fronteira entre daemons de conexão e a autoridade de sessão. O Identity Usage da 0.6.4 fornece a visão comum de consumo/atividade. Assim, Automation/Colmeia podem trocar a autoridade e agregar nós sem reescrever os protocolos.
+O Protocol Lease Bridge da 0.6.3 continua sendo a fronteira entre daemons de conexão e a autoridade de sessão. O Identity Usage da 0.6.4 fornece a visão comum de consumo/atividade, e a 0.6.5 fornece produto, limites e ACL. Assim, Automation/Colmeia podem trocar a autoridade e agregar nós sem reescrever os protocolos.
 
 ## 0.8.0 — Modo Colmeia
 
@@ -209,7 +232,8 @@ Exemplo:
 
 ```text
 Maria
-allowed_nodes = BR-01, US-01, DE-01, FR-01, ...
+product = global-premium
+allowed_region = BR, US, DE, FR, ...
 max_sessions_global = 1
 ```
 
@@ -218,6 +242,8 @@ Se já houver uma sessão ativa em um nó, uma segunda conexão em outro nó é 
 A Colmeia reutilizará os conceitos já implementados em 0.6.x:
 
 ```text
+product_id
+ACL region/pool/node
 session_id
 TTL
 heartbeat
