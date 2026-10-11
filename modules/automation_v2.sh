@@ -9,6 +9,7 @@ require_root
 
 STATE_DIR="$MANAGER_ETC/automation/v2"
 PRINCIPALS_DIR="$STATE_DIR/principals"
+CREDENTIALS_DIR="$STATE_DIR/credentials"
 DATA_DIR="/var/lib/manager/automation-v2"
 IDEMPOTENCY_DIR="$DATA_DIR/idempotency"
 AUDIT_DIR="/var/log/manager"
@@ -19,6 +20,7 @@ SERVICE_FILE="/etc/systemd/system/manager-automation-v2.service"
 CONNECTION_ACTIONS="$MANAGER_HOME/modules/connection_actions.sh"
 NODE_USAGE="$MANAGER_HOME/modules/node_usage.sh"
 PRINCIPALS_MODULE="$MANAGER_HOME/modules/automation_principals.sh"
+CREDENTIALS_MODULE="$MANAGER_HOME/modules/automation_credentials.sh"
 RESELLERS_DIR="$MANAGER_ETC/access/resellers"
 IDENTITY_DIR="$MANAGER_ETC/connection/identities"
 CONTRACT="manager-automation-v2-local-v1"
@@ -29,20 +31,25 @@ case "$(basename "$0")" in
 esac
 
 ensure_dirs() {
-  install -d -m 0700 "$STATE_DIR" "$DATA_DIR" "$IDEMPOTENCY_DIR" "$AUDIT_DIR"
+  install -d -m 0700 "$STATE_DIR" "$PRINCIPALS_DIR" "$CREDENTIALS_DIR" "$DATA_DIR" "$IDEMPOTENCY_DIR" "$AUDIT_DIR"
   touch "$AUDIT_FILE"
   chmod 0600 "$AUDIT_FILE"
   [[ -x "$PRINCIPALS_MODULE" ]] || { err "Registry de principals ausente: $PRINCIPALS_MODULE"; return 69; }
+  [[ -x "$CREDENTIALS_MODULE" ]] || { err "Registry de credenciais ausente: $CREDENTIALS_MODULE"; return 69; }
   "$PRINCIPALS_MODULE" --init >/dev/null
+  "$CREDENTIALS_MODULE" --init >/dev/null
 }
 
 ensure_dependencies() {
-  if ! command -v python3 >/dev/null 2>&1; then
+  local missing=0
+  command -v python3 >/dev/null 2>&1 || missing=1
+  command -v openssl >/dev/null 2>&1 || missing=1
+  if (( missing == 1 )); then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -y
-    apt-get install -y python3
+    apt-get install -y python3 openssl
   fi
-  command -v python3 >/dev/null 2>&1
+  command -v python3 >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1
 }
 
 write_service() {
@@ -71,7 +78,7 @@ EOF
 
 install_v2() {
   local socket_mode=""
-  ensure_dependencies || { err "Python 3 é necessário para Automation v2."; return 69; }
+  ensure_dependencies || { err "Python 3 e OpenSSL são necessários para Automation v2."; return 69; }
   ensure_dirs
   write_service
   systemctl enable --now manager-automation-v2.service >/dev/null
@@ -119,7 +126,10 @@ show_status() {
   printf 'socket=%s\nsocket_mode=%s\nservice=%s\nsocket_state=%s\n' \
     "$SOCKET_FILE" "$socket_mode" "$service_state" "$socket_state"
   printf 'remote_transport=0\narbitrary_shell=0\n'
-  printf 'rbac=1\nprincipal_assertion=root-local\ncryptographic_auth=0\nanti_replay=0\nrate_limit=0\n'
+  printf 'rbac=1\nprincipal_assertion=local-root-peercred-or-ed25519\n'
+  printf 'cryptographic_auth=1\ncredential_algorithm=ed25519\nnonlocal_signature_required=1\n'
+  printf 'enrollment=local-admin\nkey_rotation=1\nkey_revocation=1\n'
+  printf 'anti_replay=0\nrate_limit=0\n'
   printf 'idempotency=1\naudit=1\nsecret_replay=0\n'
 }
 
@@ -131,7 +141,8 @@ serve_v2() {
 
   exec python3 - "$SOCKET_FILE" "$IDEMPOTENCY_DIR" "$AUDIT_FILE" \
     "$CONNECTION_ACTIONS" "$NODE_USAGE" "$CONTRACT" "$PRINCIPALS_DIR" \
-    "$RESELLERS_DIR" "$IDENTITY_DIR" <<'PY'
+    "$CREDENTIALS_DIR" "$RESELLERS_DIR" "$IDENTITY_DIR" <<'PY'
+import base64
 import hashlib
 import json
 import os
@@ -153,14 +164,17 @@ import time
     NODE_USAGE,
     CONTRACT,
     PRINCIPALS_DIR,
+    CREDENTIALS_DIR,
     RESELLERS_DIR,
     IDENTITY_DIR,
 ) = sys.argv[1:]
 VERSION = 1
 MAX_REQUEST = 65536
 IDEMPOTENCY_TTL = 7 * 24 * 60 * 60
+LOCAL_ROOT_ID = "local-root"
 REQUEST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 PRINCIPAL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+KEY_ID_RE = re.compile(r"^ed25519-[a-f0-9]{16}$")
 KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 SENSITIVE_RE = re.compile(r"(?i)(password|passwd|secret|private[_-]?key|credential|token)")
 ACTIONS = {
@@ -196,7 +210,8 @@ def response_error(request_id, action_id, code, message, principal=None, princip
     return result
 
 
-def audit(request_id, action_id, uid, response, principal=None, decision="deny", reason="", cached=False):
+def audit(request_id, action_id, uid, response, principal=None, decision="deny", reason="", cached=False, auth=None):
+    auth = auth or {}
     event = {
         "ts_epoch": int(time.time()),
         "request_id": request_id,
@@ -205,6 +220,10 @@ def audit(request_id, action_id, uid, response, principal=None, decision="deny",
         "principal_id": principal["principal_id"] if principal else response.get("principal_id", ""),
         "principal_role": principal["role"] if principal else "",
         "principal_subject": principal["subject"] if principal else "",
+        "auth_scheme": auth.get("scheme", ""),
+        "auth_key_id": auth.get("key_id", ""),
+        "auth_fingerprint": auth.get("fingerprint", ""),
+        "auth_decision": auth.get("decision", "not-evaluated"),
         "rbac_decision": decision,
         "rbac_reason": str(reason)[:256],
         "ok": bool(response.get("ok", False)),
@@ -236,9 +255,9 @@ def read_conf(path, strict=False):
         raise RuntimeError("registro não é arquivo regular")
     if strict:
         if st.st_uid != 0:
-            raise RuntimeError("registro de principal não pertence a root")
+            raise RuntimeError("registro protegido não pertence a root")
         if stat.S_IMODE(st.st_mode) & 0o077:
-            raise RuntimeError("registro de principal possui permissões excessivas")
+            raise RuntimeError("registro protegido possui permissões excessivas")
     data = {}
     with open(path, "r", encoding="utf-8") as fh:
         for raw in fh:
@@ -299,6 +318,130 @@ def load_principal(principal_id):
         "role": role,
         "subject": subject,
         "products": products,
+    }
+
+
+def canonical_auth_payload(request):
+    payload = {
+        "contract": CONTRACT,
+        "version": request.get("version"),
+        "request_id": request.get("request_id"),
+        "principal_id": request.get("principal_id"),
+        "action_id": request.get("action_id"),
+        "params": request.get("params"),
+    }
+    return json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
+def load_credential(principal_id, key_id):
+    if not isinstance(key_id, str) or not KEY_ID_RE.fullmatch(key_id):
+        raise PermissionError("key_id inválido")
+    base = os.path.join(CREDENTIALS_DIR, principal_id)
+    meta_path = os.path.join(base, key_id + ".conf")
+    pub_path = os.path.join(base, key_id + ".pub")
+    meta = read_conf(meta_path, strict=True)
+    if meta is None:
+        raise PermissionError("credencial desconhecida")
+    if meta.get("version") != "1" or meta.get("principal_id") != principal_id:
+        raise PermissionError("metadados de credencial inconsistentes")
+    if meta.get("key_id") != key_id or meta.get("algorithm") != "ed25519":
+        raise PermissionError("metadados de credencial inválidos")
+    if meta.get("enabled") != "1" or meta.get("revoked_epoch", "0") != "0":
+        raise PermissionError("credencial revogada")
+
+    try:
+        st = os.lstat(pub_path)
+    except FileNotFoundError as exc:
+        raise PermissionError("chave pública ausente") from exc
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or stat.S_IMODE(st.st_mode) & 0o077:
+        raise PermissionError("chave pública insegura")
+
+    proc = subprocess.run(
+        ["openssl", "pkey", "-pubin", "-in", pub_path, "-outform", "DER"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+        check=False,
+    )
+    if proc.returncode != 0 or not proc.stdout:
+        raise PermissionError("chave pública inválida")
+    digest = hashlib.sha256(proc.stdout).digest()
+    expected_key_id = "ed25519-" + digest.hex()[:16]
+    fingerprint = "SHA256:" + base64.b64encode(digest).decode("ascii").rstrip("=")
+    if expected_key_id != key_id or meta.get("fingerprint") != fingerprint:
+        raise PermissionError("fingerprint da credencial não confere")
+    return pub_path, fingerprint
+
+
+def verify_auth(request, principal):
+    principal_id = principal["principal_id"]
+    if principal_id == LOCAL_ROOT_ID:
+        if request.get("auth") not in (None, {}):
+            raise PermissionError("local-root não aceita credencial externa")
+        return {
+            "scheme": "peercred",
+            "key_id": "",
+            "fingerprint": "",
+            "decision": "allow",
+        }
+
+    auth = request.get("auth")
+    if not isinstance(auth, dict) or set(auth) != {"scheme", "key_id", "signature"}:
+        raise PermissionError("assinatura obrigatória")
+    if auth.get("scheme") != "ed25519-v1":
+        raise PermissionError("esquema de assinatura não suportado")
+    key_id = auth.get("key_id")
+    signature_text = auth.get("signature")
+    if not isinstance(signature_text, str) or len(signature_text) > 512:
+        raise PermissionError("assinatura inválida")
+    try:
+        signature = base64.b64decode(signature_text.encode("ascii"), validate=True)
+    except Exception as exc:
+        raise PermissionError("assinatura inválida") from exc
+    if len(signature) != 64:
+        raise PermissionError("assinatura inválida")
+
+    pub_path, fingerprint = load_credential(principal_id, key_id)
+    signed = canonical_auth_payload(request)
+    data_fd, data_path = tempfile.mkstemp(prefix="manager-auth-data-")
+    sig_fd, sig_path = tempfile.mkstemp(prefix="manager-auth-sig-")
+    try:
+        os.fchmod(data_fd, 0o600)
+        os.fchmod(sig_fd, 0o600)
+        with os.fdopen(data_fd, "wb") as fh:
+            fh.write(signed)
+        with os.fdopen(sig_fd, "wb") as fh:
+            fh.write(signature)
+        proc = subprocess.run(
+            [
+                "openssl", "pkeyutl", "-verify", "-pubin", "-inkey", pub_path,
+                "-rawin", "-in", data_path, "-sigfile", sig_path,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+        )
+    finally:
+        for path in (data_path, sig_path):
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+    if proc.returncode != 0:
+        raise PermissionError("assinatura não confere")
+    return {
+        "scheme": "ed25519-v1",
+        "key_id": key_id,
+        "fingerprint": fingerprint,
+        "decision": "allow",
     }
 
 
@@ -537,7 +680,7 @@ def prune_cache():
 def execute(request, uid):
     request_id = request.get("request_id", "")
     action_id = request.get("action_id", "")
-    principal_id = request.get("principal_id", "local-root")
+    principal_id = request.get("principal_id", LOCAL_ROOT_ID)
     params = request.get("params", {})
 
     if request.get("version") != VERSION:
@@ -548,7 +691,7 @@ def execute(request, uid):
         return response_error(request_id, str(action_id), 64, "action_id não permitido", principal_id=principal_id)
     if uid != 0:
         result = response_error(request_id, action_id, 67, "peer não autorizado", principal_id=principal_id)
-        audit(request_id, action_id, uid, result, decision="deny", reason="peer-uid")
+        audit(request_id, action_id, uid, result, decision="not-evaluated", reason="peer-uid")
         return result
     if not isinstance(params, dict):
         return response_error(request_id, action_id, 64, "params deve ser objeto", principal_id=principal_id)
@@ -557,23 +700,36 @@ def execute(request, uid):
         principal = load_principal(principal_id)
     except (PermissionError, RuntimeError) as exc:
         result = response_error(request_id, action_id, 67, str(exc), principal_id=principal_id)
-        audit(request_id, action_id, uid, result, decision="deny", reason="principal-invalid")
+        audit(request_id, action_id, uid, result, decision="not-evaluated", reason="principal-invalid")
+        return result
+
+    try:
+        auth_meta = verify_auth(request, principal)
+    except (PermissionError, RuntimeError, subprocess.SubprocessError) as exc:
+        auth_meta = {
+            "scheme": "ed25519-v1" if principal_id != LOCAL_ROOT_ID else "peercred",
+            "key_id": request.get("auth", {}).get("key_id", "") if isinstance(request.get("auth"), dict) else "",
+            "fingerprint": "",
+            "decision": "deny",
+        }
+        result = response_error(request_id, action_id, 67, "autenticação criptográfica inválida", principal=principal)
+        audit(request_id, action_id, uid, result, principal=principal, decision="not-evaluated", reason=str(exc), auth=auth_meta)
         return result
 
     allowed, params, rbac_reason = authorize(principal, action_id, params)
     if not allowed:
         result = response_error(request_id, action_id, 67, "ação fora do escopo RBAC", principal=principal)
-        audit(request_id, action_id, uid, result, principal=principal, decision="deny", reason=rbac_reason)
+        audit(request_id, action_id, uid, result, principal=principal, decision="deny", reason=rbac_reason, auth=auth_meta)
         return result
 
     req_hash = request_hash(principal["principal_id"], action_id, params)
     cached = load_cache(request_id, req_hash)
     if cached == "conflict":
         result = response_error(request_id, action_id, 65, "request_id reutilizado com payload/principal diferente", principal=principal)
-        audit(request_id, action_id, uid, result, principal=principal, decision="allow", reason=rbac_reason)
+        audit(request_id, action_id, uid, result, principal=principal, decision="allow", reason=rbac_reason, auth=auth_meta)
         return result
     if isinstance(cached, dict):
-        audit(request_id, action_id, uid, cached, principal=principal, decision="allow", reason=rbac_reason, cached=True)
+        audit(request_id, action_id, uid, cached, principal=principal, decision="allow", reason=rbac_reason, cached=True, auth=auth_meta)
         return cached
 
     try:
@@ -581,7 +737,7 @@ def execute(request, uid):
     except ValueError as exc:
         result = response_error(request_id, action_id, 64, str(exc), principal=principal)
         save_cache(request_id, req_hash, result)
-        audit(request_id, action_id, uid, result, principal=principal, decision="allow", reason=rbac_reason)
+        audit(request_id, action_id, uid, result, principal=principal, decision="allow", reason=rbac_reason, auth=auth_meta)
         return result
 
     env = os.environ.copy()
@@ -615,7 +771,7 @@ def execute(request, uid):
         result = response_error(request_id, action_id, 70, "tempo limite da operação excedido", principal=principal)
 
     save_cache(request_id, req_hash, result)
-    audit(request_id, action_id, uid, result, principal=principal, decision="allow", reason=rbac_reason)
+    audit(request_id, action_id, uid, result, principal=principal, decision="allow", reason=rbac_reason, auth=auth_meta)
     return result
 
 
@@ -684,32 +840,98 @@ PY
 call_v2() {
   ensure_dependencies || exit 69
   [[ -S "$SOCKET_FILE" ]] || { err "Automation v2 não está disponível em $SOCKET_FILE"; exit 69; }
-  exec python3 - "$SOCKET_FILE" "$@" <<'PY'
+  exec python3 - "$SOCKET_FILE" "$CONTRACT" "$@" <<'PY'
+import base64
 import json
+import os
 import re
 import socket
+import stat
+import subprocess
 import sys
+import tempfile
 import uuid
 
 socket_file = sys.argv[1]
-args = sys.argv[2:]
+contract = sys.argv[2]
+args = sys.argv[3:]
 if not args:
-    print("Uso: managerctl [--principal ID] ACTION [key=value ...] [--request-id ID]", file=sys.stderr)
+    print("Uso: managerctl [--principal ID] [--credential FILE] ACTION [key=value ...] [--request-id ID]", file=sys.stderr)
     raise SystemExit(64)
 
-principal_id = "local-root"
-if args and args[0] == "--principal":
-    if len(args) < 3:
-        print("--principal exige ID e ACTION", file=sys.stderr)
+principal_id = None
+credential_file = None
+while args:
+    item = args[0]
+    if item == "--principal":
+        if len(args) < 2:
+            print("--principal exige ID", file=sys.stderr)
+            raise SystemExit(64)
+        principal_id = args[1]
+        args = args[2:]
+        continue
+    if item.startswith("--principal="):
+        principal_id = item.split("=", 1)[1]
+        args = args[1:]
+        continue
+    if item == "--credential":
+        if len(args) < 2:
+            print("--credential exige FILE", file=sys.stderr)
+            raise SystemExit(64)
+        credential_file = args[1]
+        args = args[2:]
+        continue
+    if item.startswith("--credential="):
+        credential_file = item.split("=", 1)[1]
+        args = args[1:]
+        continue
+    break
+
+
+def load_credential(path):
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        print(f"credencial não encontrada: {path}", file=sys.stderr)
+        raise SystemExit(66)
+    if not stat.S_ISREG(st.st_mode) or stat.S_IMODE(st.st_mode) & 0o077:
+        print("arquivo de credencial deve ser regular e sem permissões para group/other", file=sys.stderr)
+        raise SystemExit(67)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        print("arquivo de credencial inválido", file=sys.stderr)
         raise SystemExit(64)
-    principal_id = args[1]
-    args = args[2:]
-elif args and args[0].startswith("--principal="):
-    principal_id = args[0].split("=", 1)[1]
-    args = args[1:]
+    required = {"version", "principal_id", "key_id", "algorithm", "fingerprint", "private_key_pem"}
+    if set(data) != required or data.get("version") != 1 or data.get("algorithm") != "ed25519":
+        print("formato de credencial não suportado", file=sys.stderr)
+        raise SystemExit(64)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}", data.get("principal_id", "")):
+        print("principal da credencial inválido", file=sys.stderr)
+        raise SystemExit(64)
+    if not re.fullmatch(r"ed25519-[a-f0-9]{16}", data.get("key_id", "")):
+        print("key_id da credencial inválido", file=sys.stderr)
+        raise SystemExit(64)
+    if not isinstance(data.get("private_key_pem"), str) or "BEGIN PRIVATE KEY" not in data["private_key_pem"]:
+        print("chave privada da credencial inválida", file=sys.stderr)
+        raise SystemExit(64)
+    return data
+
+credential = load_credential(credential_file) if credential_file else None
+if credential:
+    if principal_id is not None and principal_id != credential["principal_id"]:
+        print("--principal não corresponde ao principal da credencial", file=sys.stderr)
+        raise SystemExit(64)
+    principal_id = credential["principal_id"]
+if principal_id is None:
+    principal_id = "local-root"
 
 if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}", principal_id):
     print("principal_id inválido", file=sys.stderr)
+    raise SystemExit(64)
+if principal_id == "local-root" and credential is not None:
+    print("local-root usa SO_PEERCRED e não aceita --credential", file=sys.stderr)
     raise SystemExit(64)
 if not args:
     print("ACTION ausente", file=sys.stderr)
@@ -745,6 +967,64 @@ request = {
     "action_id": action,
     "params": params,
 }
+
+
+def canonical_payload(req):
+    payload = {
+        "contract": contract,
+        "version": req["version"],
+        "request_id": req["request_id"],
+        "principal_id": req["principal_id"],
+        "action_id": req["action_id"],
+        "params": req["params"],
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def sign_request(req, cred):
+    signed = canonical_payload(req)
+    key_fd, key_path = tempfile.mkstemp(prefix="manager-credential-key-")
+    data_fd, data_path = tempfile.mkstemp(prefix="manager-credential-data-")
+    sig_fd, sig_path = tempfile.mkstemp(prefix="manager-credential-sig-")
+    os.close(sig_fd)
+    try:
+        os.fchmod(key_fd, 0o600)
+        os.fchmod(data_fd, 0o600)
+        with os.fdopen(key_fd, "w", encoding="utf-8") as fh:
+            fh.write(cred["private_key_pem"])
+        with os.fdopen(data_fd, "wb") as fh:
+            fh.write(signed)
+        proc = subprocess.run(
+            ["openssl", "pkeyutl", "-sign", "-inkey", key_path, "-rawin", "-in", data_path, "-out", sig_path],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=False,
+        )
+        if proc.returncode != 0:
+            print("falha ao assinar requisição com a credencial", file=sys.stderr)
+            raise SystemExit(70)
+        with open(sig_path, "rb") as fh:
+            signature = fh.read()
+    finally:
+        for path in (key_path, data_path, sig_path):
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+    if len(signature) != 64:
+        print("assinatura Ed25519 com tamanho inesperado", file=sys.stderr)
+        raise SystemExit(70)
+    req["auth"] = {
+        "scheme": "ed25519-v1",
+        "key_id": cred["key_id"],
+        "signature": base64.b64encode(signature).decode("ascii"),
+    }
+
+if credential is not None:
+    sign_request(request, credential)
+
 raw = (json.dumps(request, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
 client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 client.settimeout(190)
@@ -790,7 +1070,7 @@ case "${1:-}" in
     ;;
   "") show_status ;;
   *)
-    err "Uso: automation_v2.sh {--install|--detach|--purge|--status|--serve|--call [--principal ID] ACTION [key=value ...]}"
+    err "Uso: automation_v2.sh {--install|--detach|--purge|--status|--serve|--call [--principal ID] [--credential FILE] ACTION [key=value ...]}"
     exit 64
     ;;
 esac
