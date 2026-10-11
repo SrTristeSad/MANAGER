@@ -2,9 +2,9 @@
 
 Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Manager**, reconstruído para Debian/Ubuntu atuais.
 
-> O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva capacidades úteis, substitui implementações inseguras/obsoletas e prepara uma arquitetura própria para Automation v2, Telegram e Modo Colmeia.
+> O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva capacidades úteis, substitui implementações inseguras/obsoletas e evolui para uma arquitetura própria de identidade, automação, VPN, revenda e operação multi-servidor.
 
-Versão atual: **0.6.11**.
+Versão atual: **0.7.0**.
 
 ## Princípios
 
@@ -16,7 +16,7 @@ Versão atual: **0.6.11**.
 - criar backup/rollback antes de mudanças críticas;
 - preservar configurações que não pertencem ao MANAGER sempre que possível;
 - compatibilidade com legado não significa copiar fragilidades do legado;
-- integrações futuras usam operações estruturadas, nunca shell remoto arbitrário.
+- integrações novas usam operações estruturadas, nunca shell remoto arbitrário.
 
 ## Recursos atuais
 
@@ -25,21 +25,16 @@ Versão atual: **0.6.11**.
 - informações do sistema, kernel, uptime, memória, disco, carga, IPs e serviços;
 - usuários SSH: criar/remover, senha, validade, limite simultâneo, bloqueio e sessões;
 - contas teste com duração em minutos e remoção automática;
-- limpeza confirmada de expirados;
+- limpeza e relatório de expirados;
 - banner SSH por `sshd_config.d`;
 - WireGuard com servidor, clientes, revogação, QR Code e dual-stack IPv4/IPv6 quando a VPS possui saída IPv6 real;
-- OpenVPN com Easy-RSA, perfis `.ovpn`, CRL, UDP/TCP e `server-ipv6` opcional;
-- IPv6 Guard ligado ao Policy/Session Engine para impedir bypass de limites pelo tráfego IPv6;
-- UFW configurado para administrar IPv4 e IPv6 quando usado pelo MANAGER;
-- identidade persistente do nó com região, pool, capacidade e capacidades detectadas;
-- ACL de produto resolve automaticamente `region`, `pool` e `node_id` do nó local;
-- agregado local de uso/sessões por `node_id`, explicitamente separado de billing global;
-- contrato interno allowlisted para preflight/create/revoke/status dos acessos;
-- DNS Ad Block com dnsmasq, whitelist/blacklist e atualização diária;
+- OpenVPN com Easy-RSA, perfis `.ovpn`, CRL, UDP/TCP e IPv6 opcional;
+- IPv6 Guard ligado ao Policy/Session Engine;
+- UFW, Fail2ban e hardening SSH;
+- DNS Ad Block com dnsmasq;
 - Squid privado, proxy TCP, WebSocket e TLS opcionais;
-- hosts de proxy gerenciados;
 - TLS/Let's Encrypt;
-- firewall, Fail2ban e hardening SSH.
+- speedtest, diagnóstico, saúde, logs, manutenção e desempenho/BBR.
 
 ### Contas e revenda
 
@@ -47,14 +42,14 @@ Versão atual: **0.6.11**.
 - hierarquia, bloqueio/reativação e cota total por cliente lógico;
 - identidades VPN-only podem pertencer à revenda sem usuário Linux;
 - uma identidade ocupa uma vaga mesmo usando vários protocolos;
-- uso de subrevendedor entra no limite agregado do revendedor pai;
+- cota do subrevendedor também entra no limite agregado do revendedor pai;
 - cotas opcionais por produto/plano;
 - propriedade SSH legada preservada e deduplicada ao adotar uma identidade;
-- criação de usuário diretamente vinculada ao proprietário;
-- reserva de cota sob lock antes da criação da identidade;
+- criação de conta diretamente vinculada ao proprietário;
+- reserva de cota sob lock;
 - exportação/restauração segura de usuários;
 - detector de estruturas conhecidas do SSHPlus antigo;
-- monitor de sessões SSH com encerramento seletivo por TTY.
+- monitor de sessões SSH com encerramento seletivo.
 
 Estado de revenda:
 
@@ -66,7 +61,7 @@ Documentação: [`docs/RESELLER_QUOTAS.md`](docs/RESELLER_QUOTAS.md).
 
 ## Connection Engine
 
-A partir da série 0.6, a identidade lógica deixa de depender do `/etc/passwd`.
+Desde a série 0.6, a identidade lógica não depende do `/etc/passwd`.
 
 ```text
 maria
@@ -86,7 +81,7 @@ Estado:
 /etc/manager/connection/identities/
 ```
 
-As identidades não duplicam senhas, chaves privadas WireGuard nem certificados OpenVPN. Elas vinculam política e recursos técnicos a uma única conta lógica.
+As identidades não duplicam senhas, chaves privadas WireGuard nem certificados OpenVPN. Elas ligam política, plano e recursos técnicos a uma única conta lógica.
 
 Documentação: [`docs/CONNECTION_ENGINE.md`](docs/CONNECTION_ENGINE.md).
 
@@ -107,8 +102,6 @@ O Policy Engine aplica esse estado aos recursos reais.
 
 ### SSH
 
-O MANAGER gera somente:
-
 ```text
 /etc/ssh/sshd_config.d/65-manager-identity-policy.conf
 /etc/security/limits.d/98-manager-identity.conf
@@ -118,69 +111,40 @@ Identidades inativas são bloqueadas com `DenyUsers`. Antes de reload, `sshd -t`
 
 ### WireGuard
 
-Identidade inativa pode ter somente seu peer retirado do runtime de `wg0`, preservando chaves e arquivos de configuração.
+Uma identidade inativa pode ter somente seu peer retirado do runtime de `wg0`, preservando chaves e configuração persistente.
 
 ### OpenVPN
 
-Uma identidade inativa não precisa ter o certificado revogado. O MANAGER consegue bloquear o recurso de forma reversível e preservar credenciais para futura reativação.
+O bloqueio de identidade é reversível e não exige revogar o certificado apenas para uma suspensão temporária.
 
-## Sessões observadas
+## Session / Lease Engine
 
 ```bash
 manager --identity-sessions
 manager --identity-sessions maria
-```
-
-Exemplo:
-
-```text
-maria  active  ssh=0  wg=1  ovpn=0  total=1  max=1
-```
-
-Essa visão responde: **o que os protocolos realmente estão vendo?**
-
-## Session / Lease Engine
-
-A 0.6.2 introduziu a autoridade local de vagas.
-
-```bash
 manager --leases
 manager --leases maria
 ```
 
-Uma lease contém:
+Uma lease possui identidade, protocolo, recurso, dispositivo, `session_id`, `session_epoch`, TTL e heartbeat.
 
-```text
-session_id
-identity_id
-protocol
-resource
-device_id
-session_epoch
-created_epoch
-heartbeat_epoch
-expires_epoch
-```
-
-Leases ativas ficam somente em:
+Leases ativas ficam em runtime:
 
 ```text
 /run/manager-session-leases/active/
 ```
 
-O fencing persistente fica em:
+Fencing persistente:
 
 ```text
 /etc/manager/connection/session-epochs/<id>.epoch
 ```
 
-O Session Engine possui aquisição atômica local, `max_sessions` sob lock, retry idempotente, TTL, heartbeat, release, troca de sessão, `session_epoch`, fencing e revogação automática quando política/recurso deixa de ser válido.
+O motor possui aquisição atômica local, `max_sessions` sob lock, retry idempotente, TTL, heartbeat, release, troca de sessão, fencing e revogação automática quando política/recurso deixa de ser válido.
 
 Documentação: [`docs/SESSION_ENGINE.md`](docs/SESSION_ENGINE.md).
 
-## Protocol Lease Bridge — 0.6.3
-
-Na 0.6.3 as leases passam a representar conexões reais, não apenas chamadas internas.
+## Protocol Lease Bridge
 
 ```text
 SSH / WireGuard / OpenVPN
@@ -190,34 +154,25 @@ SSH / WireGuard / OpenVPN
        Session Engine
 ```
 
-### SSH → lease
+- SSH usa hook de sessão PAM;
+- OpenVPN usa uma fila runtime privilegiada e allowlisted, sem entregar shell root ao daemon;
+- WireGuard usa handshake recente como atividade e gate específico do peer;
+- reconciliação periódica mantém leases e conexões reais alinhadas.
 
-O MANAGER adiciona um bloco próprio de sessão em `/etc/pam.d/sshd` e usa `/usr/local/libexec/manager-ssh-lease-hook`. No `open_session`, uma conta vinculada precisa adquirir uma lease. No `close_session`, a reserva é liberada.
-
-### OpenVPN → lease
-
-O OpenVPN não recebe shell root nem `sudo` amplo. O hook `/usr/local/libexec/manager-openvpn-lease-hook` usa uma fila runtime processada por uma superfície privilegiada allowlisted.
-
-### WireGuard → lease
-
-WireGuard não tem evento de login. O bridge usa o handshake recente como sinal de atividade. Um peer gerenciado só mantém tráfego encaminhado quando possui lease válida; não existe flush global do firewall.
-
-Reconciliação automática:
-
-```text
-manager-protocol-leases.timer
-manager-protocol-leases.service
-manager-openvpn-lease-queue.path
-manager-openvpn-lease-queue.service
-```
-
-## Identity Usage Accounting — 0.6.4
-
-A 0.6.4 adiciona uma visão comum de **tráfego medido + atividade** por identidade.
+## Identity Usage Accounting
 
 ```bash
 manager --usage
 manager --usage maria
+```
+
+WireGuard e OpenVPN alimentam bytes reais reportados pelos protocolos. A primeira observação vira baseline e somente deltas posteriores entram no acumulado. Reset de contador do daemon não apaga o histórico.
+
+SSH participa de sessão e última atividade, mas o MANAGER não inventa byte accounting por UID. Quando SSH está vinculado:
+
+```text
+traffic_complete=0
+ssh_bytes_supported=0
 ```
 
 Estado persistente:
@@ -226,18 +181,9 @@ Estado persistente:
 /var/lib/manager/identity-usage/identities/
 ```
 
-WireGuard e OpenVPN alimentam bytes reais reportados pelos protocolos. A primeira observação vira baseline e somente deltas posteriores entram no acumulado. Reset de contador do daemon não zera o histórico.
-
-SSH participa de sessão, heartbeat e última atividade, mas o MANAGER não inventa byte accounting SSH usando todo o tráfego do UID Linux. Quando SSH está vinculado:
-
-```text
-traffic_complete=0
-ssh_bytes_supported=0
-```
-
 Documentação: [`docs/IDENTITY_USAGE.md`](docs/IDENTITY_USAGE.md).
 
-## Produtos, planos, ACL e franquias — 0.6.5
+## Produtos, planos, ACL e franquias
 
 ```bash
 manager --products
@@ -245,13 +191,13 @@ manager --product premium
 manager --product-assignment maria
 ```
 
-Produtos podem restringir protocolos, `max_sessions`, duração/expiração, franquia de bytes e ACL de região/pool/nó. O produto restringe a política base e não amplia privilégios silenciosamente.
+Produtos podem restringir protocolos, `max_sessions`, duração/expiração, franquia de bytes e ACL de região/pool/nó. Produto restringe a política base; não amplia privilégio silenciosamente.
 
-Franquias usam `monthly` ou `lifetime`, com ação `warn` ou `block`. Em `block`, accounting completo pode levar a `quota-exceeded`; identidades com SSH não são bloqueadas com números parciais.
+Franquias podem usar ciclo `monthly` ou `lifetime`, com ação `warn` ou `block`. Uma franquia SSH não é bloqueada usando dados de tráfego incompletos.
 
 Documentação: [`docs/PRODUCTS.md`](docs/PRODUCTS.md).
 
-## Provisionamento Unificado — 0.6.6
+## Provisionamento unificado
 
 ```bash
 manager --provision maria brasil-premium
@@ -259,101 +205,47 @@ manager --provision maria brasil-premium '' wireguard,openvpn
 manager --provision cliente01 plano-ssh revenda01 ssh
 ```
 
-O provisionador faz preflight, cria a identidade, aplica o produto, materializa somente os protocolos selecionados, cria bindings e reconcilia política. Se uma etapa falhar, desfaz os recursos criados naquela tentativa.
+O provisionador faz preflight, cria a identidade, aplica o produto, materializa somente os protocolos selecionados, cria bindings e reconcilia política. Falha intermediária aciona rollback dos recursos criados naquela tentativa.
 
-No SSH, a senha aleatória fica bloqueada durante a transação e é mostrada uma única vez após o commit. Ela não entra no log de eventos. WireGuard cria somente o peer/perfil correspondente e OpenVPN reutiliza a PKI Easy-RSA existente.
+No SSH, a senha aleatória fica bloqueada durante a transação e é mostrada uma única vez após o commit. Ela não entra no log operacional.
 
-Revogação completa:
+Revogação:
 
 ```bash
 manager --revoke-identity maria
 ```
 
-A revogação desativa primeiro a identidade, invalida leases, remove/revoga recursos técnicos e limpa bindings. A identidade lógica permanece `disabled` para histórico/auditoria.
+A identidade lógica permanece `disabled` para histórico/auditoria.
 
 Documentação: [`docs/PROVISIONING.md`](docs/PROVISIONING.md).
 
-## Cotas de revenda por identidade/produto — 0.6.7
+## IPv6 / dual-stack
 
-A cota de revenda deixa de depender da existência de usuário Linux.
+O MANAGER habilita IPv6 na VPN somente quando a VPS possui rota IPv6 padrão e endereço global utilizável.
 
-```text
-revenda01
-├── cota total = 100 clientes
-├── premium = 20 clientes
-└── basic = ilimitado
-```
-
-Uma identidade conta uma vez, independentemente de usar SSH, WireGuard, OpenVPN ou uma combinação deles. Identidades VPN-only podem ser provisionadas diretamente para revendedores e subrevendedores.
-
-Slots de capacidade ficam em:
-
-```text
-/etc/manager/access/identity-slots/
-```
-
-Cotas específicas de produto ficam em:
-
-```text
-/etc/manager/access/product-quotas/
-```
-
-Bloqueio temporário mantém a vaga. Revogação completa libera a vaga somente depois de finalizar a remoção dos acessos. Para reativar uma identidade cujo slot foi liberado, a capacidade precisa ser reservada novamente.
-
-Contas SSH antigas continuam contando até serem adotadas por uma identidade; a adoção é deduplicada para não cobrar duas vagas pelo mesmo cliente. Identidades revogadas preservadas pela 0.6.6 são migradas com slot inativo.
-
-Consultas:
-
-```bash
-manager --reseller-usage revenda01
-manager --reseller-product-quota revenda01 premium
-```
-
-O `products.sh --assign` também verifica a cota por produto, portanto o limite não depende somente do menu/provisionador. O preflight do provisionamento verifica cota total e cota do produto antes de criar recursos técnicos.
-
-Documentação: [`docs/RESELLER_QUOTAS.md`](docs/RESELLER_QUOTAS.md).
-
-## IPv6 / dual-stack — 0.6.8
-
-O MANAGER só habilita IPv6 em uma VPN quando a VPS possui rota IPv6 padrão e endereço global utilizável. Sem isso, WireGuard/OpenVPN continuam IPv4-only e não anunciam `::/0` sem conectividade real.
-
-WireGuard usa:
-
-```text
-fd66:66:66::/64
-```
-
-OpenVPN usa:
-
-```text
-fd66:8::/64
-```
-
-O modo portátil atual usa ULA + NAT66. Instalações WireGuard/OpenVPN já gerenciadas podem ser reconciliadas para dual-stack sem recriar identidades e, no caso do WireGuard, sem trocar chaves dos clientes.
-
-O `IPv6 Guard` não substitui o Session Engine. Ele espelha a decisão de lease/política no forwarding IPv6 e cria somente regras específicas por identidade, removendo-as quando a lease volta a ser válida.
+WireGuard usa ULA própria em `fd66:66:66::/64`; OpenVPN usa `fd66:8::/64`. O modo portátil atual usa ULA + NAT66.
 
 ```bash
 manager --ipv6-status
 ```
 
-O provisionamento unificado herda o estado dual-stack do servidor. WireGuard retorna `wireguard_ipv4` e `wireguard_ipv6`, mantendo `wireguard_ip` como alias compatível do IPv4.
+O IPv6 Guard espelha a decisão do Policy/Session Engine no forwarding IPv6 sem executar flush global do firewall.
 
 Documentação: [`docs/IPV6.md`](docs/IPV6.md).
 
-## Identidade e metadados do nó — 0.6.9
+## Identidade e metadados do nó
 
-Cada VPS MANAGER passa a possuir um `node_id` estável e independente das identidades de clientes. O registro fica em:
+Cada VPS possui um `node_id` persistente:
 
 ```text
 /etc/manager/connection/node/node.conf
 ```
 
-Ele armazena nome, país, região, pool, provedor, cidade, capacidade lógica, peso, limite declarado de sessões e estado administrativo. O módulo também publica protocolos instalados, capacidade IPv6, interfaces/endereço locais e endpoints configurados, sem alterar a rede.
-
-Exemplo de configuração:
+Metadados incluem nome, país, região, pool, provedor, cidade, capacidade, peso, limite declarado de sessões e estado administrativo.
 
 ```bash
+manager --node
+manager --node-context
 manager --node-set country BR
 manager --node-set region BR-SP
 manager --node-set pool BRASIL-PREMIUM
@@ -362,56 +254,27 @@ manager --node-set weight 3
 manager --node-set max_sessions 500
 ```
 
-Consultar o nó:
-
-```bash
-manager --node
-manager --node-context
-```
-
-O `node_id` é criado uma única vez, é somente leitura e sobrevive a uninstall/reinstall normal porque faz parte do estado persistente do Connection Engine. Ele é um identificador lógico, não a futura chave criptográfica de enrollment da Colmeia.
-
-País não define Colmeia: vários nós do mesmo país, cidade ou provedor podem pertencer ao mesmo domínio de operação e ao mesmo pool. `capacity` e `weight` ainda são declarativos nesta etapa; o scheduler multi-nó virá depois.
+`country` é metadado; região e pool continuam sendo agrupamentos lógicos administrados pelo operador.
 
 Documentação: [`docs/NODE_METADATA.md`](docs/NODE_METADATA.md).
 
-## ACL automática por nó — 0.6.10
+## ACL automática por nó
 
-A autorização de produto agora usa automaticamente o contexto persistente da própria VPS. Quando região, pool e nó não são passados explicitamente, o Product Policy lê:
-
-```text
-region
-pool
-node_id
-```
-
-de `/etc/manager/connection/node/node.conf`.
-
-Assim, a chamada local pode ser reduzida a:
+O Product Policy resolve automaticamente `region`, `pool` e `node_id` do nó local quando o chamador não envia contexto explícito.
 
 ```bash
 /opt/manager/modules/products.sh --authorize maria wireguard
 ```
 
-Um plano limitado a `BR-SP`, `BRASIL-PREMIUM` e a um `node_id` específico só é aceito quando o servidor atual corresponde às três dimensões. ACL restrita com metadado local ausente falha fechada; `*` continua significando qualquer valor.
-
-A forma explícita anterior continua compatível:
-
-```bash
-/opt/manager/modules/products.sh --authorize maria wireguard BR-SP BRASIL-PREMIUM node-abc123
-```
-
-O Session Engine também recusa novas leases quando o nó local está fora da região, pool ou lista de nós do produto. `country` continua sendo apenas metadado: o MANAGER não transforma país em região automaticamente.
+ACL restrita falha fechada quando o metadado obrigatório está ausente ou não corresponde ao produto.
 
 Documentação: [`docs/NODE_PRODUCT_ACL.md`](docs/NODE_PRODUCT_ACL.md).
 
 ## Fechamento do Connection Engine — 0.6.11
 
-A 0.6.11 fecha os dois itens que ainda restavam antes da Automation Engine.
+A série 0.6.x terminou com duas superfícies preparatórias para as camadas posteriores.
 
-### Superfície allowlisted de lifecycle
-
-A fronteira privilegiada comum é:
+### Lifecycle allowlisted
 
 ```bash
 /opt/manager/modules/connection_actions.sh --describe
@@ -421,7 +284,13 @@ A fronteira privilegiada comum é:
 /opt/manager/modules/connection_actions.sh --revoke maria
 ```
 
-O contrato `manager-connection-actions-v1` aceita somente essas ações e os protocolos `ssh`, `wireguard` e `openvpn`. Ele declara `arbitrary_shell=0`, `arbitrary_command=0` e `arbitrary_path=0` e reutiliza o provisionamento/revogação transacional já testado.
+O contrato `manager-connection-actions-v1` declara:
+
+```text
+arbitrary_shell=0
+arbitrary_command=0
+arbitrary_path=0
+```
 
 Documentação: [`docs/CONNECTION_ACTIONS.md`](docs/CONNECTION_ACTIONS.md).
 
@@ -431,9 +300,7 @@ Documentação: [`docs/CONNECTION_ACTIONS.md`](docs/CONNECTION_ACTIONS.md).
 /opt/manager/modules/node_usage.sh --show
 ```
 
-O contrato `manager-node-usage-v1` agrega `node_id`, região/pool, identidades, leases/sessões, protocolos ativos, última atividade e bytes WireGuard/OpenVPN já contabilizados pelo Identity Usage.
-
-Ele deixa explícito:
+O contrato `manager-node-usage-v1` agrega identidade do nó, região/pool, identidades, leases/sessões, protocolos, última atividade e bytes já contabilizados.
 
 ```text
 usage_scope=node-local
@@ -441,103 +308,165 @@ billing_authoritative=0
 global_usage_supported=0
 ```
 
-Logo, o snapshot serve como telemetria local e **não** é tratado como faturamento global da futura Colmeia. Se houver SSH sem byte accounting confiável, `traffic_complete=0` continua sinalizando medição parcial.
-
 Documentação: [`docs/NODE_USAGE.md`](docs/NODE_USAGE.md).
 
-**A série 0.6.x está concluída.** Transporte remoto, Legacy `syncpainel`, RBAC, autenticação, idempotência e API pertencem à 0.7.x. Scheduler, health distribuído e autoridade multi-nó pertencem à 0.8.x.
+## Automation Legacy v1 — 0.7.0
 
-## O limite que prepara a Colmeia
+A primeira etapa da série 0.7 implementa a compatibilidade controlada com o antigo ecossistema `syncpainel`.
 
-Hoje autoridade de lease, produto, accounting e cota de revenda ainda é local na VPS. O modelo já representa o comportamento planejado para a Colmeia:
+Ela fica **desligada por padrão**.
 
-```text
-Maria
-product = global-premium
-allowed_regions = BR, US, DE, FR, ...
-max_sessions = 1
+```bash
+manager automation legacy status
+manager automation legacy enable
+manager automation legacy enable 22022
+manager automation legacy disable
+manager automation legacy restart
+manager automation legacy rotate-password
 ```
 
-O MANAGER já possui o objeto persistente de nó (`node_id`, região, pool, capacidade e protocolos), já usa o contexto do nó para autorizar produtos e novas leases e já expõe telemetria local em contrato estável. No futuro, o Hub substituirá locks locais por autoridade global e adicionará heartbeat, scheduler e identidade criptográfica sem mudar os conceitos de produto, ACL, identidade, cota, `session_id`, TTL, heartbeat e `session_epoch`.
+### Transporte compatível sem root remoto
+
+Ao ativar, o MANAGER cria uma instância SSH dedicada e a conta:
+
+```text
+manager-legacy
+```
+
+O painel antigo pode continuar usando os campos tradicionais de servidor (`login_server`, senha e porta), mas a credencial não é `root`.
+
+O listener dedicado possui:
+
+- `PermitRootLogin no`;
+- sem TTY;
+- sem TCP/agent/X11 forwarding;
+- sem túnel SSH;
+- `ForceCommand` fixo;
+- regra `sudoers` validada por `visudo` permitindo elevar somente o dispatcher Legacy;
+- guard no SSH principal para impedir que `manager-legacy` vire shell normal.
+
+A senha de integração é gerada na primeira ativação e devolvida uma única vez. Ela não é gravada em texto claro no estado ou no audit log do MANAGER.
+
+### Contrato histórico suportado
+
+```text
+criarusuario.sh USER PASSWORD DAYS LIMIT
+remover.sh USER
+AlterarSenha.sh USER PASSWORD
+AlterarData.sh USER DAYS
+alterarlimite.sh USER LIMIT
+KillUser.sh USER
+sshmonitor.sh
+```
+
+O dispatcher usa allowlist e não executa `eval`. Qualquer comando fora dessa lista é recusado.
+
+As operações de alteração/remoção só podem atingir usuários SSH vinculados ao Connection Engine. `root`, `manager-legacy` e usuários locais alheios ao MANAGER não podem ser manipulados pelo Legacy.
+
+O adapter preserva os retornos relevantes esperados pelos painéis antigos, mas não recria `/root/usuarios.db`, `/etc/SSHPlus/senha`, `chmod 777`, firewall destrutivo ou senha em texto claro.
+
+Estado:
+
+```text
+/etc/manager/automation/legacy/
+```
+
+Quando `disable` é executado, o serviço para, a porta dedicada fecha, a regra privilegiada é removida e a conta de integração fica bloqueada. Configuração é preservada para reativação.
+
+O Legacy não abre porta UFW automaticamente. O operador decide explicitamente a regra de firewall, preferencialmente limitando a origem ao servidor do painel.
+
+Documentação: [`docs/AUTOMATION_LEGACY.md`](docs/AUTOMATION_LEGACY.md).
+
+## Limite atual e próxima etapa
+
+Hoje a autoridade de lease, produto, accounting e cota ainda é local na VPS.
+
+A **Automation Legacy v1 está concluída**, mas a **Automation v2 ainda não está**. A próxima etapa do 0.7 é introduzir a interface oficial para integrações novas: `managerd/managerctl` ou equivalente, Unix socket privilegiado, ações versionadas, request IDs, idempotência, RBAC, auditoria estruturada, autenticação criptográfica, anti-replay e rate limiting.
+
+Somente depois dessa camada o roadmap entra na 0.8 Colmeia, onde locks e leases passam a poder ter autoridade global e entram heartbeat, scheduler, drain/failover e agregação multi-nó.
 
 ## Backup e migração
 
-Backups de configuração ficam em `/var/backups/manager/` e incluem, quando presentes:
+Backups ficam em `/var/backups/manager/` e incluem, quando presentes:
 
 ```text
 /etc/manager/access
 /etc/manager/connection
+/etc/manager/automation
 /etc/manager/proxy
 /var/lib/manager/identity-usage/identities
 estado WireGuard/OpenVPN
 DNS/TLS/banner/performance
 ```
 
-Slots de identidade e cotas por produto estão sob `/etc/manager/access`; identidade/metadados do nó ficam sob `/etc/manager/connection`, portanto participam do backup existente. Estado dual-stack fica nos diretórios WireGuard/OpenVPN dentro de `/etc/manager`; leases e regras runtime não entram no backup.
-
 A exportação de usuários Linux é separada e não guarda senha em texto claro nem substitui `/etc/passwd`/`etc/shadow` inteiros durante restauração.
 
-O detector de legado reconhece estruturas como `/root/usuarios.db`, `/etc/SSHPlus/senha/` e `/root/backup.vps`.
+O detector de legado reconhece estruturas como `/root/usuarios.db`, `/etc/SSHPlus/senha/` e `/root/backup.vps` para migração assistida futura; o Legacy v1 não volta a usar essas estruturas inseguras.
 
 ## Segurança
 
 - hardening OpenSSH por drop-in;
 - Fail2ban;
-- UFW com proteção da porta SSH detectada e cobertura IPv6 habilitada;
+- UFW com IPv4/IPv6 quando administrado pelo MANAGER;
 - atualizações automáticas de segurança;
 - TLS/Let's Encrypt;
 - fingerprints de chaves públicas;
 - Squid sem `http_access allow all`;
-- nada de flush global de firewall IPv4 ou IPv6;
+- nenhum flush global de firewall IPv4/IPv6;
 - credenciais VPN com permissões restritas;
 - estado de identidade, produto, revenda, nó e accounting restritos a root;
-- OpenVPN não recebe acesso root ao Lease Engine;
-- IPv6 Guard cria/remove somente regras específicas da identidade;
+- OpenVPN não recebe shell root para conversar com o Lease Engine;
+- IPv6 Guard cria/remove somente regras específicas;
 - hooks externos são removidos antes de uninstall/rollback;
-- franquia SSH não é bloqueada com dados incompletos;
 - provisionamento não registra senha/chaves privadas no audit log;
-- metadados do nó usam campos allowlisted e não oferecem shell/comando arbitrário;
-- ACL restrita de região/pool/nó falha fechada quando o contexto necessário está ausente;
-- contrato `manager-connection-actions-v1` não aceita shell, comando ou caminho arbitrário;
+- ACL restrita de região/pool/nó falha fechada;
+- `manager-connection-actions-v1` não aceita shell, comando ou caminho arbitrário;
+- Legacy v1 usa conta não-root, SSH dedicado, `ForceCommand`, sudoers exato e allowlist;
+- credencial Legacy não é armazenada em texto claro pelo MANAGER;
+- Legacy desativado significa serviço parado, porta fechada e conta bloqueada;
 - self-update baixa e valida o instalador antes da execução.
 
-## CLI
+## CLI principal
 
 ```text
-manager --health                  health check
-manager --status                  status dos serviços
-manager --expired                 contas SSH expiradas
-manager --ssh-sessions            sessões SSH
-manager --proxy-status            proxies/túneis
-manager --proxy-hosts             hosts do proxy
-manager --identities              identidades
-manager --identity ID             detalhes da identidade
-manager --products                produtos/planos
-manager --product ID              detalhes do produto
-manager --product-assignment ID   produto/franquia da identidade
-manager --reseller-usage OWNER    uso/cota total por identidade
+manager --health
+manager --status
+manager --expired
+manager --ssh-sessions
+manager --proxy-status
+manager --proxy-hosts
+manager --identities
+manager --identity ID
+manager --products
+manager --product ID
+manager --product-assignment ID
+manager --reseller-usage OWNER
 manager --reseller-product-quota OWNER PRODUCT
-                                  uso/cota do produto na revenda
 manager --provision ID PLAN [OWNER] [PROTOCOLS]
-                                  provisiona identidade + plano + acessos
-manager --revoke-identity ID      revoga acessos e preserva identidade desativada
-manager --identity-sessions [ID]  sessões reais observadas
-manager --leases [ID]             leases autorizadas
-manager --usage [ID]              tráfego/atividade consolidada
-manager --ipv6-status             estado dual-stack e IPv6 Guard
-manager --node                    identidade/metadados/capacidades do nó
-manager --node-context            contexto country/region/pool/node
-manager --node-set FIELD VALUE    altera metadado allowlisted do nó
-manager --diagnostics             diagnóstico
-manager --version                 versão
-manager --help                    ajuda
+manager --revoke-identity ID
+manager --identity-sessions [ID]
+manager --leases [ID]
+manager --usage [ID]
+manager --ipv6-status
+manager --node
+manager --node-context
+manager --node-set FIELD VALUE
+manager automation legacy status
+manager automation legacy enable [PORT]
+manager automation legacy disable
+manager automation legacy restart
+manager automation legacy rotate-password
+manager --diagnostics
+manager --version
+manager --help
 ```
 
-Contratos internos preparados para a Automation v2:
+Contratos internos:
 
 ```text
 /opt/manager/modules/connection_actions.sh
 /opt/manager/modules/node_usage.sh
+/opt/manager/modules/automation_legacy.sh
 ```
 
 ## Sistemas suportados
@@ -545,8 +474,6 @@ Contratos internos preparados para a Automation v2:
 - Ubuntu 22.04 ou superior;
 - Debian 12 ou superior;
 - `systemd` e `apt`.
-
-A matriz de CI será ampliada no roadmap para cobrir diretamente mais versões modernas.
 
 ## Instalação
 
@@ -572,21 +499,14 @@ Alias clássico: `menu`.
 
 ## Atualização, rollback e remoção
 
-Atualização: opção `90` no menu.
-
-Rollback:
+Atualização: opção `90` do menu.
 
 ```bash
 manager-rollback
-```
-
-Desinstalar preservando estado:
-
-```bash
 manager-uninstall
 ```
 
-Identidades, produtos, cotas/slots de revenda, ACL, baseline de franquia, `session_epoch`, identidade/metadados do nó, estado dual-stack e histórico consolidado de uso ficam preservados no uninstall normal. Regras runtime do IPv6 Guard são removidas e recriadas na reinstalação. Os contratos da 0.6.11 não criam banco ou serviço persistente adicional.
+O uninstall normal preserva identidades, produtos, cotas/slots, ACL, baseline de franquia, `session_epoch`, metadados do nó, estado dual-stack, histórico consolidado de uso e configuração do Legacy. Porém o listener Legacy é fechado, a regra privilegiada é removida e `manager-legacy` fica bloqueado enquanto o código não está instalado.
 
 Purge explícito:
 
@@ -594,33 +514,30 @@ Purge explícito:
 manager-uninstall --purge
 ```
 
-O purge remove também o estado em `/etc/manager` e o histórico em `/var/lib/manager/identity-usage`, restaurando o forwarding IPv4/IPv6 anterior quando conhecido. Pacotes do sistema, certificados Let's Encrypt, backups, grupos potencialmente pré-existentes e regras UFW alheias ao MANAGER continuam sendo tratados conservadoramente.
+O purge remove também o estado do MANAGER, histórico de uso e a conta de integração Legacy. Pacotes do sistema, certificados Let's Encrypt, backups e regras alheias ao MANAGER continuam sendo tratados conservadoramente.
 
 ## Roadmap
 
 Plano detalhado: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ```text
-0.5.x  paridade SSHPlus útil
-0.6.x  Connection Engine completo: políticas, leases, accounting, produtos, provisionamento, revenda, dual-stack, nó/ACL, telemetria local e lifecycle allowlisted
-0.7.0  Legacy v1 + Automation v2
+0.5.x  paridade SSHPlus útil                                         ✅
+0.6.x  Connection/Policy/Session Engine completo                     ✅
+0.7.0  Automation Legacy v1                                          ✅
+0.7.x  Automation v2                                                 próximo
 0.8.0  Modo Colmeia
 0.9.0  Telegram Bot + Mini App
 0.9.5  migração e escala
 1.0.0  release de produção
 ```
 
-### Legacy v1
-
-Uma única camada de compatibilidade com o ecossistema `syncpainel`, desligada por padrão em instalações novas. Compatibilidade de protocolo não significa restaurar senha em texto claro, `chmod 777` ou flush destrutivo de firewall.
-
 ### Automation v2
 
-Ações estruturadas, RBAC, auditoria, idempotência, autenticação criptográfica, anti-replay e interface privilegiada controlada. Sem shell arbitrário para integrações. A 0.6.11 fornece a fronteira allowlisted local que essa camada consumirá.
+Será a interface oficial para projetos novos. Reutilizará o lifecycle allowlisted da 0.6.11 e adicionará contrato versionado, idempotência, RBAC, auditoria, autenticação criptográfica, anti-replay, rate limiting e interface local privilegiada controlada. Não haverá shell remoto arbitrário.
 
 ### Colmeia
 
-O objeto local de nó, aplicação local das ACLs e telemetria local já existem. Planejado a partir deles: identidade criptográfica por nó, heartbeat/health, regiões/pools, capacidade real, drain/failover, sticky sessions, scheduler weighted least-loaded, sessão global por identidade/plano, cota global de revenda, lease/fencing global, agregação global de uso e comunicação autenticada/criptografada.
+A partir da base local existente: identidade criptográfica por nó, heartbeat/health, regiões/pools, capacidade real, drain/failover, sticky sessions, scheduler weighted least-loaded, sessão global por identidade/plano, cota global de revenda, fencing global, agregação global de uso e comunicação autenticada/criptografada.
 
 ### Telegram
 
@@ -628,23 +545,29 @@ Administração futura por Bot + Mini App, sem painel web administrativo convenc
 
 ## Testes
 
-O CI cobre:
+O CI cobre, entre outros:
 
 - `bash -n` e ShellCheck;
-- padrões destrutivos de firewall/permissão;
-- regressão contra Squid aberto;
+- regressões de firewall/permissão e Squid aberto;
 - política segura de fonte do instalador;
 - instalação/update/rollback/uninstall;
 - Connection/Policy/Session Engine;
-- Protocol Lease Bridge e lifecycle;
-- Identity Usage e persistência;
-- Product Policy, ACL e franquias;
-- Unified Provisioning e revogação;
-- cotas de revenda por identidade, hierarquia pai/subrevendedor, produtos, adoção de SSH legado, migração e persistência;
-- IPv6 dual-stack, endpoint literal IPv6, guard por lease e persistência no lifecycle;
-- identidade/metadados do nó, campos imutáveis, validação, persistência de `node_id` e uninstall/reinstall;
-- contexto ACL automático do nó, compatibilidade com contexto explícito, fail-closed e recusa de lease fora de `region`, `pool` ou `node_id`;
-- contrato allowlisted de lifecycle, segredo SSH fora de logs, agregado local por nó e semântica explícita de não-billing global.
+- Protocol Lease Bridge;
+- Identity Usage;
+- produtos, ACL e franquias;
+- provisionamento e revogação;
+- cotas de revenda e produto;
+- IPv6 dual-stack e guard;
+- metadados e ACL automática de nó;
+- lifecycle allowlisted e agregado local de uso;
+- Legacy v1 desligado por padrão;
+- validação `sshd -t` e `visudo` da fronteira Legacy;
+- criação/alteração/remoção pelos comandos históricos;
+- recusa de comando fora da allowlist;
+- ausência de segredos Legacy/SSH nos arquivos de estado e audit logs;
+- disable fechando listener e bloqueando a conta;
+- persistência segura em uninstall/reinstall;
+- purge removendo estado e conta de integração.
 
 ## Origem
 
