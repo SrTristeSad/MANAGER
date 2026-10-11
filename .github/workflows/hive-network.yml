@@ -113,6 +113,11 @@ jobs:
           grep -q '^peer_count=1$' /tmp/accept-b
           sudo grep -q '^# MANAGER-HIVE-NETWORK v1$' /tmp/hive-wg-a/mgh0.conf
           sudo grep -q '^# HIVE-PEER ' /tmp/hive-wg-a/mgh0.conf
+          sudo test -f /tmp/hive-node-a/hive/network/mgh0.owner
+          sudo grep -q '^owner=manager$' /tmp/hive-node-a/hive/network/mgh0.owner
+          sudo grep -q '^interface=mgh0$' /tmp/hive-node-a/hive/network/mgh0.owner
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/hive-node-a MANAGER_HIVE_WG_DIR=/tmp/hive-wg-a /opt/manager/modules/hive_network.sh --status >/tmp/node-a.status
+          grep -q '^runtime_config_state=managed$' /tmp/node-a.status
           if sudo grep -Eq 'AllowedIPs = (0\.0\.0\.0/0|::/0)' /tmp/hive-wg-a/mgh0.conf /tmp/hive-wg-b/mgh0.conf; then
             echo 'Hive mesh exported a default route' >&2
             exit 1
@@ -147,7 +152,7 @@ jobs:
           grep -q '^peer_count=0$' /tmp/accept-a3
           if sudo grep -q '^# HIVE-PEER ' /tmp/hive-wg-a/mgh0.conf; then exit 1; fi
 
-      - name: Detach preserves node private state but removes generated runtime config
+      - name: Detach preserves durable state and external mgh0 is never overwritten
         shell: bash
         run: |
           set -euxo pipefail
@@ -155,5 +160,51 @@ jobs:
           sudo test -f /tmp/hive-node-a/hive/network/node.key
           sudo test -f /tmp/hive-node-a/hive/network/topology.json
           sudo test ! -e /tmp/hive-wg-a/mgh0.conf
+          sudo test ! -e /tmp/hive-node-a/hive/network/mgh0.owner
+
+          printf '%s\n' '# external operator config' | sudo tee /tmp/hive-wg-a/mgh0.conf >/dev/null
+          before="$(sudo sha256sum /tmp/hive-wg-a/mgh0.conf | awk '{print $1}')"
+          if sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/hive-node-a MANAGER_HIVE_WG_DIR=/tmp/hive-wg-a /opt/manager/modules/hive_network.sh --install; then
+            echo 'external mgh0.conf was accepted for overwrite' >&2
+            exit 1
+          fi
+          after="$(sudo sha256sum /tmp/hive-wg-a/mgh0.conf | awk '{print $1}')"
+          test "$before" = "$after"
+          sudo grep -qx '# external operator config' /tmp/hive-wg-a/mgh0.conf
+          sudo test ! -e /tmp/hive-node-a/hive/network/mgh0.owner
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/hive-node-a MANAGER_HIVE_WG_DIR=/tmp/hive-wg-a /opt/manager/modules/hive_network.sh --status >/tmp/node-a.external-status
+          grep -q '^runtime_config_state=external$' /tmp/node-a.external-status
+
+          sudo rm -f /tmp/hive-wg-a/mgh0.conf
           sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/hive-node-a MANAGER_HIVE_WG_DIR=/tmp/hive-wg-a /opt/manager/modules/hive_network.sh --install
           sudo test -f /tmp/hive-wg-a/mgh0.conf
+          sudo test -f /tmp/hive-node-a/hive/network/mgh0.owner
+          sudo grep -q '^# MANAGER-HIVE-NETWORK v1$' /tmp/hive-wg-a/mgh0.conf
+
+      - name: Active interface is restarted when topology is reconciled
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo rm -rf /tmp/hive-fakebin
+          sudo mkdir -m 755 /tmp/hive-fakebin
+          sudo tee /tmp/hive-fakebin/systemctl >/dev/null <<'SH'
+          #!/usr/bin/env bash
+          set -eu
+          printf '%s\n' "$*" >> /tmp/hive-systemctl.log
+          case "$1" in
+            is-active|is-enabled) exit 0 ;;
+            enable|disable|start|stop|restart) exit 0 ;;
+            *) exit 0 ;;
+          esac
+          SH
+          sudo chmod 755 /tmp/hive-fakebin/systemctl
+          sudo rm -f /tmp/hive-systemctl.log
+          sudo env PATH="/tmp/hive-fakebin:$PATH" MANAGER_HIVE_NETWORK_TEST_MODE=1 MANAGER_ETC=/tmp/hive-node-a MANAGER_HIVE_WG_DIR=/tmp/hive-wg-a /opt/manager/modules/hive_network.sh --reconcile >/tmp/reconcile-active
+          grep -q '^reconciled=1$' /tmp/reconcile-active
+          sudo grep -qx 'enable wg-quick@mgh0.service' /tmp/hive-systemctl.log
+          sudo grep -qx 'is-active --quiet wg-quick@mgh0.service' /tmp/hive-systemctl.log
+          sudo grep -qx 'restart wg-quick@mgh0.service' /tmp/hive-systemctl.log
+          if sudo grep -qx 'start wg-quick@mgh0.service' /tmp/hive-systemctl.log; then
+            echo 'active mgh0 was started instead of restarted' >&2
+            exit 1
+          fi
