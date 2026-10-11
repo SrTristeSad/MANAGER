@@ -39,6 +39,7 @@ jobs:
           grep -q '^arbitrary_shell=0$' /tmp/v2-status.log
           grep -q '^idempotency=1$' /tmp/v2-status.log
           grep -q '^audit=1$' /tmp/v2-status.log
+          grep -q '^secret_replay=0$' /tmp/v2-status.log
 
           sudo managerctl describe --request-id ci-describe-0001 > /tmp/describe.json
           python3 - <<'PY'
@@ -70,7 +71,7 @@ jobs:
           assert 'não permitido' in r['error']
           PY
 
-      - name: Create through Automation v2 and prove idempotency
+      - name: Create through Automation v2 and prove secret-safe idempotency
         shell: bash
         run: |
           set -euxo pipefail
@@ -96,15 +97,32 @@ jobs:
           open('/tmp/password.txt','w').write(password)
           PY
 
-          # Mesmo request_id + mesmo payload retorna a resposta anterior e não recria a conta.
+          # Mesmo request_id + mesmo payload não executa de novo. O segredo,
+          # porém, é one-shot e nunca pode ser recuperado do cache persistente.
           sudo managerctl connection.create id=ci-v2-client plan=ci-v2-ssh protocols=ssh --request-id ci-create-0001 > /tmp/create-replay.json
           python3 - <<'PY'
           import json
-          a=json.load(open('/tmp/create.json'))
           b=json.load(open('/tmp/create-replay.json'))
           assert b['ok'] is True and b['code']==0 and b['cached'] is True
-          assert b['result']['data']['ssh_password']==a['result']['data']['ssh_password']
+          assert b['result']['data']['identity_id']=='ci-v2-client'
+          assert 'ssh_password' not in b['result']['data']
+          assert b.get('secret_replay_available') is False
+          assert b.get('secret_returned_once') is True
+          assert 'ssh_password=' not in b['result']['stdout']
           PY
+
+          password="$(cat /tmp/password.txt)"
+          cache=/var/lib/manager/automation-v2/idempotency/ci-create-0001.json
+          sudo test -f "$cache"
+          test "$(sudo stat -c '%a' "$cache")" = 600
+          if sudo grep -Fq "$password" "$cache"; then
+            echo 'Idempotency cache persisted the generated SSH password.' >&2
+            exit 1
+          fi
+          if sudo grep -q 'ssh_password' "$cache"; then
+            echo 'Idempotency cache persisted a sensitive password field.' >&2
+            exit 1
+          fi
 
           # Reutilizar o mesmo request_id para outro payload é conflito, não uma segunda operação.
           set +e
@@ -141,8 +159,6 @@ jobs:
             exit 1
           fi
           sudo grep -q '"action_id":"connection.create"' /var/log/manager/automation-v2-audit.jsonl
-          sudo test -f /var/lib/manager/automation-v2/idempotency/ci-create-0001.json
-          test "$(sudo stat -c '%a' /var/lib/manager/automation-v2/idempotency/ci-create-0001.json)" = 600
 
       - name: Revoke and preserve local idempotency state across reinstall
         shell: bash
