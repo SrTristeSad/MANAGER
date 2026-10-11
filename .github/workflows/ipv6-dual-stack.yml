@@ -1,0 +1,131 @@
+name: IPv6 Dual Stack
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ipv6-dual-stack:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo test -x /opt/manager/modules/ipv6_guard.sh
+          sudo systemctl is-enabled manager-ipv6-guard.timer
+          sudo /opt/manager/manager --ipv6-status > /tmp/ipv6-status.log
+          grep -q '^ip6tables=' /tmp/ipv6-status.log
+          grep -q '^wireguard_ipv6=' /tmp/ipv6-status.log
+          grep -q '^openvpn_ipv6=' /tmp/ipv6-status.log
+
+      - name: Validate endpoint and network helpers
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo bash -c '
+            source /opt/manager/lib/common.sh
+            test "$(format_host_port 2001:db8::10 51820)" = "[2001:db8::10]:51820"
+            test "$(format_host_port vpn.example 51820)" = "vpn.example:51820"
+            test "$(ip_family 10.66.66.2)" = 4
+            test "$(ip_family fd66:66:66::2)" = 6
+          '
+
+      - name: Enforce and release an IPv6 WireGuard identity rule
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test_root=/tmp/manager-v6-test
+          etc="$test_root/etc"
+          sessions="$test_root/sessions"
+          guard="$test_root/guard"
+          fakebin="$test_root/bin"
+          sudo rm -rf "$test_root"
+          sudo install -d -m 0755 "$fakebin"
+          sudo tee "$fakebin/ip6tables" >/dev/null <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          state=/tmp/manager-v6-test/ip6tables.state
+          log=/tmp/manager-v6-test/ip6tables.log
+          printf '%s\n' "$*" >> "$log"
+          case "${1:-}" in
+            -C)
+              needle="${*:2}"
+              [[ -f "$state" ]] && grep -Fqx -- "$needle" "$state"
+              ;;
+            -I|-A)
+              printf '%s\n' "${*:2}" >> "$state"
+              ;;
+            -D)
+              needle="${*:2}"
+              tmp="${state}.tmp"
+              if [[ -f "$state" ]]; then
+                grep -Fvx -- "$needle" "$state" > "$tmp" || true
+                mv "$tmp" "$state"
+              fi
+              ;;
+            *) exit 0 ;;
+          esac
+          SH
+          sudo chmod 0755 "$fakebin/ip6tables"
+
+          sudo env MANAGER_ETC="$etc" /opt/manager/modules/connection_engine.sh --create ci-v6 '' 0 1 wireguard
+          sudo install -d -m 0700 "$etc/wireguard/clients"
+          sudo tee "$etc/wireguard/clients/wg-ci.meta" >/dev/null <<'EOF'
+          name=wg-ci
+          ip=10.66.66.2
+          ip4=10.66.66.2
+          ip6=fd66:66:66::2
+          public_key=fake-public-key
+          EOF
+          sudo tee "$etc/wireguard/clients/wg-ci.conf" >/dev/null <<'EOF'
+          [Interface]
+          PrivateKey = fake
+          Address = 10.66.66.2/32, fd66:66:66::2/128
+          EOF
+          sudo chmod 0600 "$etc/wireguard/clients/wg-ci.meta" "$etc/wireguard/clients/wg-ci.conf"
+          sudo env MANAGER_ETC="$etc" /opt/manager/modules/connection_engine.sh --bind ci-v6 wireguard wg-ci
+
+          sudo env PATH="$fakebin:$PATH" MANAGER_ETC="$etc" MANAGER_SESSION_RUNTIME="$sessions" MANAGER_IPV6_GUARD_RUNTIME="$guard" \
+            /opt/manager/modules/ipv6_guard.sh --reconcile
+          sudo test -f "$guard/rules/wireguard-ci-v6.rules"
+          sudo grep -Fq -- '-i wg0 -s fd66:66:66::2/128' "$test_root/ip6tables.log"
+
+          sudo env MANAGER_ETC="$etc" MANAGER_SESSION_RUNTIME="$sessions" \
+            /opt/manager/modules/session_engine.sh --acquire ci-v6 wireguard wg-ci dev-ci 90 > /tmp/ipv6-lease.log
+          grep -q 'session_id=' /tmp/ipv6-lease.log
+
+          sudo env PATH="$fakebin:$PATH" MANAGER_ETC="$etc" MANAGER_SESSION_RUNTIME="$sessions" MANAGER_IPV6_GUARD_RUNTIME="$guard" \
+            /opt/manager/modules/ipv6_guard.sh --reconcile
+          sudo test ! -f "$guard/rules/wireguard-ci-v6.rules"
+          if sudo test -s "$test_root/ip6tables.state"; then
+            echo 'IPv6 DROP rule survived after a valid lease was acquired.' >&2
+            sudo cat "$test_root/ip6tables.state" >&2
+            exit 1
+          fi
+
+      - name: Preserve IPv6 state on normal uninstall and restore guard on reinstall
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo install -d -m 0700 /etc/manager/wireguard /etc/manager/openvpn
+          printf '1\n' | sudo tee /etc/manager/wireguard/ipv6-enabled >/dev/null
+          printf '1\n' | sudo tee /etc/manager/openvpn/ipv6-enabled >/dev/null
+          sudo /opt/manager/uninstall.sh
+          sudo test -f /etc/manager/wireguard/ipv6-enabled
+          sudo test -f /etc/manager/openvpn/ipv6-enabled
+          sudo test ! -e /etc/systemd/system/manager-ipv6-guard.timer
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo systemctl is-enabled manager-ipv6-guard.timer
+          sudo /opt/manager/manager --ipv6-status > /tmp/ipv6-restored.log
+          grep -q '^wireguard_ipv6=1$' /tmp/ipv6-restored.log
+          grep -q '^openvpn_ipv6=1$' /tmp/ipv6-restored.log
