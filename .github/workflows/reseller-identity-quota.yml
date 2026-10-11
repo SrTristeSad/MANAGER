@@ -1,0 +1,172 @@
+name: Reseller Identity and Product Quotas
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  reseller-quota:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo test -x /opt/manager/modules/reseller_product_quotas.sh
+
+      - name: Count logical identities without requiring SSH
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/resellers.sh --create-reseller ci-parent reseller '' 3 1
+          sudo /opt/manager/modules/resellers.sh --create-reseller ci-sub subreseller ci-parent 2 1
+
+          sudo /opt/manager/modules/connection_engine.sh --create ci-wg ci-sub 0 1 wireguard
+          sudo /opt/manager/modules/connection_engine.sh --create ci-ovpn ci-sub 0 1 openvpn
+
+          test "$(sudo /opt/manager/modules/resellers.sh --usage ci-sub)" = 2
+          test "$(sudo /opt/manager/modules/resellers.sh --usage ci-parent)" = 2
+          sudo /opt/manager/manager --reseller-usage ci-sub > /tmp/reseller-usage.log
+          grep -q '^direct_identities=2$' /tmp/reseller-usage.log
+          grep -q '^direct_legacy_ssh=0$' /tmp/reseller-usage.log
+
+          if sudo /opt/manager/modules/connection_engine.sh --create ci-over ci-sub 0 1 wireguard; then
+            echo 'Subreseller quota unexpectedly allowed a third logical identity.' >&2
+            exit 1
+          fi
+          sudo test ! -f /etc/manager/connection/identities/ci-over.conf
+          sudo test ! -f /etc/manager/access/identity-slots/ci-over.conf
+
+      - name: Enforce parent quota and reacquire on reactivation
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/connection_engine.sh --create ci-parent-one ci-parent 0 1 wireguard
+          test "$(sudo /opt/manager/modules/resellers.sh --usage ci-parent)" = 3
+
+          sudo /opt/manager/modules/connection_engine.sh --disable ci-ovpn
+          sudo /opt/manager/modules/resellers.sh --release-identity ci-ovpn
+          test "$(sudo /opt/manager/modules/resellers.sh --usage ci-sub)" = 1
+          test "$(sudo /opt/manager/modules/resellers.sh --usage ci-parent)" = 2
+
+          sudo /opt/manager/modules/connection_engine.sh --create ci-parent-two ci-parent 0 1 wireguard
+          test "$(sudo /opt/manager/modules/resellers.sh --usage ci-parent)" = 3
+
+          if sudo /opt/manager/modules/connection_engine.sh --enable ci-ovpn; then
+            echo 'Reactivation bypassed the parent reseller quota.' >&2
+            exit 1
+          fi
+          sudo /opt/manager/modules/connection_engine.sh --show ci-ovpn > /tmp/disabled.log
+          grep -q '^enabled=0$' /tmp/disabled.log
+          grep -q '^quota_slot_active=0$' /tmp/disabled.log
+
+          sudo /opt/manager/modules/connection_engine.sh --disable ci-parent-two
+          sudo /opt/manager/modules/resellers.sh --release-identity ci-parent-two
+          sudo /opt/manager/modules/connection_engine.sh --enable ci-ovpn
+          sudo /opt/manager/modules/connection_engine.sh --show ci-ovpn > /tmp/enabled.log
+          grep -q '^enabled=1$' /tmp/enabled.log
+          grep -q '^quota_slot_active=1$' /tmp/enabled.log
+          test "$(sudo /opt/manager/modules/resellers.sh --usage ci-parent)" = 3
+
+      - name: Enforce per-product quotas through the product engine
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/products.sh --create ci-premium 'CI Premium' 1 0 1 '*' 0 none warn '*' '*' '*'
+          sudo /opt/manager/modules/products.sh --create ci-basic 'CI Basic' 1 0 1 '*' 0 none warn '*' '*' '*'
+          sudo /opt/manager/modules/reseller_product_quotas.sh --set ci-parent ci-premium 2
+          sudo /opt/manager/modules/reseller_product_quotas.sh --set ci-sub ci-premium 1
+
+          sudo /opt/manager/modules/products.sh --assign ci-wg ci-premium
+          if sudo /opt/manager/modules/products.sh --assign ci-ovpn ci-premium; then
+            echo 'Subreseller product quota unexpectedly allowed a second premium identity.' >&2
+            exit 1
+          fi
+          sudo /opt/manager/modules/products.sh --assign ci-ovpn ci-basic
+          sudo /opt/manager/modules/products.sh --assign ci-parent-one ci-premium
+
+          sudo /opt/manager/manager --reseller-product-quota ci-parent ci-premium > /tmp/parent-premium.log
+          grep -q '^usage=2$' /tmp/parent-premium.log
+          grep -q '^quota=2$' /tmp/parent-premium.log
+
+          sudo /opt/manager/modules/reseller_product_quotas.sh --set ci-sub ci-premium 0
+          if sudo /opt/manager/modules/products.sh --assign ci-ovpn ci-premium; then
+            echo 'Parent product quota unexpectedly allowed a third premium identity.' >&2
+            exit 1
+          fi
+          sudo /opt/manager/modules/products.sh --assignment ci-ovpn > /tmp/ovpn-product.log
+          grep -q '^product_id=ci-basic$' /tmp/ovpn-product.log
+
+      - name: Deduplicate legacy SSH ownership when adopting an identity
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/resellers.sh --create-reseller ci-legacy reseller '' 1 1
+          sudo useradd -m -s /bin/bash ci-old
+          sudo /opt/manager/modules/resellers.sh --assign ci-old ci-legacy
+          test "$(sudo /opt/manager/modules/resellers.sh --usage ci-legacy)" = 1
+
+          sudo /opt/manager/modules/connection_engine.sh --create ci-old ci-legacy 0 1 ssh
+          sudo /opt/manager/modules/connection_engine.sh --bind ci-old ssh ci-old
+          test "$(sudo /opt/manager/modules/resellers.sh --usage ci-legacy)" = 1
+
+          if sudo /opt/manager/modules/connection_engine.sh --create ci-old-two ci-legacy 0 1 ssh; then
+            echo 'Legacy adoption was double-counted or quota was bypassed.' >&2
+            exit 1
+          fi
+          sudo test ! -f /etc/manager/connection/identities/ci-old-two.conf
+
+      - name: Keep pre-0.6.7 revoked identities outside quota
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/resellers.sh --create-reseller ci-migrate reseller '' 1 1
+          sudo /opt/manager/modules/connection_engine.sh --create ci-revoked ci-migrate 0 1 wireguard
+          sudo /opt/manager/modules/connection_engine.sh --disable ci-revoked
+          sudo rm -f /etc/manager/access/identity-slots/ci-revoked.conf
+
+          test "$(sudo /opt/manager/modules/resellers.sh --usage ci-migrate)" = 0
+          sudo /opt/manager/modules/resellers.sh --reconcile >/tmp/reconcile.log
+          test "$(sudo /opt/manager/modules/resellers.sh --identity-slot-active ci-revoked)" = 0
+          test "$(sudo /opt/manager/modules/resellers.sh --usage ci-migrate)" = 0
+
+      - name: Reject product quota in provisioning preflight before creating identity
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/resellers.sh --create-reseller ci-preflight reseller '' 5 1
+          sudo /opt/manager/modules/reseller_product_quotas.sh --set ci-preflight ci-premium 1
+          sudo /opt/manager/modules/connection_engine.sh --create ci-existing ci-preflight 0 1 ssh
+          sudo /opt/manager/modules/products.sh --assign ci-existing ci-premium
+
+          if sudo /opt/manager/modules/provision.sh --preflight ci-blocked ci-premium ci-preflight ssh; then
+            echo 'Provisioning preflight ignored reseller product quota.' >&2
+            exit 1
+          fi
+          sudo test ! -f /etc/manager/connection/identities/ci-blocked.conf
+          sudo test ! -f /etc/manager/access/identity-slots/ci-blocked.conf
+
+      - name: Preserve quota state through normal uninstall and reinstall
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/uninstall.sh
+          sudo test -f /etc/manager/access/identity-slots/ci-wg.conf
+          sudo test -f /etc/manager/access/product-quotas/ci-parent/ci-premium.conf
+
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          test "$(sudo /opt/manager/modules/resellers.sh --usage ci-sub)" = 2
+          sudo /opt/manager/modules/reseller_product_quotas.sh --show ci-parent ci-premium > /tmp/reinstalled-product-quota.log
+          grep -q '^usage=2$' /tmp/reinstalled-product-quota.log
+          grep -q '^quota=2$' /tmp/reinstalled-product-quota.log
+
+          sudo userdel -r ci-old >/dev/null 2>&1 || true
