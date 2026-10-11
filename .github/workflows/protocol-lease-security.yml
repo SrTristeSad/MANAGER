@@ -1,0 +1,60 @@
+name: Protocol Lease Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  queue-hardening:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 \
+            MANAGER_REPO_RAW="file://${GITHUB_WORKSPACE}" \
+            bash install.sh >/tmp/manager-install.log
+
+      - name: Verify OpenVPN lease queue permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          req=/run/manager-protocol-leases/openvpn-requests
+          resp=/run/manager-protocol-leases/openvpn-responses
+          sudo test -d "$req"
+          sudo test -d "$resp"
+          test "$(sudo stat -c '%a' "$req")" = "730"
+          test "$(sudo stat -c '%a' "$resp")" = "710"
+          test "$(sudo stat -c '%G' "$req")" = "manager-openvpn"
+          test "$(sudo stat -c '%G' "$resp")" = "manager-openvpn"
+
+      - name: Reject symlink and oversized requests
+        shell: bash
+        run: |
+          set -euo pipefail
+          req=/run/manager-protocol-leases/openvpn-requests
+          target=/tmp/manager-queue-target
+          sudo sh -c "printf 'unchanged\\n' > '$target'"
+          sudo ln -s "$target" "$req/request.SYMLINK.req"
+          sudo /opt/manager/modules/protocol_leases.sh --process-openvpn-requests
+          test "$(cat "$target")" = "unchanged"
+          sudo test ! -e "$req/request.SYMLINK.req"
+
+          sudo sh -c "head -c 5000 /dev/zero > '$req/request.OVERSIZE.req'"
+          sudo /opt/manager/modules/protocol_leases.sh --process-openvpn-requests
+          sudo test ! -e "$req/request.OVERSIZE.req"
+
+      - name: Uninstall cleanly
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo /opt/manager/uninstall.sh >/tmp/manager-uninstall.log
+          test ! -e /usr/local/libexec/manager-openvpn-lease-hook
+          test ! -d /run/manager-protocol-leases
