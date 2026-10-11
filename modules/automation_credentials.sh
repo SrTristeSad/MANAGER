@@ -182,7 +182,10 @@ enroll_key() {
     printf 'fingerprint=%s\n' "$fingerprint"
     printf 'credential_file=%s\n' "$output"
     printf 'private_key_stored_server=0\n'
-    [[ "$rotate" == 1 ]] && printf 'rotation=completed\n'
+    if [[ "$rotate" == 1 ]]; then
+      printf 'rotation=completed\n'
+    fi
+    exit 0
   )
 }
 
