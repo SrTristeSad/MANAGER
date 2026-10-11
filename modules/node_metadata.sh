@@ -190,7 +190,9 @@ protocols_csv() {
 }
 
 endpoint_value() {
-  local service="$1" file="$MANAGER_ETC/$service/endpoint"
+  local service file
+  service="$1"
+  file="$MANAGER_ETC/$service/endpoint"
   [[ -f "$file" ]] && tr -d '\r\n' < "$file"
 }
 
@@ -215,21 +217,25 @@ show_state() {
 }
 
 show_context() {
+  local node country region pool
   init_state
-  printf 'node=%s\n' "$(read_field node_id)"
-  printf 'country=%s\n' "$(read_field country)"
-  printf 'region=%s\n' "$(read_field region)"
-  printf 'pool=%s\n' "$(read_field pool)"
+  node="$(read_field node_id)"
+  country="$(read_field country)"
+  region="$(read_field region)"
+  pool="$(read_field pool)"
+  printf 'node=%s\ncountry=%s\nregion=%s\npool=%s\n' "$node" "$country" "$region" "$pool"
 }
 
 show_capabilities() {
+  local protocols ipv6 capacity weight max_sessions enabled
   init_state
-  printf 'protocols=%s\n' "$(protocols_csv)"
-  printf 'ipv6=%s\n' "$(capability_ipv6 && echo 1 || echo 0)"
-  printf 'capacity=%s\n' "$(field_value_or_default capacity 1)"
-  printf 'weight=%s\n' "$(field_value_or_default weight 1)"
-  printf 'max_sessions=%s\n' "$(field_value_or_default max_sessions 0)"
-  printf 'enabled=%s\n' "$(field_value_or_default enabled 1)"
+  protocols="$(protocols_csv)"
+  ipv6="$(capability_ipv6 && echo 1 || echo 0)"
+  capacity="$(field_value_or_default capacity 1)"
+  weight="$(field_value_or_default weight 1)"
+  max_sessions="$(field_value_or_default max_sessions 0)"
+  enabled="$(field_value_or_default enabled 1)"
+  printf 'protocols=%s\nipv6=%s\ncapacity=%s\nweight=%s\nmax_sessions=%s\nenabled=%s\n' "$protocols" "$ipv6" "$capacity" "$weight" "$max_sessions" "$enabled"
 }
 
 interactive_set() {
