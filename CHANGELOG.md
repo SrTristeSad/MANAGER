@@ -4,6 +4,48 @@ Todas as mudanças relevantes do MANAGER serão registradas aqui.
 
 O projeto usa versionamento semântico (`MAJOR.MINOR.PATCH`) enquanto a API/estrutura ainda está evoluindo.
 
+## [0.6.6] - 2026-10-10
+
+### Provisionamento unificado
+
+- Novo `modules/provision.sh` cria identidade MANAGER, aplica produto/plano, materializa recursos técnicos e cria bindings numa única operação controlada.
+- Novo comando `manager --provision ID PLANO [OWNER] [PROTOCOLS]` e nova opção de menu para provisionamento/revogação.
+- Preflight valida ID, produto ativo, protocolos, conflitos de nomes, disponibilidade dos servidores WireGuard/OpenVPN e, quando aplicável, estado/cota do revendedor antes de alterar o sistema.
+- Protocolos explicitamente solicitados precisam ser subconjunto do produto; quando omitidos, o provisionador usa os protocolos permitidos pelo plano.
+- Resultado da criação é estruturado em `chave=valor`, preparando a superfície allowlisted que será reutilizada pela Automation v2.
+
+### SSH, WireGuard e OpenVPN
+
+- Usuário SSH nasce com senha aleatória de 128 bits representada em 32 caracteres hexadecimais e permanece bloqueado enquanto a transação está incompleta.
+- A senha SSH só é desbloqueada depois da reconciliação bem-sucedida e é exibida uma única vez na saída; não é gravada no log de eventos.
+- Validade efetiva do produto é aplicada ao usuário Linux quando configurada.
+- WireGuard cria somente o peer/perfil do cliente solicitado, com chave privada/PSK protegidos e sem flush global de firewall ou substituição completa da configuração.
+- OpenVPN reutiliza a PKI Easy-RSA existente; se a operação precisar ser desfeita depois da emissão, o certificado é revogado e a CRL é regenerada.
+- O provisionador não cria um segundo sistema de limites: produto, Policy Engine e Session/Lease Engine continuam sendo as autoridades de validade, protocolo, franquia e simultaneidade.
+
+### Transação, rollback e revogação
+
+- Falha intermediária desfaz em ordem inversa os recursos criados naquela tentativa, incluindo usuário SSH, peer WireGuard, perfil/certificado OpenVPN, atribuição de produto e identidade recém-criada.
+- Mudanças intermediárias da identidade podem adiar a sinalização do watcher de política durante a operação CLI, evitando que systemd aplique uma identidade parcialmente construída; o estado final é sinalizado após commit ou rollback.
+- Novo `manager --revoke-identity ID` desativa primeiro a identidade, revoga leases, remove/revoga os recursos técnicos e limpa bindings/produto.
+- A revogação preserva a identidade lógica em estado `disabled` para histórico e auditoria, em vez de apagar silenciosamente o objeto de conta.
+- Se uma etapa da revogação falhar, a identidade permanece desativada e a operação retorna erro parcial, evitando reabilitar acesso incompleto.
+- Eventos ficam em `/var/log/manager/provision-events.log` com metadados operacionais e resultado, sem senha, chave privada WireGuard ou chave privada OpenVPN.
+
+### Revenda, lifecycle e testes
+
+- Enquanto a cota antiga de revenda ainda contabilizar usuários Linux, provisionamentos com `OWNER` exigem `ssh`; isso impede identidades VPN-only de escaparem da cota legada.
+- O instalador passa a entregar `modules/provision.sh` e anuncia o comando de provisionamento no resumo final.
+- Uninstall normal continua preservando o estado lógico do Connection Engine; um acesso explicitamente revogado não é recriado por reinstalação.
+- Novo CI `Unified Provisioning` cobre preflight, criação SSH por produto, validade, `max_sessions`, duplicata, falha limpa quando WireGuard não está configurado, revogação, ausência de segredo no audit log e persistência da identidade lógica após uninstall/reinstall.
+- Nova documentação `docs/PROVISIONING.md` descreve o contrato, a transação, rollback, segurança e limites atuais.
+
+### Limites desta etapa
+
+- Cota de revenda por produto/identidade ainda não substituiu a cota baseada em usuário Linux; esse é o próximo passo para permitir revenda VPN-only corretamente.
+- O código de materialização de WireGuard/OpenVPN ainda será consolidado gradualmente em contratos internos únicos de protocolo para que Automation v2 não duplique caminhos de criação/revogação.
+- A autoridade de sessão, produto e accounting continua local à VPS até a futura Colmeia.
+
 ## [0.6.5] - 2026-10-10
 
 ### Produtos, planos e política efetiva
