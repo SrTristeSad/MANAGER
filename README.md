@@ -4,7 +4,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 > O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva capacidades úteis, substitui implementações inseguras/obsoletas e prepara uma arquitetura própria para Automation v2, Telegram e Modo Colmeia.
 
-Versão atual: **0.6.6**.
+Versão atual: **0.6.7**.
 
 ## Princípios
 
@@ -38,10 +38,14 @@ Versão atual: **0.6.6**.
 ### Contas e revenda
 
 - revendedor e subrevendedor;
-- hierarquia, bloqueio/reativação e cotas;
-- propriedade de contas SSH;
+- hierarquia, bloqueio/reativação e cota total por cliente lógico;
+- identidades VPN-only podem pertencer à revenda sem usuário Linux;
+- uma identidade ocupa uma vaga mesmo usando vários protocolos;
+- uso de subrevendedor entra no limite agregado do revendedor pai;
+- cotas opcionais por produto/plano;
+- propriedade SSH legada preservada e deduplicada ao adotar uma identidade;
 - criação de usuário diretamente vinculada ao proprietário;
-- validação de cota antes e durante a criação;
+- reserva de cota sob lock antes da criação da identidade;
 - exportação/restauração segura de usuários;
 - detector de estruturas conhecidas do SSHPlus antigo;
 - monitor de sessões SSH com encerramento seletivo por TTY.
@@ -51,6 +55,8 @@ Estado de revenda:
 ```text
 /etc/manager/access/
 ```
+
+Documentação: [`docs/RESELLER_QUOTAS.md`](docs/RESELLER_QUOTAS.md).
 
 ## Connection Engine
 
@@ -162,18 +168,7 @@ O fencing persistente fica em:
 /etc/manager/connection/session-epochs/<id>.epoch
 ```
 
-O Session Engine possui:
-
-- aquisição atômica local;
-- `max_sessions` sob lock;
-- retry idempotente;
-- TTL;
-- heartbeat;
-- release;
-- troca de sessão;
-- `session_epoch`;
-- fencing de geração antiga;
-- revogação automática quando política/recurso deixa de ser válido.
+O Session Engine possui aquisição atômica local, `max_sessions` sob lock, retry idempotente, TTL, heartbeat, release, troca de sessão, `session_epoch`, fencing e revogação automática quando política/recurso deixa de ser válido.
 
 Documentação: [`docs/SESSION_ENGINE.md`](docs/SESSION_ENGINE.md).
 
@@ -189,80 +184,26 @@ SSH / WireGuard / OpenVPN
        Session Engine
 ```
 
-Módulo:
-
-```text
-/opt/manager/modules/protocol_leases.sh
-```
-
 ### SSH → lease
 
-O MANAGER adiciona um bloco próprio de sessão em `/etc/pam.d/sshd` e usa:
-
-```text
-/usr/local/libexec/manager-ssh-lease-hook
-```
-
-No `open_session`, uma conta vinculada precisa adquirir uma lease. No `close_session`, a reserva é liberada.
-
-O wrapper é fail-safe para não converter um rollback/recuperação incompleto em lockout do SSH administrativo.
-
-O reconciliador também adota sessões já abertas observadas por `who`.
+O MANAGER adiciona um bloco próprio de sessão em `/etc/pam.d/sshd` e usa `/usr/local/libexec/manager-ssh-lease-hook`. No `open_session`, uma conta vinculada precisa adquirir uma lease. No `close_session`, a reserva é liberada.
 
 ### OpenVPN → lease
 
-O OpenVPN não recebe shell root nem `sudo` amplo.
-
-O hook:
-
-```text
-/usr/local/libexec/manager-openvpn-lease-hook
-```
-
-trabalha com uma fila runtime:
-
-```text
-/run/manager-protocol-leases/openvpn-requests/
-/run/manager-protocol-leases/openvpn-responses/
-```
-
-Um processador privilegiado e allowlisted é acionado por:
-
-```text
-manager-openvpn-lease-queue.path
-manager-openvpn-lease-queue.service
-```
-
-Fluxo:
-
-```text
-client-connect
-      ↓
-hook sem root
-      ↓
-pedido validado
-      ↓
-Session Engine
-      ↓
-ALLOW / DENY
-```
-
-`client-disconnect` libera a reserva.
+O OpenVPN não recebe shell root nem `sudo` amplo. O hook `/usr/local/libexec/manager-openvpn-lease-hook` usa uma fila runtime processada por uma superfície privilegiada allowlisted.
 
 ### WireGuard → lease
 
-WireGuard não tem evento de login. O bridge usa o handshake recente como sinal de atividade.
+WireGuard não tem evento de login. O bridge usa o handshake recente como sinal de atividade. Um peer gerenciado só mantém tráfego encaminhado quando possui lease válida; não existe flush global do firewall.
 
-Um peer gerenciado só mantém tráfego encaminhado quando possui lease válida. Sem autorização, o MANAGER aplica bloqueio específico ao IP daquele peer; nunca há flush global do firewall. Se a regra específica não puder ser aplicada, o fallback remove somente aquele peer do runtime.
-
-### Heartbeat
+Reconciliação automática:
 
 ```text
 manager-protocol-leases.timer
 manager-protocol-leases.service
+manager-openvpn-lease-queue.path
+manager-openvpn-lease-queue.service
 ```
-
-O reconciliador compara continuamente conexões reais e leases, renova as que continuam vivas e libera as que desapareceram.
 
 ## Identity Usage Accounting — 0.6.4
 
@@ -279,73 +220,18 @@ Estado persistente:
 /var/lib/manager/identity-usage/identities/
 ```
 
-Snapshots locais usados somente para calcular deltas:
+WireGuard e OpenVPN alimentam bytes reais reportados pelos protocolos. A primeira observação vira baseline e somente deltas posteriores entram no acumulado. Reset de contador do daemon não zera o histórico.
 
-```text
-/var/lib/manager/identity-usage/sources/
-```
-
-### WireGuard e OpenVPN
-
-O MANAGER consolida bytes reais reportados pelos próprios protocolos:
-
-- WireGuard: contadores `transfer` do peer;
-- OpenVPN: `Bytes Received` / `Bytes Sent` do status do servidor.
-
-A primeira observação de uma fonte vira **baseline** e não é contabilizada retroativamente. Depois, somente a diferença entre leituras é somada ao histórico da identidade. Se o daemon/interface reiniciar e o contador absoluto voltar para um valor menor, o coletor trata esse valor como novo delta sem zerar o acumulado histórico.
-
-Do ponto de vista da identidade:
-
-```text
-servidor recebeu do cliente = upload
-servidor enviou ao cliente   = download
-```
-
-### SSH
-
-SSH participa de sessão, heartbeat e última atividade, mas o MANAGER **não inventa byte accounting SSH** usando todo o tráfego do UID Linux. Esse método poderia misturar processos fora da sessão e produzir números errados.
-
-Quando uma identidade possui SSH vinculado, a saída informa explicitamente:
+SSH participa de sessão, heartbeat e última atividade, mas o MANAGER não inventa byte accounting SSH usando todo o tráfego do UID Linux. Quando SSH está vinculado:
 
 ```text
 traffic_complete=0
 ssh_bytes_supported=0
 ```
 
-Assim relatórios e produtos distinguem total medido parcial de um total realmente coberto pelos protocolos metrificados.
-
-### Exemplo
-
-```text
-id=maria
-state=active
-sessions=1
-max_sessions=1
-active_protocols=wireguard
-download_bytes=19756849561
-upload_bytes=3435973836
-total_bytes=23192823397
-traffic_complete=1
-metered_protocols=wireguard,openvpn
-ssh_bytes_supported=0
-last_protocol=wireguard
-last_resource=maria
-```
-
-Coleta automática:
-
-```text
-manager-identity-usage.timer
-manager-identity-usage.service
-```
-
-O acumulado é persistente; uninstall normal preserva o histórico e `--purge` o remove. O backup transporta somente os totais consolidados, não snapshots/baselines pertencentes ao nó de origem.
-
 Documentação: [`docs/IDENTITY_USAGE.md`](docs/IDENTITY_USAGE.md).
 
 ## Produtos, planos, ACL e franquias — 0.6.5
-
-A 0.6.5 transforma limites soltos da identidade em produtos/planos reutilizáveis.
 
 ```bash
 manager --products
@@ -353,88 +239,13 @@ manager --product premium
 manager --product-assignment maria
 ```
 
-Exemplo conceitual:
+Produtos podem restringir protocolos, `max_sessions`, duração/expiração, franquia de bytes e ACL de região/pool/nó. O produto restringe a política base e não amplia privilégios silenciosamente.
 
-```text
-Brasil Premium
-├── protocolos = wireguard,openvpn
-├── max_sessions = 1
-├── duração = 30 dias
-├── franquia = 500 GiB/mês
-├── quota_action = block
-├── acl_regions = BR
-├── acl_pools = BR-PREMIUM
-└── acl_nodes = *
-```
-
-O produto restringe a identidade, nunca amplia automaticamente sua política base. Antes de aplicar o plano, o MANAGER preserva os limites originais de sessões, protocolos e expiração; ao desvincular o produto, eles são restaurados.
-
-### Franquia
-
-Produtos podem usar:
-
-```text
-traffic_quota_bytes=0       # ilimitado
-quota_period=monthly        # ou lifetime
-quota_action=warn           # ou block
-```
-
-A franquia começa no acumulado atual da identidade. Tráfego anterior à atribuição não é cobrado retroativamente.
-
-Em `warn`, o excesso é reportado sem bloquear a identidade. Em `block`, uma identidade com accounting completo passa para:
-
-```text
-quota-exceeded
-```
-
-Esse estado usa o mesmo Policy/Session Engine existente, em vez de criar um segundo mecanismo de sessão.
-
-Quando SSH está vinculado, uma franquia pode aparecer excedida, porém:
-
-```text
-quota_enforceable=0
-```
-
-O MANAGER não bloqueia o usuário por bytes parciais enquanto o accounting SSH confiável não existir.
-
-### ACL
-
-Produtos possuem ACL de:
-
-```text
-protocol
-region
-pool
-node
-```
-
-Contrato:
-
-```bash
-/opt/manager/modules/products.sh --authorize ID PROTOCOL REGION POOL NODE
-```
-
-Protocolos já restringem automaticamente a identidade local. `region/pool/node` estão prontos para o contexto de endpoint que será passado pela futura camada de nós/Colmeia.
-
-Estado persistente:
-
-```text
-/etc/manager/connection/products/
-/etc/manager/connection/product-usage/
-```
-
-Reconciliação:
-
-```text
-manager-product-policy.timer
-manager-product-policy.service
-```
+Franquias usam `monthly` ou `lifetime`, com ação `warn` ou `block`. Em `block`, accounting completo pode levar a `quota-exceeded`; identidades com SSH não são bloqueadas com números parciais.
 
 Documentação: [`docs/PRODUCTS.md`](docs/PRODUCTS.md).
 
 ## Provisionamento Unificado — 0.6.6
-
-A 0.6.6 liga identidade, produto e recursos técnicos numa única operação controlada.
 
 ```bash
 manager --provision maria brasil-premium
@@ -442,11 +253,9 @@ manager --provision maria brasil-premium '' wireguard,openvpn
 manager --provision cliente01 plano-ssh revenda01 ssh
 ```
 
-O provisionador faz preflight antes de alterar o sistema, cria a identidade, aplica o produto, materializa somente os protocolos selecionados, cria os bindings e reconcilia as políticas. Se uma etapa falhar, desfaz os recursos criados naquela tentativa.
+O provisionador faz preflight, cria a identidade, aplica o produto, materializa somente os protocolos selecionados, cria bindings e reconcilia política. Se uma etapa falhar, desfaz os recursos criados naquela tentativa.
 
-No SSH, a senha aleatória é mantida bloqueada enquanto a transação está incompleta e só é liberada após o commit. A senha é mostrada uma única vez na saída e não entra no log de eventos.
-
-WireGuard cria somente o peer/perfil correspondente. OpenVPN reutiliza a PKI Easy-RSA existente; se um certificado tiver sido emitido e o provisionamento falhar depois, ele é revogado e a CRL é atualizada.
+No SSH, a senha aleatória fica bloqueada durante a transação e é mostrada uma única vez após o commit. Ela não entra no log de eventos. WireGuard cria somente o peer/perfil correspondente e OpenVPN reutiliza a PKI Easy-RSA existente.
 
 Revogação completa:
 
@@ -454,23 +263,53 @@ Revogação completa:
 manager --revoke-identity maria
 ```
 
-A revogação desativa primeiro a identidade, invalida leases, remove/revoga os recursos técnicos e limpa os bindings. A identidade lógica permanece `disabled` para histórico e auditoria.
-
-Eventos operacionais ficam em:
-
-```text
-/var/log/manager/provision-events.log
-```
-
-O log não contém senhas nem chaves privadas.
-
-Enquanto a cota antiga de revenda ainda contar usuários Linux, provisionamentos com `OWNER` exigem `ssh`. A próxima migração removerá essa dependência e permitirá planos de revenda VPN-only baseados diretamente em produto/identidade.
+A revogação desativa primeiro a identidade, invalida leases, remove/revoga recursos técnicos e limpa bindings. A identidade lógica permanece `disabled` para histórico/auditoria.
 
 Documentação: [`docs/PROVISIONING.md`](docs/PROVISIONING.md).
 
+## Cotas de revenda por identidade/produto — 0.6.7
+
+A cota de revenda deixa de depender da existência de usuário Linux.
+
+```text
+revenda01
+├── cota total = 100 clientes
+├── premium = 20 clientes
+└── basic = ilimitado
+```
+
+Uma identidade conta uma vez, independentemente de usar SSH, WireGuard, OpenVPN ou uma combinação deles. Identidades VPN-only podem ser provisionadas diretamente para revendedores e subrevendedores.
+
+Slots de capacidade ficam em:
+
+```text
+/etc/manager/access/identity-slots/
+```
+
+Cotas específicas de produto ficam em:
+
+```text
+/etc/manager/access/product-quotas/
+```
+
+Bloqueio temporário mantém a vaga. Revogação completa libera a vaga somente depois de finalizar a remoção dos acessos. Para reativar uma identidade cujo slot foi liberado, a capacidade precisa ser reservada novamente.
+
+Contas SSH antigas continuam contando até serem adotadas por uma identidade; a adoção é deduplicada para não cobrar duas vagas pelo mesmo cliente. Identidades revogadas preservadas pela 0.6.6 são migradas com slot inativo.
+
+Consultas:
+
+```bash
+manager --reseller-usage revenda01
+manager --reseller-product-quota revenda01 premium
+```
+
+O `products.sh --assign` também verifica a cota por produto, portanto o limite não depende somente do menu/provisionador. O preflight do provisionamento verifica cota total e cota do produto antes de criar recursos técnicos.
+
+Documentação: [`docs/RESELLER_QUOTAS.md`](docs/RESELLER_QUOTAS.md).
+
 ## O limite que prepara a Colmeia
 
-Hoje a autoridade de lease, produto e accounting ainda é local na VPS. O modelo, porém, já representa o comportamento planejado para a Colmeia:
+Hoje autoridade de lease, produto, accounting e cota de revenda ainda é local na VPS. O modelo já representa o comportamento planejado para a Colmeia:
 
 ```text
 Maria
@@ -479,60 +318,11 @@ allowed_regions = BR, US, DE, FR, ...
 max_sessions = 1
 ```
 
-Ela pode ter vários destinos disponíveis, mas apenas uma sessão autorizada se o plano permitir uma só.
-
-No futuro, o Hub substituirá a decisão local por um lock global sem mudar os conceitos de produto, ACL, `session_id`, TTL, heartbeat e `session_epoch`. O uso de cada nó poderá ser agregado sem exigir que os protocolos sejam reescritos.
-
-## Reconciliação automática
-
-Product Policy:
-
-```text
-manager-product-policy.timer
-manager-product-policy.service
-```
-
-Policy Engine:
-
-```text
-manager-policy-reconcile.path
-manager-policy-reconcile.timer
-manager-policy-reconcile.service
-```
-
-Session Engine:
-
-```text
-manager-session-reconcile.path
-manager-session-cleanup.timer
-manager-session-cleanup.service
-```
-
-Protocol Lease Bridge:
-
-```text
-manager-protocol-leases.timer
-manager-protocol-leases.service
-manager-openvpn-lease-queue.path
-manager-openvpn-lease-queue.service
-```
-
-Identity Usage:
-
-```text
-manager-identity-usage.timer
-manager-identity-usage.service
-```
+No futuro, o Hub substituirá locks locais por autoridade global sem mudar os conceitos de produto, ACL, identidade, cota, `session_id`, TTL, heartbeat e `session_epoch`.
 
 ## Backup e migração
 
-Backups de configuração ficam em:
-
-```text
-/var/backups/manager/
-```
-
-Incluem, quando presentes:
+Backups de configuração ficam em `/var/backups/manager/` e incluem, quando presentes:
 
 ```text
 /etc/manager/access
@@ -541,22 +331,13 @@ Incluem, quando presentes:
 /var/lib/manager/identity-usage/identities
 estado WireGuard/OpenVPN
 DNS/TLS/banner/performance
-configurações próprias do MANAGER
 ```
 
-Como produtos, vínculos, ACL e baseline de franquia ficam dentro de `/etc/manager/connection`, eles usam o lifecycle e backup do Connection Engine.
+Slots de identidade e cotas por produto estão sob `/etc/manager/access`, portanto participam do backup existente. Leases runtime e snapshots de contadores não entram no backup.
 
-Leases runtime e snapshots de contadores **não** entram no backup. `session_epoch`, identidades, produtos e acumulados consolidados persistem.
+A exportação de usuários Linux é separada e não guarda senha em texto claro nem substitui `/etc/passwd`/`etc/shadow` inteiros durante restauração.
 
-A exportação de usuários Linux é separada e não guarda senha em texto claro nem substitui `/etc/passwd`/`/etc/shadow` inteiros durante restauração.
-
-O detector de legado reconhece estruturas como:
-
-```text
-/root/usuarios.db
-/etc/SSHPlus/senha/
-/root/backup.vps
-```
+O detector de legado reconhece estruturas como `/root/usuarios.db`, `/etc/SSHPlus/senha/` e `/root/backup.vps`.
 
 ## Segurança
 
@@ -569,7 +350,7 @@ O detector de legado reconhece estruturas como:
 - Squid sem `http_access allow all`;
 - nada de flush global de firewall;
 - credenciais VPN com permissões restritas;
-- estado de identidade, produto e accounting restritos a root;
+- estado de identidade, produto, revenda e accounting restritos a root;
 - OpenVPN não recebe acesso root ao Lease Engine;
 - hooks externos são removidos antes de uninstall/rollback;
 - franquia SSH não é bloqueada com dados incompletos;
@@ -590,6 +371,9 @@ manager --identity ID             detalhes da identidade
 manager --products                produtos/planos
 manager --product ID              detalhes do produto
 manager --product-assignment ID   produto/franquia da identidade
+manager --reseller-usage OWNER    uso/cota total por identidade
+manager --reseller-product-quota OWNER PRODUCT
+                                  uso/cota do produto na revenda
 manager --provision ID PLAN [OWNER] [PROTOCOLS]
                                   provisiona identidade + plano + acessos
 manager --revoke-identity ID      revoga acessos e preserva identidade desativada
@@ -629,19 +413,11 @@ Depois:
 manager
 ```
 
-Alias clássico:
-
-```bash
-menu
-```
+Alias clássico: `menu`.
 
 ## Atualização, rollback e remoção
 
-Atualização:
-
-```text
-90) Atualizar MANAGER
-```
+Atualização: opção `90` no menu.
 
 Rollback:
 
@@ -649,15 +425,13 @@ Rollback:
 manager-rollback
 ```
 
-O rollback desmonta Product Policy, coletor de uso, hooks do Protocol Lease Bridge e enforcement antes da troca de código e reaplica somente os componentes disponíveis na versão restaurada. Estado persistente continua disponível para uma versão que conheça aquele componente.
-
 Desinstalar preservando estado:
 
 ```bash
 manager-uninstall
 ```
 
-Os reconciliadores e o bridge são desanexados antes da remoção do código. Hooks PAM/OpenVPN, unidades runtime e leases temporárias são retirados; identidades, produtos, ACL, baseline de franquia, `session_epoch` e histórico consolidado de uso ficam preservados.
+Identidades, produtos, cotas/slots de revenda, ACL, baseline de franquia, `session_epoch` e histórico consolidado de uso ficam preservados no uninstall normal.
 
 Purge explícito:
 
@@ -665,7 +439,7 @@ Purge explícito:
 manager-uninstall --purge
 ```
 
-O purge remove também produtos/ACL em `/etc/manager` e o histórico em `/var/lib/manager/identity-usage`. Pacotes do sistema, certificados Let's Encrypt, backups, grupos potencialmente pré-existentes e regras UFW alheias ao MANAGER continuam sendo tratados conservadoramente.
+O purge remove também o estado em `/etc/manager` e o histórico em `/var/lib/manager/identity-usage`. Pacotes do sistema, certificados Let's Encrypt, backups, grupos potencialmente pré-existentes e regras UFW alheias ao MANAGER continuam sendo tratados conservadoramente.
 
 ## Roadmap
 
@@ -673,7 +447,7 @@ Plano detalhado: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ```text
 0.5.x  paridade SSHPlus útil
-0.6.x  Connection Engine, políticas, leases, accounting, produtos, ACL e provisionamento
+0.6.x  Connection Engine, políticas, leases, accounting, produtos, provisionamento e revenda
 0.7.0  Legacy v1 + Automation v2
 0.8.0  Modo Colmeia
 0.9.0  Telegram Bot + Mini App
@@ -691,18 +465,7 @@ Ações estruturadas, RBAC, auditoria, idempotência, autenticação criptográf
 
 ### Colmeia
 
-Planejado:
-
-- identidade criptográfica por nó;
-- regiões/pools;
-- capacidade e health por nó;
-- drain/failover;
-- sticky sessions;
-- sessão global por identidade/plano;
-- lease atômico e fencing global;
-- agregação de uso por nó;
-- comunicação autenticada/criptografada;
-- nós iniciando conexão de controle para fora, sem abrir shell administrativo público.
+Planejado: identidade criptográfica por nó, regiões/pools, capacidade/health, drain/failover, sticky sessions, sessão global por identidade/plano, cota global de revenda, lease/fencing global, agregação de uso e comunicação autenticada/criptografada.
 
 ### Telegram
 
@@ -712,18 +475,17 @@ Administração futura por Bot + Mini App, sem painel web administrativo convenc
 
 O CI cobre:
 
-- `bash -n`;
-- ShellCheck;
+- `bash -n` e ShellCheck;
 - padrões destrutivos de firewall/permissão;
 - regressão contra Squid aberto;
 - política segura de fonte do instalador;
 - instalação/update/rollback/uninstall;
-- Connection Engine e Policy Engine;
-- Session Engine: acquire, retry, heartbeat, TTL, switch e fencing;
-- Protocol Lease Bridge: instalação de hooks/unidades, admissão de sessão, limite `1/1`, release e cleanup de lifecycle;
-- Identity Usage: baseline inicial, deltas, reset de contador, vínculo obrigatório, persistência em uninstall/reinstall e remoção por purge;
-- Product Policy: ACL, `max_sessions`, franquia, `warn/block`, SSH parcial, restauração da política base, persistência e purge;
-- Unified Provisioning: preflight, criação SSH por produto, validade, limite de sessões, duplicata, falha limpa de VPN ausente, revogação e persistência da identidade lógica após reinstalação.
+- Connection/Policy/Session Engine;
+- Protocol Lease Bridge e lifecycle;
+- Identity Usage e persistência;
+- Product Policy, ACL e franquias;
+- Unified Provisioning e revogação;
+- cotas de revenda por identidade, hierarquia pai/subrevendedor, produtos, adoção de SSH legado, migração e persistência.
 
 ## Origem
 
