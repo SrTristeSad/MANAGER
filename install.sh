@@ -90,6 +90,7 @@ FILES=(
   "modules/policy_engine.sh"
   "modules/session_engine.sh"
   "modules/protocol_leases.sh"
+  "modules/ipv6_guard.sh"
   "modules/identity_usage.sh"
   "modules/proxy_hosts.sh"
   "modules/proxies.sh"
@@ -206,6 +207,9 @@ fi
 "$INSTALL_DIR/modules/protocol_leases.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O bridge de leases por protocolo foi instalado parcialmente. Revise PAM/systemd antes de depender do limite de sessões." >&2
 }
+"$INSTALL_DIR/modules/ipv6_guard.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] O IPv6 Guard foi instalado parcialmente. IPv4 continua protegido; revise ip6tables/systemd antes de oferecer VPN dual-stack." >&2
+}
 "$INSTALL_DIR/modules/identity_usage.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O coletor de uso por identidade foi instalado parcialmente. Os protocolos continuam funcionando, mas os contadores podem não ser atualizados." >&2
 }
@@ -229,6 +233,7 @@ echo "Provisionar: manager --provision ID PLANO"
 echo "Sessões ID:  manager --identity-sessions"
 echo "Leases:      manager --leases"
 echo "Uso ID:      manager --usage"
+echo "IPv6:        manager --ipv6-status"
 echo "Rollback:    manager-rollback"
 echo "Remover:     manager-uninstall"
 [[ -d "$ROLLBACK_DIR" ]] && echo "Código anterior preservado em: $ROLLBACK_DIR"
