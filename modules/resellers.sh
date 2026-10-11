@@ -12,6 +12,7 @@ RESELLERS_DIR="$STATE_DIR/resellers"
 OWNERS_DIR="$STATE_DIR/owners"
 IDENTITY_SLOTS_DIR="$STATE_DIR/identity-slots"
 IDENTITY_DIR="$MANAGER_ETC/connection/identities"
+PRODUCT_ASSIGN_DIR="$MANAGER_ETC/connection/products/assignments"
 LOCK_FILE="$STATE_DIR/.lock"
 
 init_state() {
@@ -30,6 +31,7 @@ record_file() { printf '%s/%s.conf\n' "$RESELLERS_DIR" "$1"; }
 owner_file() { printf '%s/%s\n' "$OWNERS_DIR" "$1"; }
 identity_slot_file() { printf '%s/%s.conf\n' "$IDENTITY_SLOTS_DIR" "$1"; }
 identity_file_path() { printf '%s/%s.conf\n' "$IDENTITY_DIR" "$1"; }
+product_assignment_file_path() { printf '%s/%s.conf\n' "$PRODUCT_ASSIGN_DIR" "$1"; }
 
 read_field() {
   local file="$1" key="$2"
@@ -53,16 +55,30 @@ identity_owner() {
   read_field "$(identity_file_path "$1")" owner
 }
 
-identity_ssh_user() {
-  read_field "$(identity_file_path "$1")" ssh_user
-}
-
 identity_slot_owner() {
   read_field "$(identity_slot_file "$1")" owner
 }
 
 identity_slot_active() {
   read_field "$(identity_slot_file "$1")" active
+}
+
+legacy_identity_should_count() {
+  local identity_id="$1" file enabled ssh_user wg ovpn
+  file="$(identity_file_path "$identity_id")"
+  [[ -f "$file" ]] || return 1
+  enabled="$(read_field "$file" enabled)"
+  ssh_user="$(read_field "$file" ssh_user)"
+  wg="$(read_field "$file" wireguard_client)"
+  ovpn="$(read_field "$file" openvpn_client)"
+
+  # A 0.6.6 preservava uma identidade revogada como disabled, sem bindings
+  # e sem produto. Ao migrar para slots, esse registro histórico não deve
+  # voltar a consumir cota. Um simples bloqueio temporário continua contando.
+  if [[ "$enabled" == 0 && -z "$ssh_user" && -z "$wg" && -z "$ovpn" && ! -f "$(product_assignment_file_path "$identity_id")" ]]; then
+    return 1
+  fi
+  return 0
 }
 
 identity_counts_for_owner() {
@@ -74,8 +90,7 @@ identity_counts_for_owner() {
   if [[ -f "$slot" ]]; then
     [[ "$(read_field "$slot" active)" == 1 && "$(read_field "$slot" owner)" == "$reseller_id" ]]
   else
-    # Compatibilidade automática com identidades criadas antes da 0.6.7.
-    return 0
+    legacy_identity_should_count "$identity_id"
   fi
 }
 
@@ -110,8 +125,6 @@ direct_identity_usage() {
     fi
   done
 
-  # Uma reserva existe antes do arquivo da identidade ser gravado. Ela já
-  # precisa ocupar a vaga para impedir corrida de cota entre duas criações.
   for slot in "$IDENTITY_SLOTS_DIR"/*.conf; do
     [[ -f "$slot" ]] || continue
     [[ "$(read_field "$slot" active)" == 1 ]] || continue
@@ -193,14 +206,12 @@ candidate_increment() {
 
   file="$(identity_file_path "$identity_id")"
   if [[ -f "$file" && "$(read_field "$file" owner)" == "$reseller_id" && ! -f "$(identity_slot_file "$identity_id")" ]]; then
-    printf '0\n'
+    if legacy_identity_should_count "$identity_id"; then printf '0\n'; else printf '1\n'; fi
     return
   fi
 
   file="$(owner_file "$identity_id")"
   if [[ -f "$file" ]] && id "$identity_id" >/dev/null 2>&1 && [[ "$(read_field "$file" owner)" == "$reseller_id" ]]; then
-    # Converter uma conta SSH antiga de mesmo nome em identidade não deve
-    # consumir uma segunda vaga.
     printf '0\n'
     return
   fi
@@ -315,8 +326,13 @@ reserve_identity_impl() {
 }
 
 release_identity_impl() {
-  local identity_id="$1" slot owner assigned now
+  local identity_id="$1" slot owner assigned now identity
   valid_id "$identity_id" || return 64
+  identity="$(identity_file_path "$identity_id")"
+  if [[ -f "$identity" && "$(read_field "$identity" enabled)" == 1 ]]; then
+    err "Identidade ativa não pode liberar cota; desative ou revogue primeiro"
+    return 73
+  fi
   slot="$(identity_slot_file "$identity_id")"
   if [[ -f "$slot" ]]; then
     owner="$(read_field "$slot" owner)"
@@ -324,7 +340,7 @@ release_identity_impl() {
   else
     owner="$(identity_owner "$identity_id")"
     [[ -n "$owner" ]] || return 0
-    assigned="$(read_field "$(identity_file_path "$identity_id")" created_epoch)"
+    assigned="$(read_field "$identity" created_epoch)"
   fi
   [[ "$assigned" =~ ^[0-9]+$ ]] || assigned="$(date +%s)"
   now="$(date +%s)"
@@ -338,7 +354,7 @@ identity_slot_is_active_for() {
     [[ "$(read_field "$slot" active)" == 1 && "$(read_field "$slot" owner)" == "$owner" ]]
     return
   fi
-  [[ -f "$(identity_file_path "$identity_id")" && "$(identity_owner "$identity_id")" == "$owner" ]]
+  [[ -f "$(identity_file_path "$identity_id")" && "$(identity_owner "$identity_id")" == "$owner" ]] && legacy_identity_should_count "$identity_id"
 }
 
 identity_covers_ssh_user() {
@@ -408,7 +424,7 @@ list_resellers() {
     printf '%-20s %-14s %-20s %-8s %-8s %-10s\n' "$reseller_id" "$role" "$parent" "$used" "$quota" "$enabled"
   done
   (( found == 1 )) || info "Nenhum revendedor cadastrado"
-  say "\nUso = identidades lógicas ativas na cota + contas SSH legadas ainda não absorvidas por identidade."
+  say "\nUso = identidades lógicas que ocupam cota + contas SSH legadas ainda não absorvidas por identidade."
   pause
 }
 
@@ -424,13 +440,9 @@ create_reseller() {
     subrevendedor|subreseller) role="subreseller" ;;
     *) err "Tipo inválido"; pause; return ;;
   esac
-  if [[ "$role" == subreseller ]]; then
-    read -r -p "Revendedor pai: " parent
-  fi
+  if [[ "$role" == subreseller ]]; then read -r -p "Revendedor pai: " parent; fi
   read -r -p "Cota de clientes/identidades (0 = ilimitada): " quota
-  if ( flock -x 9; create_reseller_impl "$reseller_id" "$role" "$parent" "$quota" 1 ) 9>"$LOCK_FILE"; then
-    ok "$reseller_id criado"
-  fi
+  if ( flock -x 9; create_reseller_impl "$reseller_id" "$role" "$parent" "$quota" 1 ) 9>"$LOCK_FILE"; then ok "$reseller_id criado"; fi
   pause
 }
 
@@ -516,7 +528,7 @@ list_owners() {
 }
 
 reconcile_owners_impl() {
-  local file user removed=0 identity_id owner created migrated=0
+  local file user removed=0 identity_id owner created migrated=0 active
   for file in "$OWNERS_DIR"/*; do
     [[ -f "$file" ]] || continue
     user="${file##*/}"
@@ -531,7 +543,8 @@ reconcile_owners_impl() {
     [[ ! -f "$(identity_slot_file "$identity_id")" ]] || continue
     created="$(read_field "$file" created_epoch)"
     [[ "$created" =~ ^[0-9]+$ ]] || created="$(date +%s)"
-    write_identity_slot "$identity_id" "$owner" 1 "$created" 0
+    if legacy_identity_should_count "$identity_id"; then active=1; else active=0; fi
+    write_identity_slot "$identity_id" "$owner" "$active" "$created" "$([[ "$active" == 1 ]] && printf '0' || date +%s)"
     migrated=$((migrated + 1))
   done
   printf '%s\t%s\n' "$removed" "$migrated"
