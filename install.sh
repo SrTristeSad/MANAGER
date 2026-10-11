@@ -90,6 +90,7 @@ FILES=(
   "modules/hive_identity.sh"
   "modules/hive_network.sh"
   "modules/hive_health.sh"
+  "modules/hive_scheduler.sh"
   "modules/hive_lifecycle.sh"
   "modules/products.sh"
   "modules/provision.sh"
@@ -214,6 +215,9 @@ chmod 0644 "$ETC_DIR/installed-version"
 "$INSTALL_DIR/modules/hive_health.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O heartbeat/saúde da Colmeia não pôde ser reanexado. Use: manager hive health status" >&2
 }
+"$INSTALL_DIR/modules/hive_scheduler.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] O scheduler da Colmeia não pôde inicializar seu estado. Use: manager hive node status" >&2
+}
 "$INSTALL_DIR/modules/resellers.sh" --init >/dev/null
 "$INSTALL_DIR/modules/automation_principals.sh" --init >/dev/null
 "$INSTALL_DIR/modules/automation_credentials.sh" --init >/dev/null
@@ -267,6 +271,7 @@ echo "Nó:          manager --node"
 echo "Colmeia:     manager hive status"
 echo "Rede Colmeia: manager hive network status"
 echo "Saúde Colmeia: manager hive health status"
+echo "Scheduler:   manager hive node status"
 echo "Produtos:    manager --products"
 echo "Provisionar: manager --provision ID PLANO"
 echo "Sessões ID:  manager --identity-sessions"
