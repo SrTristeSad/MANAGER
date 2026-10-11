@@ -46,6 +46,16 @@ Uso:
   manager --node                  mostra identidade, metadados e capacidades do nó
   manager --node-context          mostra country/region/pool/node para ACL/Colmeia
   manager --node-set FIELD VALUE  altera metadado allowlisted do nó
+  manager hive status             mostra identidade criptográfica/enrollment deste nó
+  manager hive request OUT        cria enrollment request assinado do nó
+  manager hive accept BUNDLE CONTROLLER_FP
+                                  aceita bundle assinado com fingerprint pinado
+  manager hive controller init|status|fingerprint|list
+  manager hive controller show NODE_ID
+  manager hive controller approve REQUEST OUT
+  manager hive controller reenroll REQUEST OUT
+  manager hive controller revoke NODE_ID [REASON]
+                                  administra a autoridade de enrollment da Colmeia
   manager automation legacy status
   manager automation legacy enable [PORT]
   manager automation legacy disable
@@ -234,6 +244,45 @@ case "${1:-}" in
     [[ -n "${2:-}" ]] || { err "Uso: manager --node-set FIELD VALUE"; exit 64; }
     exec "$MANAGER_HOME/modules/node_metadata.sh" --set "$2" "${3:-}"
     ;;
+  hive)
+    case "${2:-status}" in
+      status) exec "$MANAGER_HOME/modules/hive_identity.sh" --status ;;
+      request)
+        [[ -n "${3:-}" ]] || { err "Uso: manager hive request /CAMINHO/request.json"; exit 64; }
+        exec "$MANAGER_HOME/modules/hive_identity.sh" --request "$3"
+        ;;
+      accept)
+        [[ -n "${3:-}" && -n "${4:-}" ]] || { err "Uso: manager hive accept BUNDLE CONTROLLER_FP"; exit 64; }
+        exec "$MANAGER_HOME/modules/hive_identity.sh" --accept "$3" "$4"
+        ;;
+      controller)
+        case "${3:-status}" in
+          init) exec "$MANAGER_HOME/modules/hive_identity.sh" --controller-init ;;
+          status) exec "$MANAGER_HOME/modules/hive_identity.sh" --controller-status ;;
+          fingerprint) exec "$MANAGER_HOME/modules/hive_identity.sh" --controller-fingerprint ;;
+          list) exec "$MANAGER_HOME/modules/hive_identity.sh" --controller-list ;;
+          show)
+            [[ -n "${4:-}" ]] || { err "Uso: manager hive controller show NODE_ID"; exit 64; }
+            exec "$MANAGER_HOME/modules/hive_identity.sh" --controller-show "$4"
+            ;;
+          approve)
+            [[ -n "${4:-}" && -n "${5:-}" ]] || { err "Uso: manager hive controller approve REQUEST OUT"; exit 64; }
+            exec "$MANAGER_HOME/modules/hive_identity.sh" --controller-approve "$4" "$5"
+            ;;
+          reenroll)
+            [[ -n "${4:-}" && -n "${5:-}" ]] || { err "Uso: manager hive controller reenroll REQUEST OUT"; exit 64; }
+            exec "$MANAGER_HOME/modules/hive_identity.sh" --controller-reenroll "$4" "$5"
+            ;;
+          revoke)
+            [[ -n "${4:-}" ]] || { err "Uso: manager hive controller revoke NODE_ID [REASON]"; exit 64; }
+            exec "$MANAGER_HOME/modules/hive_identity.sh" --controller-revoke "$4" "${5:-}"
+            ;;
+          *) err "Ação de controlador da Colmeia inválida: ${3:-}"; exit 64 ;;
+        esac
+        ;;
+      *) err "Uso: manager hive {status|request|accept|controller ...}"; exit 64 ;;
+    esac
+    ;;
   automation)
     case "${2:-}" in
       legacy)
@@ -365,6 +414,9 @@ while true; do
   say " ${C_CYAN}37${C_RESET}) Legacy v1 / compatibilidade syncpainel"
   say " ${C_CYAN}38${C_RESET}) Automation v2 / RBAC, credenciais e transporte"
   say ""
+  say " ${C_WHITE}COLMEIA${C_RESET}"
+  say " ${C_CYAN}39${C_RESET}) Identidade criptográfica / enrollment do nó"
+  say ""
   say " ${C_WHITE}MONITORAMENTO E MANUTENÇÃO${C_RESET}"
   say " ${C_CYAN}10${C_RESET}) Tráfego e conexões"
   say " ${C_CYAN}11${C_RESET}) Diagnóstico"
@@ -464,6 +516,19 @@ while true; do
         0) ;;
         *) warn "Opção inválida"; sleep 1 ;;
       esac
+      ;;
+    39)
+      header
+      say "${C_WHITE}COLMEIA — IDENTIDADE / ENROLLMENT${C_RESET}\n"
+      "$MANAGER_HOME/modules/hive_identity.sh" --status || true
+      say ""
+      "$MANAGER_HOME/modules/hive_identity.sh" --controller-status || true
+      say ""
+      say "Fluxo de enrollment via CLI:"
+      say " manager hive request /root/node-request.json"
+      say " manager hive controller approve REQUEST /root/node-bundle.json"
+      say " manager hive accept BUNDLE SHA256:<fingerprint-controlador>"
+      pause
       ;;
     90) self_update ;;
     0) clear 2>/dev/null || true; exit 0 ;;
