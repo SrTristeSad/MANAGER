@@ -63,7 +63,7 @@ esac
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y curl ca-certificates iproute2 iputils-ping procps passwd login coreutils gawk sed grep tar util-linux dnsutils openssh-client libpam-modules python3
+apt-get install -y curl ca-certificates iproute2 iputils-ping procps passwd login coreutils gawk sed grep tar util-linux dnsutils openssh-client libpam-modules python3 openssl
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -92,6 +92,7 @@ FILES=(
   "modules/connection_actions.sh"
   "modules/automation_legacy.sh"
   "modules/automation_principals.sh"
+  "modules/automation_credentials.sh"
   "modules/automation_v2.sh"
   "modules/policy_engine.sh"
   "modules/session_engine.sh"
@@ -202,6 +203,7 @@ chmod 0644 "$ETC_DIR/installed-version"
 "$INSTALL_DIR/modules/node_metadata.sh" --init >/dev/null
 "$INSTALL_DIR/modules/resellers.sh" --init >/dev/null
 "$INSTALL_DIR/modules/automation_principals.sh" --init >/dev/null
+"$INSTALL_DIR/modules/automation_credentials.sh" --init >/dev/null
 "$INSTALL_DIR/modules/products.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O motor de produtos/ACL/franquias foi instalado parcialmente. Identidades sem produto continuam usando a política base." >&2
 }
@@ -258,9 +260,3 @@ echo "Rollback:    manager-rollback"
 echo "Remover:     manager-uninstall"
 [[ -d "$ROLLBACK_DIR" ]] && echo "Código anterior preservado em: $ROLLBACK_DIR"
 echo ""
-if [[ "${1:-}" != "--update" ]]; then
-  echo "VPNs, DNS, proxies, firewall, Fail2ban, TLS, Speedtest, vnStat e demais módulos"
-  echo "só instalam dependências quando você escolhe a função correspondente."
-  echo "Automation Legacy v1 permanece desligada por padrão até enable explícito."
-  echo "Automation v2 inicia somente em socket Unix local root-only; não abre porta TCP."
-fi
