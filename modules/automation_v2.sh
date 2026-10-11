@@ -65,10 +65,33 @@ EOF
 }
 
 install_v2() {
+  local socket_mode="" attempt
   ensure_dependencies || { err "Python 3 é necessário para Automation v2."; return 69; }
   ensure_dirs
   write_service
   systemctl enable --now manager-automation-v2.service >/dev/null
+
+  # Type=simple considera o serviço iniciado antes de o processo Python ter
+  # terminado bind()/chmod() no socket. O instalador só retorna sucesso depois
+  # que a interface local realmente está pronta e com a permissão esperada.
+  for attempt in {1..50}; do
+    if [[ -S "$SOCKET_FILE" ]]; then
+      socket_mode="$(stat -c '%a' "$SOCKET_FILE" 2>/dev/null || true)"
+      if [[ "$socket_mode" == "600" ]]; then
+        return 0
+      fi
+    fi
+    if ! systemctl is-active --quiet manager-automation-v2.service 2>/dev/null; then
+      err "Automation v2 encerrou antes de disponibilizar o socket local."
+      systemctl --no-pager --full status manager-automation-v2.service >&2 || true
+      return 70
+    fi
+    sleep 0.1
+  done
+
+  err "Automation v2 não disponibilizou $SOCKET_FILE com modo 0600."
+  systemctl --no-pager --full status manager-automation-v2.service >&2 || true
+  return 70
 }
 
 detach_v2() {
