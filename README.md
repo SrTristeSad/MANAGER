@@ -4,7 +4,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 > O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva capacidades úteis, substitui implementações inseguras/obsoletas e prepara uma arquitetura própria para Automation v2, Telegram e Modo Colmeia.
 
-Versão atual: **0.6.3**.
+Versão atual: **0.6.4**.
 
 ## Princípios
 
@@ -261,9 +261,88 @@ manager-protocol-leases.service
 
 O reconciliador compara continuamente conexões reais e leases, renova as que continuam vivas e libera as que desapareceram.
 
+## Identity Usage Accounting — 0.6.4
+
+A 0.6.4 adiciona uma visão comum de **tráfego medido + atividade** por identidade.
+
+```bash
+manager --usage
+manager --usage maria
+```
+
+Estado persistente:
+
+```text
+/var/lib/manager/identity-usage/identities/
+```
+
+Snapshots locais usados somente para calcular deltas:
+
+```text
+/var/lib/manager/identity-usage/sources/
+```
+
+### WireGuard e OpenVPN
+
+O MANAGER consolida bytes reais reportados pelos próprios protocolos:
+
+- WireGuard: contadores `transfer` do peer;
+- OpenVPN: `Bytes Received` / `Bytes Sent` do status do servidor.
+
+A primeira observação de uma fonte vira **baseline** e não é contabilizada retroativamente. Depois, somente a diferença entre leituras é somada ao histórico da identidade. Se o daemon/interface reiniciar e o contador absoluto voltar para um valor menor, o coletor trata esse valor como novo delta sem zerar o acumulado histórico.
+
+Do ponto de vista da identidade:
+
+```text
+servidor recebeu do cliente = upload
+servidor enviou ao cliente   = download
+```
+
+### SSH
+
+SSH participa de sessão, heartbeat e última atividade, mas a 0.6.4 **não inventa byte accounting SSH** usando todo o tráfego do UID Linux. Esse método poderia misturar processos fora da sessão e produzir números errados.
+
+Quando uma identidade possui SSH vinculado, a saída informa explicitamente:
+
+```text
+traffic_complete=0
+ssh_bytes_supported=0
+```
+
+Assim um relatório futuro consegue distinguir total medido parcial de um total realmente coberto pelos protocolos metrificados.
+
+### Exemplo
+
+```text
+id=maria
+state=active
+sessions=1
+max_sessions=1
+active_protocols=wireguard
+download_bytes=19756849561
+upload_bytes=3435973836
+total_bytes=23192823397
+traffic_complete=1
+metered_protocols=wireguard,openvpn
+ssh_bytes_supported=0
+last_protocol=wireguard
+last_resource=maria
+```
+
+Coleta automática:
+
+```text
+manager-identity-usage.timer
+manager-identity-usage.service
+```
+
+O acumulado é persistente; uninstall normal preserva o histórico e `--purge` o remove. O backup transporta somente os totais consolidados, não snapshots/baselines pertencentes ao nó de origem.
+
+Documentação: [`docs/IDENTITY_USAGE.md`](docs/IDENTITY_USAGE.md).
+
 ## O limite que prepara a Colmeia
 
-Hoje a autoridade de lease ainda é local na VPS. O modelo, porém, já representa o comportamento planejado para a Colmeia:
+Hoje a autoridade de lease e o accounting ainda são locais na VPS. O modelo, porém, já representa o comportamento planejado para a Colmeia:
 
 ```text
 Maria
@@ -274,7 +353,7 @@ max_sessions = 1
 
 Ela pode ter vários destinos disponíveis, mas apenas uma sessão autorizada se o plano permitir uma só.
 
-No futuro, o Hub substituirá a decisão local por um lock global sem mudar os conceitos de `session_id`, TTL, heartbeat e `session_epoch`.
+No futuro, o Hub substituirá a decisão local por um lock global sem mudar os conceitos de `session_id`, TTL, heartbeat e `session_epoch`. O uso de cada nó poderá ser agregado sem exigir que os protocolos sejam reescritos.
 
 ## Reconciliação automática
 
@@ -303,6 +382,13 @@ manager-openvpn-lease-queue.path
 manager-openvpn-lease-queue.service
 ```
 
+Identity Usage:
+
+```text
+manager-identity-usage.timer
+manager-identity-usage.service
+```
+
 ## Backup e migração
 
 Backups de configuração ficam em:
@@ -317,12 +403,13 @@ Incluem, quando presentes:
 /etc/manager/access
 /etc/manager/connection
 /etc/manager/proxy
+/var/lib/manager/identity-usage/identities
 estado WireGuard/OpenVPN
 DNS/TLS/banner/performance
 configurações próprias do MANAGER
 ```
 
-Leases runtime **não** entram no backup. `session_epoch` e identidades persistem.
+Leases runtime e snapshots de contadores **não** entram no backup. `session_epoch`, identidades e acumulados consolidados persistem.
 
 A exportação de usuários Linux é separada e não guarda senha em texto claro nem substitui `/etc/passwd`/`/etc/shadow` inteiros durante restauração.
 
@@ -345,7 +432,7 @@ O detector de legado reconhece estruturas como:
 - Squid sem `http_access allow all`;
 - nada de flush global de firewall;
 - credenciais VPN com permissões restritas;
-- estado de identidade root-only;
+- estado de identidade e accounting restritos a root;
 - OpenVPN não recebe acesso root ao Lease Engine;
 - hooks externos são removidos antes de uninstall/rollback;
 - self-update baixa e valida o instalador antes da execução.
@@ -363,6 +450,7 @@ manager --identities              identidades
 manager --identity ID             detalhes da identidade
 manager --identity-sessions [ID]  sessões reais observadas
 manager --leases [ID]             leases autorizadas
+manager --usage [ID]              tráfego/atividade consolidada
 manager --diagnostics             diagnóstico
 manager --version                 versão
 manager --help                    ajuda
@@ -416,7 +504,7 @@ Rollback:
 manager-rollback
 ```
 
-O rollback desmonta hooks do Protocol Lease Bridge e enforcement antes da troca de código e reaplica somente os componentes disponíveis na versão restaurada.
+O rollback desmonta o coletor de uso, hooks do Protocol Lease Bridge e enforcement antes da troca de código e reaplica somente os componentes disponíveis na versão restaurada. O histórico persistente de uso permanece disponível caso a versão restaurada suporte o coletor.
 
 Desinstalar preservando estado:
 
@@ -424,7 +512,7 @@ Desinstalar preservando estado:
 manager-uninstall
 ```
 
-O bridge é desanexado antes do Session Engine. Hooks PAM/OpenVPN, unidades runtime e leases temporárias são retirados; identidades e `session_epoch` ficam preservados.
+O coletor e o bridge são desanexados antes do Session Engine. Hooks PAM/OpenVPN, unidades runtime e leases temporárias são retirados; identidades, `session_epoch` e histórico consolidado de uso ficam preservados.
 
 Purge explícito:
 
@@ -432,7 +520,7 @@ Purge explícito:
 manager-uninstall --purge
 ```
 
-Pacotes do sistema, certificados Let's Encrypt, backups, grupos potencialmente pré-existentes e regras UFW alheias ao MANAGER continuam sendo tratados conservadoramente.
+O purge remove também o histórico em `/var/lib/manager/identity-usage`. Pacotes do sistema, certificados Let's Encrypt, backups, grupos potencialmente pré-existentes e regras UFW alheias ao MANAGER continuam sendo tratados conservadoramente.
 
 ## Roadmap
 
@@ -440,7 +528,7 @@ Plano detalhado: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ```text
 0.5.x  paridade SSHPlus útil
-0.6.x  Connection Engine, políticas, leases, produtos e ACL
+0.6.x  Connection Engine, políticas, leases, accounting, produtos e ACL
 0.7.0  Legacy v1 + Automation v2
 0.8.0  Modo Colmeia
 0.9.0  Telegram Bot + Mini App
@@ -467,6 +555,7 @@ Planejado:
 - sticky sessions;
 - sessão global por identidade/plano;
 - lease atômico e fencing global;
+- agregação de uso por nó;
 - comunicação autenticada/criptografada;
 - nós iniciando conexão de controle para fora, sem abrir shell administrativo público.
 
@@ -486,8 +575,9 @@ O CI cobre:
 - instalação/update/rollback/uninstall;
 - Connection Engine e Policy Engine;
 - Session Engine: acquire, retry, heartbeat, TTL, switch e fencing;
-- Protocol Lease Bridge: instalação de hooks/unidades, admissão de sessão, limite `1/1`, release e cleanup de lifecycle.
+- Protocol Lease Bridge: instalação de hooks/unidades, admissão de sessão, limite `1/1`, release e cleanup de lifecycle;
+- Identity Usage: baseline inicial, deltas, reset de contador, vínculo obrigatório, persistência em uninstall/reinstall e remoção por purge.
 
 ## Origem
 
-O SSHPlus Manager original foi desenvolvido por **@crazy_vpn** e deu origem a vários forks comunitários. O MANAGER preserva a ideia de administração simples por terminal, mas evolui para uma arquitetura própria de identidade, automação, leases e operação multi-servidor.
+O SSHPlus Manager original foi desenvolvido por **@crazy_vpn** e deu origem a vários forks comunitários. O MANAGER preserva a ideia de administração simples por terminal, mas evolui para uma arquitetura própria de identidade, automação, leases, accounting e operação multi-servidor.
