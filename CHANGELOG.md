@@ -4,6 +4,50 @@ Todas as mudanças relevantes do MANAGER serão registradas aqui.
 
 O projeto usa versionamento semântico (`MAJOR.MINOR.PATCH`) enquanto a API/estrutura ainda está evoluindo.
 
+## [0.6.3] - 2026-10-10
+
+### Protocol Lease Bridge
+
+- Novo `protocol_leases.sh` liga conexões reais de SSH, WireGuard e OpenVPN ao contrato `acquire -> heartbeat -> release` do Session Engine.
+- Sessões reais e leases passam a ser duas visões complementares da mesma identidade: `manager --identity-sessions [ID]` mostra o observado e `manager --leases [ID]` mostra a autoridade de vaga.
+- O bridge mantém mapas somente em `/run/manager-protocol-leases`, sem transformar estado transitório de conexão em backup durável.
+- Timer próprio reconcilia conexões e leases a cada poucos segundos, renovando somente reservas que continuam correspondendo a sessões reais.
+
+### SSH
+
+- Integração de sessão via PAM usando bloco próprio em `/etc/pam.d/sshd` e wrapper `/usr/local/libexec/manager-ssh-lease-hook`.
+- `open_session` de usuário vinculado precisa adquirir lease; `close_session` libera a reserva.
+- O wrapper é fail-safe quando o código do MANAGER não está presente ou o contexto privilegiado esperado não existe, reduzindo risco de lockout durante rollback/recuperação.
+- O reconciliador também adota sessões já abertas observadas por `who`; uma sessão gerenciada que não consiga vaga tem somente seu TTY encerrado e `root` não é alvo dessa rotina.
+
+### OpenVPN
+
+- O processo OpenVPN não recebe shell root nem regra ampla de `sudo` para consultar leases.
+- Novo hook não privilegiado `/usr/local/libexec/manager-openvpn-lease-hook` usa fila runtime de pedidos/respostas.
+- `manager-openvpn-lease-queue.path` e `.service` processam os pedidos como root por uma superfície allowlisted e devolvem `ALLOW`/`DENY` ao `client-connect`.
+- `client-disconnect` libera a lease correspondente.
+- Upgrade com clientes já ativos evita restart desnecessário; a mudança de hook pode ficar pendente até o servidor ficar sem clientes, enquanto a reconciliação continua observando/adotando as sessões existentes.
+- Sessão OpenVPN gerenciada que não consegue lease pode ter somente seu IP virtual bloqueado, sem revogar certificado.
+
+### WireGuard
+
+- Handshake recente passa a dirigir `acquire`/`heartbeat` da lease do peer gerenciado.
+- Sem lease válida, o tráfego daquele peer recebe uma regra específica em `FORWARD`; não existe flush global de firewall.
+- Se a regra específica não puder ser aplicada, o fallback remove somente o peer correspondente do runtime do WireGuard.
+- Quando o handshake deixa de ser recente, a lease é liberada.
+
+### Lifecycle, rollback e testes
+
+- Instalador entrega `libpam-modules`, instala o Protocol Lease Bridge depois de Connection/Session/Policy Engine e sobe timer/path automaticamente.
+- Uninstall desmonta o bridge antes do Session Engine, removendo PAM hooks, hooks OpenVPN, unidades runtime e leases transitórias antes de apagar o código.
+- Rollback desmonta bridge/política antes da troca de `/opt/manager` e reaplica somente componentes existentes na versão restaurada, evitando referências a módulos ausentes ao voltar para uma versão anterior.
+- Purge continua conservador e não remove grupos potencialmente pré-existentes somente por nome.
+- CI ganhou smoke test do bridge: instalação de hooks/unidades, aquisição de uma sessão real simulada, bloqueio da segunda sessão em `max_sessions=1`, release, preservação em update/rollback e remoção completa no uninstall.
+
+### Limite desta etapa
+
+- A autoridade ainda é local a cada VPS. A próxima evolução multi-VPS moverá a decisão de aquisição para o Hub da Colmeia, preservando `session_id`, TTL, heartbeat e `session_epoch` como contrato.
+
 ## [0.6.2] - 2026-10-10
 
 ### Session / Lease Engine
