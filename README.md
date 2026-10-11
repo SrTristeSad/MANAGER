@@ -4,7 +4,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 > O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva capacidades úteis, substitui implementações inseguras/obsoletas e evolui para uma arquitetura própria de identidade, automação, VPN, revenda e operação multi-servidor.
 
-Versão atual: **0.7.4**.
+Versão atual: **0.8.0**.
 
 ## Princípios
 
@@ -16,7 +16,8 @@ Versão atual: **0.7.4**.
 - compatibilidade com legado não significa copiar fragilidades do legado;
 - integrações novas usam operações estruturadas e nunca shell remoto arbitrário;
 - senhas/chaves privadas não são persistidas pelo servidor para replay posterior;
-- autenticação, freshness, anti-replay, rate limit e autorização são reavaliados antes do replay idempotente.
+- autenticação, freshness, anti-replay, rate limit e autorização são reavaliados antes do replay idempotente;
+- a Colmeia estabelece confiança criptográfica antes de introduzir scheduler ou autoridade global de sessões.
 
 ## Recursos atuais
 
@@ -108,9 +109,7 @@ global_usage_supported=0
 
 ## Automation Legacy v1 — 0.7.0
 
-Compatibilidade controlada com o antigo ecossistema `syncpainel`.
-
-Fica **desligada por padrão**.
+Compatibilidade controlada com o antigo ecossistema `syncpainel`. Fica **desligada por padrão**.
 
 ```bash
 manager automation legacy status
@@ -145,21 +144,17 @@ Remoto, somente quando habilitado:
 manager-automation-v2-remote.service
 ```
 
-O socket Unix continua privilegiado, `0600`, com runtime `0700` e autenticação de `local-root` por `SO_PEERCRED`.
+O socket Unix continua privilegiado, `0600`, com runtime `0700` e autenticação de `local-root` por `SO_PEERCRED`. O gateway remoto apenas termina TLS e encaminha o envelope estruturado ao `managerd`; autenticação, anti-replay, RBAC, idempotência e dispatcher continuam no daemon local.
 
-O gateway remoto não cria uma segunda autoridade: ele termina TLS e encaminha o envelope estruturado ao `managerd` pelo socket Unix. Autenticação, anti-replay, RBAC, idempotência e dispatcher continuam no daemon local.
-
-### Status de segurança da 0.7.4
+### Status de segurança
 
 ```text
 transport=unix,tls1.3
 remote_transport=1
 rbac=1
-principal_assertion=local-root-peercred-or-ed25519
 cryptographic_auth=1
 credential_algorithm=ed25519
 auth_scheme=ed25519-v2
-nonlocal_signature_required=1
 timestamp_signed=1
 timestamp_window_seconds=120
 nonce_signed=1
@@ -174,36 +169,18 @@ audit=1
 secret_replay=0
 ```
 
-`remote_transport=1` indica que a capacidade existe. O listener remoto **não precisa estar habilitado**. Consulte:
-
-```bash
-manager automation v2 remote status
-```
+`remote_transport=1` indica capacidade disponível; o listener remoto continua opt-in.
 
 ### Principals e credenciais
 
-Papéis:
-
-```text
-admin
-reseller
-subreseller
-user
-```
-
-Principals:
+Papéis: `admin`, `reseller`, `subreseller` e `user`.
 
 ```text
 /etc/manager/automation/v2/principals/
-```
-
-Credenciais públicas:
-
-```text
 /etc/manager/automation/v2/credentials/<principal>/
 ```
 
-O servidor mantém somente a chave pública, `key_id`, fingerprint e estado. A chave privada fica no arquivo `.credential` externo criado pelo administrador.
+O servidor mantém apenas chave pública, `key_id`, fingerprint e estado. A chave privada fica no arquivo `.credential` externo.
 
 ```bash
 manager automation v2 principal create loja01 reseller loja01 premium,basic
@@ -212,71 +189,27 @@ manager automation v2 credential rotate loja01 /root/loja01-v2.credential
 manager automation v2 credential revoke loja01 ed25519-0123456789abcdef
 ```
 
-`local-root` não usa credencial Ed25519 e não é permitido no transporte remoto.
+Para principals não-locais, a assinatura cobre contrato, versão, `request_id`, `principal_id`, ação, parâmetros, `issued_at` e nonce. O timestamp precisa estar dentro de 120 segundos e o nonce só pode ser consumido uma vez.
 
-### Envelope Ed25519 v2
+Retry idempotente usa novo timestamp/nonce/assinatura, mas pode reutilizar o mesmo `request_id` lógico.
 
-Para principals não-locais, a assinatura cobre:
-
-```text
-contract
-version
-request_id
-principal_id
-action_id
-params
-issued_at
-nonce
-```
-
-O `issued_at` precisa estar dentro de uma janela de **120 segundos**. O `nonce` é consumido uma única vez. Reenviar exatamente o mesmo envelope assinado é recusado como replay.
-
-Retry idempotente continua possível: o cliente gera **novo timestamp + novo nonce + nova assinatura**, mas pode reutilizar o mesmo `request_id`. Se principal, ação e payload lógico forem os mesmos, o daemon pode devolver a resposta idempotente cacheada.
-
-### Rate limiting
-
-O daemon aplica token bucket por principal/ação:
+### Rate limiting e transporte TLS 1.3
 
 ```text
 leituras: 120 req/min, burst 20
 escritas:  30 req/min, burst 8
 ```
 
-O gateway TLS também possui proteção de burst por origem remota antes de encaminhar ao socket local.
-
-### Transporte remoto TLS 1.3
-
-Habilitar:
+O gateway também limita burst por IP remoto.
 
 ```bash
 manager automation v2 remote enable 203.0.113.10 9443
-```
-
-Desabilitar:
-
-```bash
+manager automation v2 remote status
+manager automation v2 remote rotate-certificate
 manager automation v2 remote disable
 ```
 
-Rotacionar certificado:
-
-```bash
-manager automation v2 remote rotate-certificate
-```
-
-A saída/status fornece:
-
-```text
-server_fingerprint=SHA256:<64 hex>
-```
-
-O certificado é Ed25519, armazenado root-only sob:
-
-```text
-/etc/manager/automation/v2/tls/
-```
-
-A conexão cliente aceita **somente TLS 1.3** e exige pin SHA-256 explícito do certificado. Exemplo:
+O cliente remoto exige pin SHA-256 explícito:
 
 ```bash
 managerctl \
@@ -286,13 +219,7 @@ managerctl \
   connection.status id=maria
 ```
 
-IPv6 usa:
-
-```text
-[2001:db8::10]:9443
-```
-
-O MANAGER **não abre regra de firewall automaticamente** ao habilitar o gateway. Restrinja a porta às redes/clientes necessários.
+IPv6 usa `[2001:db8::10]:9443`. O MANAGER não abre a porta no firewall automaticamente.
 
 ### Ações allowlisted
 
@@ -305,51 +232,73 @@ connection.status
 connection.revoke
 ```
 
-Não existe ação de shell, comando arbitrário, script ou caminho executável informado pelo cliente.
-
-### Ordem de segurança
-
-Para principal não-local:
-
-```text
-principal ativo
-      ↓
-Ed25519 v2 válida
-      ↓
-timestamp dentro da janela
-      ↓
-rate limit
-      ↓
-nonce / anti-replay
-      ↓
-RBAC / ownership / produto
-      ↓
-idempotência
-      ↓
-dispatcher allowlisted
-```
-
-Chave revogada, principal desabilitado, timestamp velho/futuro, nonce repetido, excesso de requisições ou escopo RBAC inválido falham antes do dispatcher.
-
-### Auditoria
-
-```text
-/var/log/manager/automation-v2-audit.jsonl
-```
-
-Além de principal/autenticação/RBAC, a 0.7.4 registra decisões de:
-
-```text
-transport
-freshness_decision
-replay_decision
-rate_limit_decision
-request_issued_at
-```
-
-Assinatura, chave privada, senha e stdout sensível não entram no audit.
+Não existe shell/comando/caminho arbitrário.
 
 Documentação: [`docs/AUTOMATION_V2.md`](docs/AUTOMATION_V2.md).
+
+## Colmeia — 0.8.0
+
+A 0.8.0 inicia o modo multi-servidor criando a raiz de confiança entre nós e controlador, sem ainda ativar heartbeat, scheduler ou leases globais.
+
+Cada VPS recebe uma identidade Ed25519 ligada ao `node_id`:
+
+```text
+/etc/manager/hive/node/
+```
+
+O controlador mantém sua identidade e o registry público dos nós aprovados:
+
+```text
+/etc/manager/hive/controller/
+```
+
+Fluxo:
+
+```text
+nó cria request assinado
+        ↓
+controlador valida e aprova
+        ↓
+controlador emite bundle assinado
+        ↓
+nó aceita somente com fingerprint pinado do controlador
+```
+
+Comandos principais:
+
+```bash
+manager hive status
+manager hive request /root/node-request.json
+manager hive controller init
+manager hive controller fingerprint
+manager hive controller approve /root/node-request.json /root/node-bundle.json
+manager hive accept /root/node-bundle.json SHA256:<fingerprint-controlador>
+manager hive controller list
+manager hive controller show NODE_ID
+manager hive controller revoke NODE_ID [REASON]
+manager hive controller reenroll REQUEST OUT
+```
+
+Revogação incrementa `node_epoch`. Re-enrollment explícito gera uma geração nova; bundles antigos ficam cercados por fencing e não podem rebaixar o nó para uma autoridade anterior.
+
+Estado da 0.8.0:
+
+```text
+cryptographic_node_identity=1
+controller_identity=1
+signed_enrollment=1
+controller_fingerprint_pinning=1
+node_epoch_fencing=1
+heartbeat=0
+node_health=0
+scheduler=0
+global_lease_authority=0
+global_accounting=0
+```
+
+O estado da Colmeia entra no backup protegido do MANAGER e pode conter chaves privadas de nó/controlador; trate o backup como segredo operacional. Uninstall normal preserva a confiança, purge remove o estado server-side.
+
+Documentação: [`docs/HIVE.md`](docs/HIVE.md).
 
 ## Backup, rollback e remoção
 
@@ -359,7 +308,7 @@ manager-uninstall
 manager-uninstall --purge
 ```
 
-Uninstall normal fecha os listeners/socket e remove código, mas preserva estado durável necessário para reinstalação, incluindo principals, credenciais públicas e configuração remota. O purge remove estado server-side do MANAGER. Arquivos privados de credencial externos não são apagados automaticamente.
+Uninstall normal fecha listeners/socket e remove código, mas preserva estado durável necessário para reinstalação, incluindo Automation v2 e confiança da Colmeia. O purge remove estado server-side. Arquivos privados externos de credencial da Automation não são apagados automaticamente.
 
 ## Segurança
 
@@ -370,11 +319,12 @@ Uninstall normal fecha os listeners/socket e remove código, mas preserva estado
 - cache de idempotência não persiste senha gerada;
 - ACL restrita de região/pool/nó falha fechada;
 - Legacy v1 usa conta não-root, SSH dedicado, `ForceCommand` e allowlist;
-- Automation v2 usa TLS 1.3 + pin SHA-256 no transporte remoto;
+- Automation v2 usa TLS 1.3 + pin SHA-256 no remoto;
 - principals não-locais usam Ed25519 v2 com timestamp/nonce;
 - nonce repetido falha fechado;
-- rate limit existe no daemon e no gateway remoto;
-- chave revogada e principal/revenda desabilitados falham fechado na próxima requisição;
+- rate limit existe no daemon e gateway remoto;
+- Colmeia usa Ed25519 e pin do controlador no trust bootstrap;
+- `node_epoch` impede aceitar bundle antigo após revogação/re-enrollment;
 - nenhuma ação estruturada aceita shell/comando/caminho arbitrário.
 
 ## CLI principal
@@ -382,38 +332,32 @@ Uninstall normal fecha os listeners/socket e remove código, mas preserva estado
 ```text
 manager --health
 manager --status
-manager --expired
-manager --ssh-sessions
-manager --proxy-status
 manager --identities
 manager --identity ID
 manager --products
 manager --product ID
-manager --reseller-usage OWNER
 manager --provision ID PLAN [OWNER] [PROTOCOLS]
 manager --revoke-identity ID
-manager --identity-sessions [ID]
 manager --leases [ID]
 manager --usage [ID]
 manager --ipv6-status
 manager --node
 manager --node-context
 manager --node-set FIELD VALUE
+manager hive status
+manager hive request OUT
+manager hive accept BUNDLE CONTROLLER_FP
+manager hive controller init|status|fingerprint|list
+manager hive controller show NODE_ID
+manager hive controller approve REQUEST OUT
+manager hive controller reenroll REQUEST OUT
+manager hive controller revoke NODE_ID [REASON]
 manager automation legacy status
-manager automation legacy enable [PORT]
-manager automation legacy disable
 manager automation v2 status
 manager automation v2 principals
-manager automation v2 principal create ID ROLE SUBJECT [PRODUCTS]
 manager automation v2 credentials ID
-manager automation v2 credential enroll ID /CAMINHO/ARQUIVO
-manager automation v2 credential rotate ID /CAMINHO/ARQUIVO
-manager automation v2 credential revoke ID KEY_ID
 manager automation v2 remote status
-manager automation v2 remote enable BIND_IP [PORT]
-manager automation v2 remote disable
-manager automation v2 remote rotate-certificate
-managerctl [--principal ID] [--credential FILE] [--remote IP:PORT] [--server-fingerprint SHA256:HEX] ACTION [key=value ...] [--request-id ID]
+managerctl [--credential FILE] [--remote IP:PORT] [--server-fingerprint SHA256:HEX] ACTION [key=value ...]
 manager --diagnostics
 manager --version
 ```
@@ -436,13 +380,7 @@ bash /tmp/manager-install.sh
 rm -f /tmp/manager-install.sh
 ```
 
-Depois:
-
-```bash
-manager
-```
-
-Alias clássico: `menu`.
+Depois: `manager`. Alias clássico: `menu`.
 
 ## Roadmap
 
@@ -451,40 +389,33 @@ Plano detalhado: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 ```text
 0.5.x  paridade SSHPlus útil                                         ✅
 0.6.x  Connection/Policy/Session Engine completo                     ✅
-0.7.0  Automation Legacy v1                                          ✅
-0.7.1  Automation v2 — núcleo local estruturado                       ✅
-0.7.2  Principals + RBAC                                              ✅
-0.7.3  autenticação Ed25519 + enrollment/rotação/revogação            ✅
-0.7.4  anti-replay + rate limit + transporte remoto TLS 1.3           ✅
-0.8.x  Modo Colmeia                                                   próximo
+0.7.x  Automation Engine segura/remota                               ✅
+0.8.0  Colmeia — identidade e enrollment de nós                      ✅
+0.8.1  heartbeat + saúde de nós                                      próximo
+0.8.2  scheduler / drain / failover
+0.8.3  autoridade de leases globais
+0.8.4  accounting global
+0.8.5  resiliência operacional
 0.9.x  Telegram Bot + Mini App
-0.9.5  migração e escala
 1.0.0  release de produção
 ```
 
-A próxima etapa é **0.8.x: Modo Colmeia**, começando por identidade/enrollment de nós, heartbeat e saúde, antes de scheduler, drain/failover e leases globais.
-
 ## Testes
 
-O CI cobre, entre outros:
+O CI cobre syntax/ShellCheck, lifecycle, Connection/Session Engine, products/quotas, IPv6, Automation v2 e, a partir da 0.8.0:
 
-- syntax/ShellCheck e regressões de segurança;
-- install/update/rollback/uninstall;
-- Connection/Policy/Session Engine e Protocol Lease Bridge;
-- accounting, produtos/ACL, revenda e IPv6;
-- Legacy v1;
-- Automation v2 Core, Authentication e RBAC;
-- assinatura Ed25519 v2;
-- timestamp velho/futuro recusado;
-- replay do mesmo envelope recusado;
-- retry idempotente com nonce novo;
-- rate limiting por principal/ação;
-- TLS 1.3 e rejeição de TLS 1.2;
-- pin SHA-256 incorreto recusado;
-- rotação do certificado;
-- lifecycle do gateway remoto;
-- persistência após uninstall/reinstall e purge explícito.
+- geração da identidade Ed25519 do nó;
+- identidade do controlador;
+- request de enrollment assinado;
+- alteração do request detectada;
+- fingerprint incorreto do controlador recusado;
+- primeiro enrollment em `node_epoch=1`;
+- revogação com incremento de epoch;
+- re-enrollment explícito;
+- bundle antigo recusado por fencing;
+- persistência das chaves após uninstall/reinstall;
+- purge do estado da Colmeia.
 
 ## Origem
 
-O SSHPlus Manager original foi desenvolvido por **@crazy_vpn** e deu origem a vários forks comunitários. O MANAGER preserva a ideia de administração simples por terminal, mas evolui para uma arquitetura própria de identidade, automação, leases, accounting, produtos e operação multi-servidor.
+O SSHPlus Manager original foi desenvolvido por **@crazy_vpn** e deu origem a vários forks comunitários. O MANAGER preserva a administração simples por terminal, evoluindo para identidade, automação, leases, accounting, produtos e operação multi-servidor.

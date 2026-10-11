@@ -4,6 +4,61 @@ Todas as mudanças relevantes do MANAGER são registradas aqui. O projeto usa ve
 
 > O histórico detalhado das revisões antigas continua disponível no histórico Git. A partir da série 0.7, este arquivo prioriza mudanças de arquitetura e segurança que afetam contratos públicos/operacionais.
 
+## [0.8.0] - 2026-10-11
+
+### Colmeia — identidade criptográfica e enrollment de nós
+
+- Adicionado `modules/hive_identity.sh` como raiz de confiança da futura Colmeia.
+- Cada VPS recebe identidade Ed25519 própria ligada ao `node_id` persistente do Node Metadata.
+- Chave privada do nó permanece root-only em `/etc/manager/hive/node/node.key`; enrollment request leva somente a chave pública.
+- Controlador pode inicializar identidade Ed25519 própria em `/etc/manager/hive/controller/`.
+- Novos contratos `manager-hive-node-identity-v1`, `manager-hive-controller-identity-v1`, `manager-hive-enrollment-request-v1` e `manager-hive-enrollment-bundle-v1`.
+- Enrollment request contém `node_id`, key ID, fingerprint, chave pública, snapshot de metadados, `issued_at`, nonce e assinatura Ed25519 do nó.
+- Controlador valida assinatura e identidade derivada da chave pública antes de aprovar.
+- Aprovação gera bundle assinado pelo controlador e registra a chave pública do nó.
+- Nó aceita bundle somente quando `node_id`, geração de chave, fingerprint do próprio nó, assinatura do controlador e fingerprint pinado do controlador conferem.
+- Nó não pode trocar silenciosamente de controlador depois do primeiro enrollment.
+- Primeiro enrollment começa em `node_epoch=1`.
+- Revogação desabilita o nó, registra motivo/timestamp e incrementa `node_epoch`.
+- Nó revogado não volta por `approve` normal; retorno exige `controller reenroll` explícito.
+- Re-enrollment incrementa novamente `node_epoch` e gera novo bundle.
+- Bundle com epoch menor que o já aceito é recusado, preparando fencing para futuras fases distribuídas.
+
+### CLI e lifecycle
+
+- Novos comandos `manager hive status|request|accept`.
+- Novos comandos `manager hive controller init|status|fingerprint|list|show|approve|reenroll|revoke`.
+- Nova opção 39 no menu interativo para identidade/enrollment da Colmeia.
+- Installer inicializa identidade criptográfica do nó depois do Node Metadata.
+- `/etc/manager/hive` é estado durável e sobrevive a uninstall/reinstall normal.
+- `manager-uninstall --purge` remove o estado server-side da Colmeia junto do restante de `/etc/manager`.
+- Backup protegido inclui `/etc/manager/hive`; o aviso de backup agora explicita que o arquivo pode conter chaves privadas da Colmeia.
+
+### Segurança e limites
+
+- Ed25519/OpenSSL; nenhuma criptografia própria foi inventada.
+- Arquivos de request/bundle são criados em `0600`, exigem caminho absoluto e não sobrescrevem arquivos existentes.
+- Enrollment request possui validade máxima de 24 horas e nonce.
+- Alteração de metadata ou qualquer campo coberto pela assinatura invalida o request.
+- Pin SHA-256 do controlador é obrigatório no aceite inicial do bundle.
+- 0.8.0 não abre novo listener de rede e não altera o caminho de dados VPN.
+- Heartbeat, saúde distribuída, scheduler, drain/failover, lease global e accounting global continuam explicitamente fora deste milestone.
+
+### CI
+
+- Novo workflow `Hive Node Enrollment`.
+- O CI simula controlador + segundo nó isolado na mesma VM.
+- Testa request assinado, tamper detection, pin errado, aprovação correta, revogação, reenrollment e fencing de bundle antigo.
+- Testa preservação das chaves em uninstall/reinstall normal.
+- Testa purge do estado da Colmeia.
+- Os 16 workflows do commit funcional fecharam sem falhas antes do bump de release.
+
+### Próxima etapa
+
+- 0.8.1: heartbeat assinado + saúde dos nós.
+- Scheduler, drain/failover e seleção de nó ficam para 0.8.2.
+- Autoridade global de sessões/leases fica para 0.8.3.
+
 ## [0.7.4] - 2026-10-11
 
 ### Anti-replay e freshness da Automation v2
@@ -47,149 +102,74 @@ Todas as mudanças relevantes do MANAGER são registradas aqui. O projeto usa ve
 - Transporte remoto exige credencial Ed25519 de principal não-local.
 - O MANAGER não abre porta no firewall automaticamente ao habilitar o gateway.
 
-### managerctl remoto
-
-Exemplo:
-
-```bash
-managerctl \
-  --credential /root/loja01.credential \
-  --remote 203.0.113.10:9443 \
-  --server-fingerprint SHA256:<64-hex> \
-  connection.status id=maria
-```
-
-IPv6 usa endpoint no formato `[IP]:PORT`.
-
-### Auditoria
-
-- Audit registra `transport`.
-- Audit registra decisão de freshness.
-- Audit registra decisão anti-replay.
-- Audit registra decisão de rate limit.
-- `request_issued_at` pode ser registrado para diagnóstico.
-- Assinatura, chave privada, senha e stdout sensível continuam fora do audit.
-
-### Lifecycle
-
-- Installer/update/rollback/uninstall reconhecem o serviço remoto.
-- Uninstall normal fecha gateway/socket e preserva configuração/estado durável.
-- Reinstall reaplica a configuração preservada e religa o gateway se `remote_enabled=1`.
-- Purge remove estado server-side da Automation v2.
-- Arquivos privados de credencial criados fora de `/etc/manager` continuam fora do purge automático.
-
 ### Robustez do Protocol Lease Bridge
 
 - Corrigida janela de observação entre admissão da lease e aparição da sessão no protocolo.
-- Maps SSH/OpenVPN recém-admitidas passam a registrar `created_epoch`.
-- Reconciliador respeita uma janela curta de adoção de 10 segundos antes de remover uma lease ainda não observada.
-- Isso impede abrir temporariamente uma vaga falsa para uma segunda sessão quando `max_sessions=1`.
-- Se a sessão nunca aparecer, a lease continua sendo liberada normalmente depois da janela de adoção.
+- Maps SSH/OpenVPN recém-admitidas registram `created_epoch`.
+- Reconciliador respeita janela curta de adoção antes de remover lease ainda não observada.
 
 ### CI
 
-- Novo workflow `Automation v2 Secure Transport`.
-- Testes cobrem timestamp antigo e futuro.
-- Testes cobrem replay do mesmo envelope assinado.
-- Testes confirmam retry idempotente com nonce novo.
-- Testes exercitam rate limiting/burst.
-- Testes exigem pin SHA-256 correto.
-- Testes tentam pin incorreto.
-- Testes confirmam TLS 1.3 e rejeição de TLS 1.2.
-- Testes cobrem rotação do certificado.
-- Testes cobrem uninstall/reinstall/purge do transporte remoto.
-- `Automation v2 Authentication`, `Automation v2 RBAC`, `Automation v2 Core`, `Protocol Lease Security` e `Shell CI` permanecem verdes após o fechamento funcional.
-
-### Próxima etapa
-
-- A série 0.7 está concluída.
-- 0.8.x inicia o Modo Colmeia.
-- Primeiro milestone recomendado: identidade/enrollment criptográfico de nós + heartbeat/saúde, sem ainda mover a autoridade de leases globais.
+- Workflow `Automation v2 Secure Transport` cobre timestamp, replay, retry idempotente, rate limit, TLS 1.3, pinning e lifecycle.
+- A série 0.7 foi encerrada com todos os gates principais verdes.
 
 ## [0.7.3] - 2026-10-11
 
 ### Autenticação criptográfica e enrollment da Automation v2
 
-- Adicionado registry de credenciais Ed25519 em `/etc/manager/automation/v2/credentials/<principal>/`.
-- Cada principal não-local pode receber uma ou mais credenciais criptográficas por enrollment explícito.
-- O servidor guarda somente chave pública, `key_id`, fingerprint, estado e timestamps de criação/revogação; a chave privada não é armazenada no registry do MANAGER.
-- Arquivo privado de credencial é criado explicitamente em caminho fornecido pelo administrador, modo `0600`, e não entra em backup do estado do servidor.
-- `local-root` continua autenticado pelo `SO_PEERCRED` do socket Unix e não aceita credencial externa.
-- Todos os demais principals exigem assinatura Ed25519 válida antes de RBAC, dispatcher ou consulta ao cache idempotente.
-- Envelope assinado inclui contrato, versão, `request_id`, `principal_id`, `action_id` e `params`.
-- `managerctl --credential FILE ...` carrega a credencial privada localmente e assina a requisição com OpenSSL.
-- Enrollment, listagem, rotação e revogação ficam disponíveis em `manager automation v2 credential ...`.
-- Rotação cria a nova chave antes de desativar as credenciais anteriores.
-- Revogação é independente do RBAC e é reavaliada antes de qualquer replay idempotente.
-- `key_id` deriva do SHA-256 da chave pública DER e cada registro possui fingerprint SHA-256 estável.
-- Audit registra esquema, `key_id`, fingerprint e decisão de autenticação, sem armazenar assinatura ou chave privada.
-- Registry público sobrevive a uninstall/reinstall normal; purge remove estado server-side.
+- Registry de credenciais Ed25519 em `/etc/manager/automation/v2/credentials/<principal>/`.
+- Servidor guarda somente chave pública, `key_id`, fingerprint, estado e timestamps; chave privada fica fora do registry.
+- `local-root` continua autenticado pelo `SO_PEERCRED`.
+- Principals não-locais exigem assinatura Ed25519 válida.
+- Enrollment, rotação e revogação disponíveis no CLI.
+- Revogação é reavaliada antes de qualquer replay idempotente.
 
 ## [0.7.2] - 2026-10-11
 
 ### Principals e RBAC da Automation v2
 
 - Registry root-only em `/etc/manager/automation/v2/principals/`.
-- Principal reservado `local-root`.
-- Roles explícitas: `admin`, `reseller`, `subreseller` e `user`.
-- Principals de revenda reutilizam a hierarquia existente em `/etc/manager/access/resellers`.
-- Principal `user` é vinculado a uma identidade real do Connection Engine.
-- `principal_id` faz parte do envelope/resposta e do hash de idempotência.
-- `node.usage` é admin-only.
-- Revendedor acessa identidades próprias e de subrevendedores filhos diretos.
-- Subrevendedor permanece no próprio owner.
-- Usuário consulta somente a própria identidade e não pode revogar.
-- Criação por revenda valida produto e ownership antes do dispatcher privilegiado.
-- Autorização é reavaliada antes do cache idempotente.
-- Audit JSONL registra principal, role, subject e decisão RBAC.
+- Roles `admin`, `reseller`, `subreseller` e `user`.
+- Escopo por owner/identidade/produto.
+- Autorização antes do cache idempotente.
+- Audit JSONL de principal/RBAC sem segredos.
 
 ## [0.7.1] - 2026-10-11
 
 ### Automation v2 — núcleo local
 
-- Introduzidos `managerd` e `managerctl` com socket Unix `/run/manager-automation-v2/manager.sock`.
-- Runtime `0700`, socket `0600` e validação de peer com `SO_PEERCRED`.
-- Contrato estruturado com envelope JSON versionado, `request_id`, `action_id` e códigos estáveis.
-- Allowlist inicial: `system.describe`, `node.usage`, `connection.preflight`, `connection.create`, `connection.status` e `connection.revoke`.
-- Nenhuma ação aceita shell, comando ou caminho arbitrário.
-- Idempotência persistente com conflito para reutilização de `request_id` com payload diferente.
-- Respostas persistidas são sanitizadas; senha SSH/chaves/segredos continuam one-shot.
-- Audit estruturado sem conteúdo sensível.
-- Lifecycle install/update/rollback/uninstall/reinstall.
+- `managerd` e `managerctl` via socket Unix root-only.
+- Envelope versionado, allowlist, idempotência persistente e audit estruturado.
+- Nenhuma ação aceita shell/comando/caminho arbitrário.
+- Segredos permanecem one-shot e não entram no cache persistente.
 
 ## [0.7.0] - 2026-10-11
 
 ### Automation Legacy v1
 
-- Compatibilidade controlada com o ecossistema antigo `syncpainel`, desligada por padrão.
-- CLI `manager automation legacy status|enable [PORT]|disable|restart|rotate-password`.
-- Transporte por instância OpenSSH dedicada e conta não-root `manager-legacy`.
-- `PermitRootLogin no`, sem TTY/forwarding/túnel, `ForceCommand` fixo e sudoers exato.
-- Senha de integração one-shot; MANAGER não armazena a senha em texto claro.
-- Comandos históricos allowlisted.
-- Sem `eval`, `/root/usuarios.db`, `/etc/SSHPlus/senha`, `chmod 777` ou flush destrutivo de firewall.
+- Compatibilidade controlada com `syncpainel`, desligada por padrão.
+- OpenSSH dedicado, conta não-root, `ForceCommand`, sudoers exato e allowlist.
+- Sem senha em texto claro, `chmod 777`, `eval` ou flush destrutivo de firewall.
 
 ## Série [0.6.x] - 2026-10-10 / 2026-10-11
 
-### Connection, Policy e Session Engine
-
-- **0.6.0:** identidade lógica independente do usuário Linux, bindings SSH/WireGuard/OpenVPN, owner, expiração e `max_sessions`.
-- **0.6.1:** enforcement real nos protocolos e visão consolidada de sessões observadas.
-- **0.6.2:** Session/Lease Engine com `session_id`, TTL, heartbeat, release, `session_epoch`, fencing, switch e limite local atômico.
-- **0.6.3:** Protocol Lease Bridge ligando SSH PAM, OpenVPN e WireGuard às leases reais.
-- **0.6.4:** accounting/atividade comum por identidade, sem inventar bytes SSH não observáveis.
-- **0.6.5:** produtos/planos, ACL, franquias e política de quota.
-- **0.6.6:** provisionamento unificado transacional e revogação centralizada.
-- **0.6.7:** cotas de revenda por identidade/produto, incluindo VPN-only e hierarquia pai/subrevendedor.
-- **0.6.8:** dual-stack IPv6 e IPv6 Guard sem flush global de firewall.
-- **0.6.9:** `node_id` persistente e metadados de país/região/pool/capacidade/peso.
-- **0.6.10:** Product Policy/Session Engine usam automaticamente contexto local de região/pool/nó.
-- **0.6.11:** contratos estruturados `manager-connection-actions-v1` e `manager-node-usage-v1`.
+- **0.6.0:** identidade comum.
+- **0.6.1:** enforcement.
+- **0.6.2:** Session/Lease Engine.
+- **0.6.3:** Protocol Lease Bridge.
+- **0.6.4:** Identity Usage.
+- **0.6.5:** produtos/ACL/franquias.
+- **0.6.6:** provisionamento transacional.
+- **0.6.7:** cotas por identidade/produto.
+- **0.6.8:** IPv6 dual-stack.
+- **0.6.9:** node metadata.
+- **0.6.10:** ACL automática pelo nó.
+- **0.6.11:** contratos estruturados de conexão e uso local.
 
 ## Série [0.5.x]
 
-- Paridade operacional principal do SSHPlus útil: contas teste, expirados, banner, speedtest, sessões SSH, backup/migração segura, revendedores/subrevendedores, cotas, hosts/proxies, Squid privado e túneis opcionais.
+- Paridade operacional útil do SSHPlus: contas, sessões, backup/migração, revenda, hosts/proxies, Squid privado e túneis opcionais.
 
 ## Série [0.4.x]
 
-- Fundação de confiabilidade: health check, manutenção, CLI, update/rollback, CI de Bash/ShellCheck e política segura de download/instalação.
+- Fundação de confiabilidade: health check, manutenção, CLI, update/rollback, CI e política segura de download/instalação.
