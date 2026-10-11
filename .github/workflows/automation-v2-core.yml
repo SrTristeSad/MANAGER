@@ -26,17 +26,23 @@ jobs:
           sudo test -x /opt/manager/modules/automation_v2.sh
           sudo test -L /usr/local/sbin/managerctl
           sudo test -L /usr/local/sbin/managerd
+          sudo systemctl is-active --quiet manager-automation-v2-remote.service && exit 1 || true
 
-      - name: Verify versioned local-only contract
+      - name: Verify versioned secure contract
         shell: bash
         run: |
           set -euxo pipefail
           sudo /opt/manager/modules/automation_v2.sh --status > /tmp/v2-status.log
           grep -q '^contract=manager-automation-v2-local-v1$' /tmp/v2-status.log
-          grep -q '^transport=unix$' /tmp/v2-status.log
+          grep -q '^transport=unix,tls1.3$' /tmp/v2-status.log
           grep -q '^socket_mode=600$' /tmp/v2-status.log
-          grep -q '^remote_transport=0$' /tmp/v2-status.log
+          grep -q '^remote_transport=1$' /tmp/v2-status.log
+          grep -q '^remote_enabled=0$' /tmp/v2-status.log
           grep -q '^arbitrary_shell=0$' /tmp/v2-status.log
+          grep -q '^anti_replay=1$' /tmp/v2-status.log
+          grep -q '^rate_limit=1$' /tmp/v2-status.log
+          grep -q '^tls_server_pinning=sha256$' /tmp/v2-status.log
+          grep -q '^remote_local_root=0$' /tmp/v2-status.log
           grep -q '^idempotency=1$' /tmp/v2-status.log
           grep -q '^audit=1$' /tmp/v2-status.log
           grep -q '^secret_replay=0$' /tmp/v2-status.log
@@ -97,8 +103,8 @@ jobs:
           open('/tmp/password.txt','w').write(password)
           PY
 
-          # Mesmo request_id + mesmo payload não executa de novo. O segredo,
-          # porém, é one-shot e nunca pode ser recuperado do cache persistente.
+          # Mesmo request_id + mesmo payload não executa de novo. local-root usa
+          # SO_PEERCRED e não precisa de nonce; o segredo continua one-shot.
           sudo managerctl connection.create id=ci-v2-client plan=ci-v2-ssh protocols=ssh --request-id ci-create-0001 > /tmp/create-replay.json
           python3 - <<'PY'
           import json
@@ -124,7 +130,6 @@ jobs:
             exit 1
           fi
 
-          # Reutilizar o mesmo request_id para outro payload é conflito, não uma segunda operação.
           set +e
           sudo managerctl connection.create id=ci-v2-other plan=ci-v2-ssh protocols=ssh --request-id ci-create-0001 > /tmp/create-conflict.json
           rc=$?
@@ -179,6 +184,7 @@ jobs:
           sudo /opt/manager/uninstall.sh
           sudo test ! -e /run/manager-automation-v2/manager.sock
           sudo test ! -e /etc/systemd/system/manager-automation-v2.service
+          sudo test ! -e /etc/systemd/system/manager-automation-v2-remote.service
           sudo test ! -e /usr/local/sbin/managerctl
           sudo test -f /var/lib/manager/automation-v2/idempotency/ci-create-0001.json
 
@@ -187,3 +193,4 @@ jobs:
           sudo systemctl is-active --quiet manager-automation-v2.service
           sudo test -S /run/manager-automation-v2/manager.sock
           sudo test -f /var/lib/manager/automation-v2/idempotency/ci-create-0001.json
+          sudo manager automation v2 remote status | grep -q '^remote_enabled=0$'
