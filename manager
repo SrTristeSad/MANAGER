@@ -30,6 +30,9 @@ Uso:
   manager --proxy-hosts           lista hosts cadastrados para o Squid
   manager --identities            lista identidades do Connection Engine
   manager --identity ID           mostra uma identidade do Connection Engine
+  manager --products              lista produtos/planos
+  manager --product ID            mostra um produto/plano
+  manager --product-assignment ID mostra plano, limites e franquia de uma identidade
   manager --identity-sessions [ID] mostra sessões observadas por identidade
   manager --leases [ID]           mostra leases locais ativas
   manager --usage [ID]            mostra tráfego/atividade consolidada por identidade
@@ -133,6 +136,15 @@ case "${1:-}" in
     [[ -n "${2:-}" ]] || { err "Informe o ID da identidade"; exit 64; }
     exec "$MANAGER_HOME/modules/connection_engine.sh" --show "$2"
     ;;
+  --products) exec "$MANAGER_HOME/modules/products.sh" --list ;;
+  --product)
+    [[ -n "${2:-}" ]] || { err "Informe o ID do produto"; exit 64; }
+    exec "$MANAGER_HOME/modules/products.sh" --show "$2"
+    ;;
+  --product-assignment)
+    [[ -n "${2:-}" ]] || { err "Informe o ID da identidade"; exit 64; }
+    exec "$MANAGER_HOME/modules/products.sh" --assignment "$2"
+    ;;
   --identity-sessions) exec "$MANAGER_HOME/modules/policy_engine.sh" --sessions "${2:-}" ;;
   --leases) exec "$MANAGER_HOME/modules/session_engine.sh" --list "${2:-}" ;;
   --usage)
@@ -179,6 +191,7 @@ while true; do
   say " ${C_CYAN}28${C_RESET}) Connection Engine / identidades"
   say " ${C_CYAN}29${C_RESET}) Sessões observadas / reconciliar políticas"
   say " ${C_CYAN}30${C_RESET}) Session / Lease Engine"
+  say " ${C_CYAN}32${C_RESET}) Produtos, planos, ACL e franquias"
   say ""
   say " ${C_WHITE}MONITORAMENTO E MANUTENÇÃO${C_RESET}"
   say " ${C_CYAN}10${C_RESET}) Tráfego e conexões"
@@ -240,6 +253,7 @@ while true; do
       ;;
     30) run_module session_engine.sh ;;
     31) run_module identity_usage.sh ;;
+    32) run_module products.sh ;;
     90) self_update ;;
     0) clear 2>/dev/null || true; exit 0 ;;
     *) warn "Opção inválida"; sleep 1 ;;
