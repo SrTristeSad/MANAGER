@@ -1,0 +1,130 @@
+name: Node Product ACL Context
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  node-product-acl:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo test -x /opt/manager/modules/node_metadata.sh
+          sudo test -x /opt/manager/modules/products.sh
+          sudo test -x /opt/manager/modules/session_engine.sh
+
+      - name: Configure local node context
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/node_metadata.sh --set country BR
+          sudo /opt/manager/modules/node_metadata.sh --set region BR-SP
+          sudo /opt/manager/modules/node_metadata.sh --set pool BRASIL-PREMIUM
+          sudo /opt/manager/manager --node-context | tee /tmp/node-context.log
+          grep -q '^region=BR-SP$' /tmp/node-context.log
+          grep -q '^pool=BRASIL-PREMIUM$' /tmp/node-context.log
+          node_id="$(awk -F= '$1=="node" {print $2}' /tmp/node-context.log)"
+          test -n "$node_id"
+          printf '%s\n' "$node_id" > /tmp/node-id
+
+      - name: Create identity and node-scoped product
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node_id="$(cat /tmp/node-id)"
+          sudo install -d -m 0700 /etc/manager/wireguard/clients
+          printf 'name=ci-node-wg\nip=10.66.66.220\npublic_key=ci-node-public-key\n' | sudo tee /etc/manager/wireguard/clients/ci-node-wg.meta >/dev/null
+          printf '[Interface]\nPrivateKey = ci-placeholder\nAddress = 10.66.66.220/32\n' | sudo tee /etc/manager/wireguard/clients/ci-node-wg.conf >/dev/null
+          sudo chmod 0600 /etc/manager/wireguard/clients/ci-node-wg.meta /etc/manager/wireguard/clients/ci-node-wg.conf
+
+          sudo /opt/manager/modules/connection_engine.sh --create ci-node '' 0 1 wireguard
+          sudo /opt/manager/modules/connection_engine.sh --bind ci-node wireguard ci-node-wg
+          sudo /opt/manager/modules/products.sh --create node-plan 'Node Scoped Plan' 1 0 1 wireguard 0 none warn BR-SP BRASIL-PREMIUM "$node_id"
+          sudo /opt/manager/modules/products.sh --assign ci-node node-plan
+
+      - name: Authorize from local node metadata automatically
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node_id="$(cat /tmp/node-id)"
+
+          # Sem região/pool/node explícitos: deve usar node.conf.
+          sudo /opt/manager/modules/products.sh --authorize ci-node wireguard
+
+          lease="$(sudo /opt/manager/modules/session_engine.sh --acquire ci-node wireguard ci-node-wg node-device 30)"
+          session="$(printf '%s\n' "$lease" | tr '\t' '\n' | awk -F= '$1=="session_id"{print $2}')"
+          epoch="$(printf '%s\n' "$lease" | tr '\t' '\n' | awk -F= '$1=="epoch"{print $2}')"
+          test "${#session}" -eq 32
+          sudo /opt/manager/modules/session_engine.sh --release "$session" "$epoch"
+
+          # Chamada manual antiga continua válida e independente do contexto local.
+          sudo /opt/manager/modules/products.sh --authorize ci-node wireguard BR-SP BRASIL-PREMIUM "$node_id"
+
+      - name: Fail closed on wrong local region
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node_id="$(cat /tmp/node-id)"
+          sudo /opt/manager/modules/node_metadata.sh --set region BR-BA
+
+          if sudo /opt/manager/modules/products.sh --authorize ci-node wireguard; then
+            echo 'Automatic ACL accepted the wrong local region.' >&2
+            exit 1
+          fi
+          if sudo /opt/manager/modules/session_engine.sh --acquire ci-node wireguard ci-node-wg wrong-region-device 30; then
+            echo 'Session Engine admitted a node outside the product region ACL.' >&2
+            exit 1
+          fi
+
+          # Compatibilidade: contexto explícito ainda consulta o alvo informado.
+          sudo /opt/manager/modules/products.sh --authorize ci-node wireguard BR-SP BRASIL-PREMIUM "$node_id"
+          sudo /opt/manager/modules/node_metadata.sh --set region BR-SP
+
+      - name: Fail closed on wrong local pool
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/node_metadata.sh --set pool BRASIL-BASIC
+          if sudo /opt/manager/modules/products.sh --authorize ci-node wireguard; then
+            echo 'Automatic ACL accepted the wrong local pool.' >&2
+            exit 1
+          fi
+          sudo /opt/manager/modules/node_metadata.sh --set pool BRASIL-PREMIUM
+          sudo /opt/manager/modules/products.sh --authorize ci-node wireguard
+
+      - name: Enforce local node ID ACL
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node_id="$(cat /tmp/node-id)"
+          sudo /opt/manager/modules/products.sh --update node-plan 'Node Scoped Plan' 1 0 1 wireguard 0 none warn BR-SP BRASIL-PREMIUM node-other
+          if sudo /opt/manager/modules/products.sh --authorize ci-node wireguard; then
+            echo 'Automatic ACL accepted a different node_id.' >&2
+            exit 1
+          fi
+
+          sudo /opt/manager/modules/products.sh --update node-plan 'Node Scoped Plan' 1 0 1 wireguard 0 none warn BR-SP BRASIL-PREMIUM "$node_id"
+          sudo /opt/manager/modules/products.sh --authorize ci-node wireguard
+
+      - name: Fail closed when required node metadata is empty
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/node_metadata.sh --set region ''
+          if sudo /opt/manager/modules/products.sh --authorize ci-node wireguard; then
+            echo 'Restricted ACL accepted an empty local region.' >&2
+            exit 1
+          fi
+          sudo /opt/manager/modules/node_metadata.sh --set region BR-SP
+          sudo /opt/manager/modules/products.sh --authorize ci-node wireguard
