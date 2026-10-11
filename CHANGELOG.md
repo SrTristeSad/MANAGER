@@ -4,6 +4,51 @@ Todas as mudanças relevantes do MANAGER serão registradas aqui.
 
 O projeto usa versionamento semântico (`MAJOR.MINOR.PATCH`) enquanto a API/estrutura ainda está evoluindo.
 
+## [0.6.10] - 2026-10-11
+
+### ACL automática por nó
+
+- O Product Policy passa a resolver automaticamente `region`, `pool` e `node_id` a partir de `/etc/manager/connection/node/node.conf` quando esses campos não são informados na autorização.
+- A chamada local pode usar `products.sh --authorize ID PROTOCOL`, sem repetir manualmente a localização lógica da própria VPS.
+- A forma explícita `products.sh --authorize ID PROTOCOL REGION POOL NODE` continua compatível e valores fornecidos pelo chamador têm precedência sobre o contexto local.
+- ACL restrita falha fechada quando o metadado correspondente está vazio ou não corresponde ao produto; `*` continua significando qualquer valor.
+- `country` permanece metadado administrativo e não é convertido implicitamente em região, pois região e pool são agrupamentos lógicos definidos pelo operador.
+
+### Sessões e preparação da Colmeia
+
+- O comportamento do Session Engine foi validado contra o contexto real do nó: novas leases são recusadas quando região, pool ou `node_id` não pertencem à ACL do produto.
+- A etapa fecha o contrato local `identidade -> produto/ACL -> nó -> lease`, que será reutilizado pelo scheduler e pela autoridade global da futura Colmeia.
+- O scheduler, heartbeat distribuído e lease global continuam fora desta versão; a autoridade permanece local à VPS.
+
+### Testes e documentação
+
+- Novo CI `Node Product ACL Context` cobre autorização automática, compatibilidade explícita, região incorreta, pool incorreto, `node_id` incorreto, metadado obrigatório vazio e admissão real de lease.
+- Novo documento `docs/NODE_PRODUCT_ACL.md` descreve precedência, fail-closed, semântica de região/pool/nó e caminho de evolução para a Colmeia.
+- README atualizado para a versão 0.6.10 e para o novo fluxo de autorização.
+
+## [0.6.9] - 2026-10-11
+
+### Identidade e metadados do nó
+
+- Novo `modules/node_metadata.sh` cria uma identidade persistente da VPS com `node_id` aleatório, estável e somente leitura.
+- O estado fica em `/etc/manager/connection/node/node.conf`, dentro do lifecycle e backup existentes do Connection Engine.
+- Metadados administráveis: nome, país, região, pool, provedor, cidade, capacidade lógica, peso, limite declarado de sessões e estado habilitado.
+- O módulo publica também protocolos instalados, capacidade IPv6, interfaces/endereço locais e endpoints WireGuard/OpenVPN sem alterar a rede.
+- Novos comandos `manager --node`, `manager --node-context` e `manager --node-set FIELD VALUE`, além da opção de menu para identidade/metadados do nó.
+- O `node_id` é preservado por uninstall/reinstall normal; purge explícito continua sendo a operação que remove o estado em `/etc/manager`.
+
+### Segurança e limites
+
+- Campos editáveis são allowlisted e validados; `node_id`, versão e timestamps de criação permanecem imutáveis pela interface normal.
+- País/região/pool são configurados administrativamente; esta etapa não depende de serviço externo de geolocalização e não assume que país define Colmeia.
+- `capacity`, `weight` e `max_sessions` são dados declarativos nesta fase e não executam ainda scheduling multi-nó.
+- A identidade lógica do nó não é a futura chave criptográfica de enrollment; material criptográfico de confiança será introduzido na camada Colmeia/Automation apropriada.
+
+### Testes e documentação
+
+- Novo CI `Node Identity and Metadata` cobre criação, validações, campos imutáveis, contexto, alterações de região/pool/capacidade e estabilidade do `node_id` após uninstall/reinstall.
+- README atualizado com o objeto de nó e sua relação com produtos, ACL e futura Colmeia.
+
 ## [0.6.8] - 2026-10-10
 
 ### IPv6 / dual-stack
@@ -101,7 +146,7 @@ O projeto usa versionamento semântico (`MAJOR.MINOR.PATCH`) enquanto a API/estr
 ### SSH, WireGuard e OpenVPN
 
 - Usuário SSH nasce com senha aleatória de 128 bits representada em 32 caracteres hexadecimais e permanece bloqueado enquanto a transação está incompleta.
-- A senha SSH só é desbloqueada depois da reconciliação bem-sucedida e é exibida uma única vez na saída; não é gravada no log de eventos.
+- A senha SSH só é desbloqueada depois da reconciliação bem-sucedida e é exibida uma única vez após o commit. Ela não é gravada no log de eventos.
 - Validade efetiva do produto é aplicada ao usuário Linux quando configurada.
 - WireGuard cria somente o peer/perfil do cliente solicitado, com chave privada/PSK protegidos e sem flush global de firewall ou substituição completa da configuração.
 - OpenVPN reutiliza a PKI Easy-RSA existente; se a operação precisar ser desfeita depois da emissão, o certificado é revogado e a CRL é regenerada.
@@ -457,7 +502,7 @@ O projeto usa versionamento semântico (`MAJOR.MINOR.PATCH`) enquanto a API/estr
 - Self-update deixou de executar diretamente `curl | bash`: o instalador é baixado para arquivo temporário, restrito e validado com `bash -n` antes da execução.
 - Downloads do self-update exigem HTTPS/TLS moderno por padrão.
 - Falha de um módulo não derruba mais o menu principal e agora preserva o código de saída para diagnóstico.
-- Health check é somente leitura e pode ser integrado a cron, systemd ou monitoramento externo.
+- Health check é somente leitura e pode ser integrado a cron, systemd ou monitoramento.
 
 ## [0.3.0] - 2026-10-10
 
