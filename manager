@@ -52,7 +52,7 @@ Uso:
   manager automation legacy restart
   manager automation legacy rotate-password
                                   controla a compatibilidade syncpainel (desligada por padrão)
-  manager automation v2 status    mostra estado do daemon/socket/RBAC/autenticação
+  manager automation v2 status    mostra daemon/socket/RBAC/auth/anti-replay
   manager automation v2 principals
                                   lista principals locais da Automation v2
   manager automation v2 principal show ID
@@ -68,6 +68,11 @@ Uso:
   manager automation v2 credential rotate ID /CAMINHO/ARQUIVO
   manager automation v2 credential revoke ID KEY_ID
                                   administra enrollment, rotação e revogação Ed25519
+  manager automation v2 remote status
+  manager automation v2 remote enable BIND_IP [PORT]
+  manager automation v2 remote disable
+  manager automation v2 remote rotate-certificate
+                                  controla o gateway remoto TLS 1.3 (desligado por padrão)
   manager --diagnostics           abre o diagnóstico
   manager --version               mostra a versão
   manager --help                  mostra esta ajuda
@@ -295,6 +300,18 @@ case "${1:-}" in
               *) err "Ação de credencial inválida: ${4:-}"; exit 64 ;;
             esac
             ;;
+          remote)
+            case "${4:-status}" in
+              status) exec "$MANAGER_HOME/modules/automation_v2.sh" --remote-status ;;
+              enable)
+                [[ -n "${5:-}" ]] || { err "Uso: manager automation v2 remote enable BIND_IP [PORT]"; exit 64; }
+                exec "$MANAGER_HOME/modules/automation_v2.sh" --remote-enable "$5" "${6:-9443}"
+                ;;
+              disable) exec "$MANAGER_HOME/modules/automation_v2.sh" --remote-disable ;;
+              rotate-certificate) exec "$MANAGER_HOME/modules/automation_v2.sh" --remote-rotate-certificate ;;
+              *) err "Ação remota Automation v2 inválida: ${4:-}"; exit 64 ;;
+            esac
+            ;;
           *) err "Ação Automation v2 inválida: ${3:-}"; exit 64 ;;
         esac
         ;;
@@ -346,7 +363,7 @@ while true; do
   say ""
   say " ${C_WHITE}AUTOMAÇÃO${C_RESET}"
   say " ${C_CYAN}37${C_RESET}) Legacy v1 / compatibilidade syncpainel"
-  say " ${C_CYAN}38${C_RESET}) Automation v2 / principals, RBAC e credenciais"
+  say " ${C_CYAN}38${C_RESET}) Automation v2 / RBAC, credenciais e transporte"
   say ""
   say " ${C_WHITE}MONITORAMENTO E MANUTENÇÃO${C_RESET}"
   say " ${C_CYAN}10${C_RESET}) Tráfego e conexões"
@@ -427,12 +444,23 @@ while true; do
       say "${C_WHITE}AUTOMATION V2${C_RESET}\n"
       say " 1) Principals / RBAC"
       say " 2) Credenciais Ed25519"
+      say " 3) Transporte remoto TLS 1.3"
       say " 0) Voltar"
       say ""
       read -r -p "Opção: " automation_opt
       case "$automation_opt" in
         1) run_module automation_principals.sh ;;
         2) run_module automation_credentials.sh ;;
+        3)
+          header
+          "$MANAGER_HOME/modules/automation_v2.sh" --remote-status || true
+          say ""
+          say "Use o CLI para alterar:"
+          say " manager automation v2 remote enable BIND_IP [PORT]"
+          say " manager automation v2 remote disable"
+          say " manager automation v2 remote rotate-certificate"
+          pause
+          ;;
         0) ;;
         *) warn "Opção inválida"; sleep 1 ;;
       esac
