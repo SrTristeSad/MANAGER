@@ -83,6 +83,7 @@ FILES=(
   "modules/user_transfer.sh"
   "modules/resellers.sh"
   "modules/reseller_accounts.sh"
+  "modules/reseller_product_quotas.sh"
   "modules/connection_engine.sh"
   "modules/products.sh"
   "modules/provision.sh"
@@ -188,6 +189,7 @@ printf '%s\n' "$NEW_VERSION" > "$ETC_DIR/installed-version"
 chmod 0644 "$ETC_DIR/installed-version"
 
 "$INSTALL_DIR/modules/connection_engine.sh" --init >/dev/null
+"$INSTALL_DIR/modules/resellers.sh" --init >/dev/null
 "$INSTALL_DIR/modules/products.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O motor de produtos/ACL/franquias foi instalado parcialmente. Identidades sem produto continuam usando a política base." >&2
 }
