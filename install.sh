@@ -89,6 +89,7 @@ FILES=(
   "modules/node_usage.sh"
   "modules/hive_identity.sh"
   "modules/hive_network.sh"
+  "modules/hive_health.sh"
   "modules/hive_lifecycle.sh"
   "modules/products.sh"
   "modules/provision.sh"
@@ -210,6 +211,9 @@ chmod 0644 "$ETC_DIR/installed-version"
 "$INSTALL_DIR/modules/hive_network.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] A rede privada da Colmeia não pôde ser inicializada/reconciliada. Use: manager hive network status" >&2
 }
+"$INSTALL_DIR/modules/hive_health.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] O heartbeat/saúde da Colmeia não pôde ser reanexado. Use: manager hive health status" >&2
+}
 "$INSTALL_DIR/modules/resellers.sh" --init >/dev/null
 "$INSTALL_DIR/modules/automation_principals.sh" --init >/dev/null
 "$INSTALL_DIR/modules/automation_credentials.sh" --init >/dev/null
@@ -242,7 +246,7 @@ fi
   echo "[AVISO] O Automation v2 local não pôde iniciar. Revise: systemctl status manager-automation-v2" >&2
 }
 "$INSTALL_DIR/modules/hive_lifecycle.sh" --install >/dev/null 2>&1 || {
-  echo "[AVISO] A rede da Colmeia iniciou, mas não pôde se vincular ao lifecycle de uninstall/rollback. Revise: /opt/manager/modules/hive_lifecycle.sh --status" >&2
+  echo "[AVISO] A Colmeia iniciou, mas não pôde se vincular ao lifecycle de uninstall/rollback. Revise: /opt/manager/modules/hive_lifecycle.sh --status" >&2
 }
 if [[ -d "$ETC_DIR/proxy" ]]; then
   "$INSTALL_DIR/modules/proxies.sh" --reconcile >/dev/null 2>&1 || true
@@ -262,6 +266,7 @@ echo "Identidades: manager --identities"
 echo "Nó:          manager --node"
 echo "Colmeia:     manager hive status"
 echo "Rede Colmeia: manager hive network status"
+echo "Saúde Colmeia: manager hive health status"
 echo "Produtos:    manager --products"
 echo "Provisionar: manager --provision ID PLANO"
 echo "Sessões ID:  manager --identity-sessions"
