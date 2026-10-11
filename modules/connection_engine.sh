@@ -29,20 +29,24 @@ protocol_binding_exists() {
   esac
 }
 
-reseller_can_accept_ssh_owner() {
-  local owner="$1" user="$2" current
+reserve_identity_owner() {
+  local owner="$1" identity_id="$2"
   [[ -n "$owner" ]] || return 0
-  [[ -x "$RESELLER_MODULE" ]] || return 1
-  current="$($RESELLER_MODULE --owner "$user" 2>/dev/null || true)"
-  [[ "$current" == "$owner" ]] && return 0
-  "$RESELLER_MODULE" --can-create "$owner" >/dev/null 2>&1
+  [[ -x "$RESELLER_MODULE" ]] || return 69
+  "$RESELLER_MODULE" --reserve-identity "$identity_id" "$owner" >/dev/null
+}
+
+release_identity_owner() {
+  local identity_id="$1"
+  [[ -x "$RESELLER_MODULE" ]] || return 0
+  "$RESELLER_MODULE" --release-identity "$identity_id" >/dev/null 2>&1 || true
 }
 
 sync_ssh_owner() {
-  local owner="$1" user="$2"
+  local owner="$1" user="$2" identity_id="$3"
   [[ -n "$owner" && -n "$user" ]] || return 0
-  reseller_can_accept_ssh_owner "$owner" "$user" || return 1
-  "$RESELLER_MODULE" --assign "$user" "$owner" >/dev/null
+  [[ -x "$RESELLER_MODULE" ]] || return 1
+  "$RESELLER_MODULE" --assign-for-identity "$user" "$owner" "$identity_id" >/dev/null
 }
 
 normalize_protocols() {
@@ -68,7 +72,7 @@ normalize_protocols() {
 
 create_identity_impl() {
   local id="$1" owner="$2" expires_epoch="$3" max_sessions="$4" protocols="$5"
-  local now normalized
+  local now normalized reserved=0
   identity_init
   identity_valid_id "$id" || { err "ID de identidade inválido"; return 64; }
   owner_valid "$owner" || { err "Proprietário inválido"; return 64; }
@@ -77,8 +81,21 @@ create_identity_impl() {
   (( max_sessions <= 10000 )) || { err "max_sessions muito alto"; return 64; }
   normalized="$(normalize_protocols "$protocols")" || { err "Protocolos inválidos"; return 64; }
   identity_exists "$id" && { err "Identidade já existe: $id"; return 65; }
+
+  if [[ -n "$owner" ]]; then
+    if ! reserve_identity_owner "$owner" "$id"; then
+      err "Cota/estado do proprietário não permite criar a identidade $id"
+      return 73
+    fi
+    reserved=1
+  fi
+
   now="$(date +%s)"
-  identity_write "$id" "$owner" 1 "$expires_epoch" "$max_sessions" "$normalized" "$now" "$now" "" "" ""
+  if ! identity_write "$id" "$owner" 1 "$expires_epoch" "$max_sessions" "$normalized" "$now" "$now" "" "" ""; then
+    (( reserved == 0 )) || release_identity_owner "$id"
+    err "Falha ao persistir identidade $id"
+    return 70
+  fi
 }
 
 binding_field() {
@@ -118,7 +135,7 @@ bind_protocol_impl() {
   protocol_binding_exists "$protocol" "$name" || { err "Recurso $protocol não encontrado: $name"; return 66; }
   owner="$(identity_read "$id" owner)"
   if [[ "$protocol" == ssh && -n "$owner" ]]; then
-    sync_ssh_owner "$owner" "$name" || { err "Cota/estado do proprietário não permite vincular $name"; return 73; }
+    sync_ssh_owner "$owner" "$name" "$id" || { err "Slot/cota do proprietário não permite vincular $name"; return 73; }
   fi
   rewrite_identity_binding "$id" "$protocol" "$name"
 }
@@ -147,7 +164,7 @@ import_named_identity_impl() {
 }
 
 set_enabled_impl() {
-  local id="$1" enabled="$2" owner expires max_sessions protocols created ssh_user wg ovpn
+  local id="$1" enabled="$2" owner expires max_sessions protocols created ssh_user wg ovpn previous_slot_active="" reserved=0
   identity_exists "$id" || return 66
   [[ "$enabled" == 0 || "$enabled" == 1 ]] || return 64
   owner="$(identity_read "$id" owner)"
@@ -158,7 +175,22 @@ set_enabled_impl() {
   ssh_user="$(identity_read "$id" ssh_user)"
   wg="$(identity_read "$id" wireguard_client)"
   ovpn="$(identity_read "$id" openvpn_client)"
-  identity_write "$id" "$owner" "$enabled" "$expires" "$max_sessions" "$protocols" "$created" "$(date +%s)" "$ssh_user" "$wg" "$ovpn"
+
+  if [[ "$enabled" == 1 && -n "$owner" ]]; then
+    if [[ -x "$RESELLER_MODULE" ]]; then
+      previous_slot_active="$($RESELLER_MODULE --identity-slot-active "$id" 2>/dev/null || true)"
+    fi
+    if ! reserve_identity_owner "$owner" "$id"; then
+      err "Cota/estado do proprietário não permite reativar $id"
+      return 73
+    fi
+    [[ "$previous_slot_active" == 1 ]] || reserved=1
+  fi
+
+  if ! identity_write "$id" "$owner" "$enabled" "$expires" "$max_sessions" "$protocols" "$created" "$(date +%s)" "$ssh_user" "$wg" "$ovpn"; then
+    (( reserved == 0 )) || release_identity_owner "$id"
+    return 70
+  fi
 }
 
 show_identity_machine() {
@@ -175,6 +207,9 @@ show_identity_machine() {
   printf 'ssh_user=%s\n' "$(identity_read "$id" ssh_user)"
   printf 'wireguard_client=%s\n' "$(identity_read "$id" wireguard_client)"
   printf 'openvpn_client=%s\n' "$(identity_read "$id" openvpn_client)"
+  if [[ -n "$(identity_read "$id" owner)" && -x "$RESELLER_MODULE" ]]; then
+    printf 'quota_slot_active=%s\n' "$($RESELLER_MODULE --identity-slot-active "$id" 2>/dev/null || true)"
+  fi
 }
 
 list_machine() {
@@ -264,9 +299,9 @@ interactive_toggle() {
   identity_exists "$id" || { err "Identidade não existe"; pause; return; }
   current="$(identity_read "$id" enabled)"
   if [[ "$current" == 1 ]]; then next=0; else next=1; fi
-  ( flock -x 9; set_enabled_impl "$id" "$next" ) 9>"$IDENTITY_LOCK"
-  ok "Estado atualizado: $(identity_effective_state "$id")"
-  warn "Nesta primeira etapa, o estado é política do Connection Engine; enforcement automático nos três protocolos entra nas próximas iterações da 0.6.x."
+  if ( flock -x 9; set_enabled_impl "$id" "$next" ) 9>"$IDENTITY_LOCK"; then
+    ok "Estado atualizado: $(identity_effective_state "$id")"
+  fi
   pause
 }
 
