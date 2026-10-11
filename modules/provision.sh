@@ -133,10 +133,10 @@ resource_conflict() {
 preflight_protocols() {
   local protocols="$1"
   if protocol_list_has "$protocols" ssh; then
-    command_exists useradd && command_exists chpasswd && command_exists userdel || {
+    if ! command_exists useradd || ! command_exists chpasswd || ! command_exists userdel; then
       err "Ferramentas de usuário Linux ausentes"
       return 69
-    }
+    fi
   fi
   if protocol_list_has "$protocols" wireguard; then
     command_exists wg || { err "wireguard-tools não está instalado"; return 69; }
@@ -365,7 +365,8 @@ EOF
 }
 
 revoke_openvpn_resource() {
-  local name="$1" purge_meta="${2:-0}" meta="$OVPN_META_DIR/$name.meta"
+  local name="$1" purge_meta="${2:-0}" meta
+  meta="$OVPN_META_DIR/$name.meta"
   if [[ -x "$OVPN_EASYRSA_DIR/easyrsa" && -f "$OVPN_EASYRSA_DIR/pki/issued/$name.crt" ]]; then
     (
       cd "$OVPN_EASYRSA_DIR"
@@ -403,8 +404,8 @@ rollback_fresh_identity() {
 
 provision_impl() {
   local id="$1" product="$2" owner="${3:-}" requested_protocols="${4:-}"
-  local protocols plan_max base_max effective_expires effective_max rc output
-  local identity_created=0 product_assigned=0 ssh_created=0 wg_created=0 ovpn_created=0
+  local protocols plan_max base_max effective_expires effective_max rc
+  local product_assigned=0 ssh_created=0 wg_created=0 ovpn_created=0
 
   identity_valid_id "$id" || { err "ID de identidade inválido"; return 64; }
   valid_owner "$owner" || { err "Proprietário inválido"; return 64; }
@@ -429,7 +430,6 @@ provision_impl() {
     log_event provision "$id" "$product" "$owner" "$protocols" identity-create-failed
     return 70
   fi
-  identity_created=1
 
   if ! "$PRODUCT_MODULE" --assign "$id" "$product" >/dev/null; then
     rollback_fresh_identity "$id" 0 0 0 0
