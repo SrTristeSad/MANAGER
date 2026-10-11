@@ -4,6 +4,74 @@ Todas as mudanças relevantes do MANAGER são registradas aqui. O projeto usa ve
 
 > O histórico detalhado das revisões antigas continua disponível no histórico Git. A partir da série 0.7, este arquivo prioriza mudanças de arquitetura e segurança que afetam contratos públicos/operacionais.
 
+## [0.8.2] - 2026-10-11
+
+### Colmeia — heartbeat assinado e saúde dos nós
+
+- Adicionado `modules/hive_health.sh` como plano de telemetria/saúde da Colmeia.
+- Cada heartbeat usa a identidade Ed25519 já enrolled do nó; não cria uma segunda identidade de autoridade.
+- Payload assinado inclui `controller_id`, `node_id`, `node_epoch`, `issued_at`, nonce e todas as métricas.
+- Controlador valida a chave pública registrada, exige `node_epoch` exato e recusa nó revogado/desabilitado.
+- Janela de freshness de 120 segundos e nonce single-use com cache anti-replay persistente.
+- O nome persistido do replay deriva do SHA-256 do nonce; o nonce original não vira nome de arquivo.
+- ACK do controlador também é assinado com sua identidade Ed25519 e verificado pelo nó.
+
+### Transporte e segurança
+
+- Novo listener de health opcional sobre TLS 1.3 somente.
+- Certificado TLS Ed25519 do controlador possui pin SHA-256 explícito no nó.
+- Fingerprint incorreto falha fechado antes de enviar o heartbeat.
+- Listener fica desligado até `manager hive health controller enable ...`.
+- Porta padrão 9444 quando não informada.
+- O MANAGER não abre firewall automaticamente para o heartbeat.
+- Rate limit por endereço de origem reduz burst abusivo antes da validação completa.
+- O controlador continua fora do caminho de dados VPN dos usuários.
+
+### Métricas e estados
+
+- Heartbeat reporta uptime, CPU, CPUs lógicas, load 1/5/15, RAM total/disponível/usada, interface e contadores RX/TX.
+- Inclui sessões/identidades ativas, `max_sessions`, capacidade, peso e estado administrativo local.
+- Inclui protocolos disponíveis e estado de SSH, WireGuard, OpenVPN e da malha `mgh0`.
+- Inclui peer count da malha e RTT observado na troca anterior com o controlador.
+- Estados derivados: `HEALTHY`, `DEGRADED`, `DRAINING` e `OFFLINE`.
+- `DRAINING` em 0.8.2 é estado informativo quando o nó reporta `enabled=0`; scheduler/drain runtime continuam fora deste milestone.
+- Threshold padrão: heartbeat atrasado após 75 s; offline após 180 s.
+- Thresholds podem ser alterados com `manager hive health controller thresholds DEGRADED OFFLINE`.
+- Revogação ou avanço de `node_epoch` transforma autoridade antiga em `OFFLINE`/fenced em vez de aceitar heartbeat stale.
+
+### CLI e lifecycle
+
+- `manager hive health status`.
+- `manager hive health configure HOST PORT TLS_FP [INTERVAL]`.
+- `manager hive health disable|send`.
+- `manager hive health controller init|status|list`.
+- `manager hive health controller show NODE_ID`.
+- `manager hive health controller enable BIND_IP [PORT]`.
+- `manager hive health controller disable`.
+- `manager hive health controller thresholds DEGRADED OFFLINE`.
+- `manager hive health controller rotate-tls`.
+- Timer `manager-hive-heartbeat.timer` envia amostras periodicamente quando habilitado.
+- Serviço `manager-hive-health-controller.service` executa o listener do controlador quando explicitamente habilitado.
+- Lifecycle da Colmeia passa a destacar heartbeat/listener antes da rede `mgh0` em uninstall/rollback.
+- Configuração durável de saúde permanece para reinstalação; units/runtime MANAGER são removidos no detach.
+
+### CI
+
+- Novo workflow `Hive Heartbeat and Health`.
+- Testa enrollment isolado, listener TLS 1.3, pin correto e pin incorreto.
+- Testa heartbeat assinado válido, registro de métricas, adulteração e replay.
+- Testa derivação de `DEGRADED` por atraso e `OFFLINE` por timeout.
+- Testa `DRAINING` administrativo sem declarar drain de scheduler já implementado.
+- Testa revogação/`node_epoch` fencing contra heartbeat antigo.
+- Testa lifecycle preservando configuração durável.
+- Antes do bump de release, os **19/19 workflows** do HEAD funcional concluíram com sucesso e zero falhas.
+
+### Próxima etapa
+
+- 0.8.3: scheduler, drain e seleção de nó usando health/capacidade/latência.
+- 0.8.4: autoridade global de sessões/leases.
+- 0.8.5: VPN allocation / login global.
+
 ## [0.8.1] - 2026-10-11
 
 ### Colmeia — rede privada WireGuard
@@ -208,7 +276,7 @@ Todas as mudanças relevantes do MANAGER são registradas aqui. O projeto usa ve
 ### Automation Legacy v1
 
 - Compatibilidade controlada com `syncpainel`, desligada por padrão.
-- OpenSSH dedicado, conta não-root, `ForceCommand`, sudoers exato e allowlist.
+- OpenSSH dedicado, conta não-root, `ForceCommand`, sudoers exato, allowlist.
 - Sem senha em texto claro, `chmod 777`, `eval` ou flush destrutivo de firewall.
 
 ## Série [0.6.x] - 2026-10-10 / 2026-10-11
