@@ -233,42 +233,51 @@ Concluído:
 
 ## 0.7.0 — Automation Engine
 
-### Legacy v1
+### Legacy v1 — concluído
 
-Uma única conexão de compatibilidade para o antigo ecossistema `syncpainel`, compartilhada pelos projetos/painéis compatíveis. Não haverá protocolo separado por versão de painel.
+Uma única conexão de compatibilidade atende o antigo ecossistema `syncpainel`; não existe protocolo separado por versão de painel.
 
-O Legacy é opcional e ficará desligado por padrão em instalações novas.
+Implementado em 0.7.0:
 
-Interface planejada:
+- desligado por padrão em instalações novas;
+- `manager automation legacy status|enable [PORT]|disable|restart|rotate-password`;
+- listener OpenSSH dedicado em porta própria;
+- conta não-root `manager-legacy` para os campos tradicionais de servidor dos painéis antigos;
+- `PermitRootLogin no`, sem TTY, forwarding ou túnel;
+- `ForceCommand` fixo e regra `sudoers` exata, validada por `visudo`;
+- guard no SSH principal impedindo que a credencial de integração vire shell normal;
+- senha de integração gerada na ativação e mostrada uma única vez, sem armazenamento em texto claro pelo MANAGER;
+- allowlist dos comandos históricos `criarusuario.sh`, `remover.sh`, `AlterarSenha.sh`, `AlterarData.sh`, `alterarlimite.sh`, `KillUser.sh` e `sshmonitor.sh`;
+- criação integrada ao Connection Engine e alterações/remoções limitadas a contas MANAGER vinculadas;
+- nenhum `eval`, shell remoto arbitrário, `/root/usuarios.db`, `/etc/SSHPlus/senha`, `chmod 777` ou flush de firewall;
+- desativação fecha listener/porta, remove privilégio e bloqueia a conta preservando configuração;
+- UFW não é aberto automaticamente;
+- estado em `/etc/manager/automation/legacy` incluído no backup;
+- lifecycle completo em update, rollback, uninstall/reinstall e purge;
+- documentação `docs/AUTOMATION_LEGACY.md` e CI dedicado cobrindo fronteira privilegiada e compatibilidade funcional.
 
-```text
-manager automation legacy status
-manager automation legacy enable
-manager automation legacy disable
-manager automation legacy restart
-```
+### Automation v2 — próxima etapa 0.7.x
 
-Quando desligado, nenhum listener/tarefa exclusiva do Legacy deve permanecer ativo. Dados e configuração são preservados para reativação posterior.
+A Automation v2 será o protocolo oficial para integrações novas e não reutilizará o transporte Legacy como arquitetura principal.
 
-A compatibilidade preserva o contrato necessário para integrações antigas, mas não práticas inseguras como senha em texto claro, `chmod 777` ou alterações destrutivas de firewall.
+Planejado:
 
-### Automation v2
-
-Novo protocolo oficial para integrações futuras:
-
-- ações estruturadas e versionadas;
-- IDs de requisição e idempotência;
-- respostas/códigos de erro padronizados;
-- RBAC;
-- auditoria;
+- `managerd`/`managerctl` ou mecanismo equivalente;
+- Unix socket local privilegiado;
+- envelope de requisição/resposta versionado;
+- `request_id`/`action_id` e idempotência;
+- códigos de erro estáveis;
+- ações allowlisted reutilizando `manager-connection-actions-v1`;
+- RBAC para admin, revendedor, subrevendedor e usuário;
+- auditoria estruturada;
 - autenticação criptográfica;
 - anti-replay;
 - rate limiting;
-- interface privilegiada local por Unix socket;
-- `managerd`/`managerctl` ou mecanismo equivalente;
 - nenhuma execução remota de shell arbitrário.
 
-O Protocol Lease Bridge da 0.6.3 continua sendo a fronteira entre daemons de conexão e a autoridade de sessão. O Identity Usage da 0.6.4 fornece a visão comum de consumo/atividade, a 0.6.5 fornece produto/limites/ACL, a 0.6.6 fornece provisionamento/revogação transacional, a 0.6.7 fornece cotas por identidade/produto, a 0.6.8 garante dual-stack, a 0.6.9/0.6.10 fornecem identidade/contexto real do nó e a 0.6.11 oferece a superfície allowlisted e telemetria local consumíveis pela Automation. Assim, a fase 0.7 pode tratar transporte, autenticação, autorização e compatibilidade sem reimplementar o ciclo de vida dos protocolos.
+O Protocol Lease Bridge continua sendo a fronteira dos daemons de conexão; Identity Usage fornece consumo/atividade; Product Policy fornece limites/ACL; Unified Provisioning fornece lifecycle transacional; cotas de revenda são por identidade/produto; dual-stack já possui enforcement equivalente; Node Metadata/ACL fornecem contexto local; e 0.6.11 fornece ações e telemetria consumíveis pela Automation.
+
+**Status da série 0.7:** Legacy v1 concluído em 0.7.0; Automation v2 é o próximo bloco. A fase 0.8 só começa depois da superfície v2 estar estabilizada.
 
 ## 0.8.0 — Modo Colmeia
 

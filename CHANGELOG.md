@@ -4,6 +4,44 @@ Todas as mudanças relevantes do MANAGER serão registradas aqui.
 
 O projeto usa versionamento semântico (`MAJOR.MINOR.PATCH`) enquanto a API/estrutura ainda está evoluindo.
 
+## [0.7.0] - 2026-10-11
+
+### Automation Legacy v1
+
+- Nova camada de compatibilidade com o ecossistema antigo `syncpainel`, compartilhada pelos painéis/projetos compatíveis e desligada por padrão em instalações novas.
+- Nova CLI `manager automation legacy status|enable [PORT]|disable|restart|rotate-password` e opção própria no menu de Automação.
+- O transporte usa uma instância OpenSSH dedicada e a conta não-root `manager-legacy`; o painel antigo continua podendo usar os campos tradicionais `login_server`, senha e porta sem receber credencial `root`.
+- O listener dedicado desabilita TTY, root login, TCP/agent/X11 forwarding e túneis, usando `ForceCommand` fixo.
+- A elevação privilegiada é limitada por regra `sudoers` validada com `visudo` a um único dispatcher; `SSH_ORIGINAL_COMMAND` é tratado como dado e nunca passa por `eval`.
+- O SSH principal recebe guard específico para impedir que a credencial `manager-legacy` seja usada como shell comum.
+- Primeira ativação gera senha de integração aleatória e a devolve uma única vez; o MANAGER não grava a senha em texto claro no estado ou audit log.
+- Comandos legados suportados: `criarusuario.sh`, `remover.sh`, `AlterarSenha.sh`, `AlterarData.sh`, `alterarlimite.sh`, `KillUser.sh` e `sshmonitor.sh`.
+- Alterações e remoções só atingem usuários vinculados ao Connection Engine; `root`, `manager-legacy` e contas locais alheias ao MANAGER são recusadas.
+- O adapter preserva retornos históricos relevantes sem recriar `/root/usuarios.db`, `/etc/SSHPlus/senha`, `chmod 777`, flush destrutivo de firewall ou outro armazenamento de senha em texto claro.
+- `disable` para o serviço, fecha a porta dedicada, remove a regra privilegiada e bloqueia a conta de integração preservando configuração para reativação.
+- O Legacy não abre UFW automaticamente; o operador mantém controle explícito sobre a exposição da porta dedicada.
+- Backup inclui `/etc/manager/automation`; rollback/uninstall desanexam o listener antes da troca/remoção do código; purge remove também estado e conta de integração.
+- Nova documentação `docs/AUTOMATION_LEGACY.md`.
+- CI dedicado cobre estado OFF padrão, `sshd -t`, `visudo`, fronteira privilegiada, comandos históricos, recusa de comando arbitrário, ausência de segredos no estado/logs, disable, uninstall/reinstall e purge.
+
+### Próxima etapa
+
+- A Automation Legacy v1 está concluída; a Automation v2 continua como próximo bloco da série 0.7.x.
+- A Automation v2 reutilizará `manager-connection-actions-v1` e adicionará Unix socket privilegiado, contrato versionado, request IDs, idempotência, RBAC, auditoria estruturada, autenticação criptográfica, anti-replay e rate limiting.
+- Scheduler, heartbeat distribuído e autoridade multi-nó permanecem na 0.8 Colmeia.
+
+## [0.6.11] - 2026-10-11
+
+### Fechamento do Connection Engine
+
+- Novo contrato `manager-connection-actions-v1` consolida `preflight`, `create`, `revoke`, `status` e `describe` sem aceitar shell, comando ou caminho arbitrário.
+- A superfície comum reutiliza o provisionamento/revogação transacional de SSH, WireGuard e OpenVPN e estabiliza códigos de saída para a futura Automation v2.
+- Novo `manager-node-usage-v1` agrega telemetria local por `node_id`: identidades, leases/sessões, protocolos ativos, última atividade e bytes já contabilizados.
+- A telemetria declara `usage_scope=node-local`, `billing_authoritative=0` e `global_usage_supported=0`, evitando confundir accounting local com faturamento global.
+- Presença de SSH continua marcada com `traffic_complete=0` e `ssh_bytes_supported=0` em vez de inventar bytes.
+- Documentação em `docs/CONNECTION_ACTIONS.md` e `docs/NODE_USAGE.md` e CI dedicado para lifecycle allowlisted + agregado local.
+- A série 0.6.x foi encerrada; transporte remoto, compatibilidade `syncpainel`, RBAC e API passaram para 0.7.x.
+
 ## [0.6.10] - 2026-10-11
 
 ### ACL automática por nó
