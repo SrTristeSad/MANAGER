@@ -169,7 +169,15 @@ jobs:
           fp="$(awk -F= '/^server_fingerprint=/{print $2}' /tmp/remote-status.txt)"
           test -n "$fp"
           printf '%s' "$fp" > /tmp/server-fingerprint.txt
-          sudo ss -ltn | grep -q ':19443 '
+          ready=0
+          for _ in $(seq 1 50); do
+            if sudo ss -ltnH | awk '$4 ~ /:19443$/ {found=1} END {exit(found ? 0 : 1)}'; then
+              ready=1
+              break
+            fi
+            sleep 0.1
+          done
+          test "$ready" -eq 1
 
       - name: Require signed remote principal and pinned server certificate
         shell: bash
@@ -215,6 +223,15 @@ jobs:
           test -n "$new_fp"
           test "$new_fp" != "$old_fp"
           sudo systemctl is-active --quiet manager-automation-v2-remote.service
+          ready=0
+          for _ in $(seq 1 50); do
+            if sudo ss -ltnH | awk '$4 ~ /:19443$/ {found=1} END {exit(found ? 0 : 1)}'; then
+              ready=1
+              break
+            fi
+            sleep 0.1
+          done
+          test "$ready" -eq 1
 
           set +e
           sudo managerctl --remote 127.0.0.1:19443 --server-fingerprint "$old_fp" --credential /tmp/transport-admin.credential describe --request-id remote-old-pin-001 >/tmp/old-pin.out 2>/tmp/old-pin.err
@@ -234,7 +251,10 @@ jobs:
           sudo manager automation v2 remote disable
           sudo manager automation v2 remote status | grep -q '^remote_enabled=0$'
           if sudo systemctl is-active --quiet manager-automation-v2-remote.service; then exit 1; fi
-          if sudo ss -ltn | grep -q ':19443 '; then echo 'listener survived disable' >&2; exit 1; fi
+          if sudo ss -ltnH | awk '$4 ~ /:19443$/ {found=1} END {exit(found ? 0 : 1)}'; then
+            echo 'listener survived disable' >&2
+            exit 1
+          fi
           sudo test -f /etc/manager/automation/v2/remote.conf
           sudo test -f /etc/manager/automation/v2/tls/server.crt
           sudo test -d /var/lib/manager/automation-v2/replay
