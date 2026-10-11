@@ -45,6 +45,26 @@ remove_protocol_pam_fallback() {
   rm -f "$tmp"
 }
 
+# Automation v2 mantém somente socket Unix local, mas o daemon privilegiado
+# sempre precisa sair antes de /opt/manager ser removido. Estado/idempotência
+# permanecem no uninstall normal e somem apenas com --purge.
+if [[ -x /opt/manager/modules/automation_v2.sh ]]; then
+  if $PURGE; then
+    /opt/manager/modules/automation_v2.sh --purge >/dev/null 2>&1 || true
+  else
+    /opt/manager/modules/automation_v2.sh --detach >/dev/null 2>&1 || true
+  fi
+else
+  systemctl disable --now manager-automation-v2.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-automation-v2.service
+  rm -rf /run/manager-automation-v2
+  if $PURGE; then
+    rm -rf /etc/manager/automation/v2 /var/lib/manager/automation-v2
+    rm -f /var/log/manager/automation-v2-audit.jsonl
+  fi
+  systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
 # Legacy v1 usa um listener SSH dedicado. Ele sempre sai antes do código para
 # que uninstall/rollback nunca deixem uma porta aberta apontando para comando ausente.
 if [[ -x /opt/manager/modules/automation_legacy.sh ]]; then
@@ -262,7 +282,8 @@ if $PURGE; then
   rm -rf /etc/manager
   rm -rf /var/log/manager
   rm -rf /var/lib/manager/identity-usage
-  rm -rf /run/manager-ipv6-guard
+  rm -rf /var/lib/manager/automation-v2
+  rm -rf /run/manager-ipv6-guard /run/manager-automation-v2
   rmdir /var/lib/manager 2>/dev/null || true
   systemctl daemon-reload || true
 
@@ -284,8 +305,9 @@ if $PURGE; then
   fi
 fi
 
-rm -f /usr/local/bin/manager /usr/local/bin/menu \
-  /usr/local/sbin/manager /usr/local/sbin/manager-rollback /usr/local/sbin/manager-uninstall
+rm -f /usr/local/bin/manager /usr/local/bin/menu /usr/local/bin/managerctl \
+  /usr/local/sbin/manager /usr/local/sbin/manager-rollback /usr/local/sbin/manager-uninstall \
+  /usr/local/sbin/managerctl /usr/local/sbin/managerd
 rm -rf /opt/manager /opt/manager.rollback
 
 echo "[OK] Código do MANAGER removido."
@@ -293,6 +315,7 @@ if ! $PURGE; then
   echo "As configurações em /etc/manager e serviços configurados foram preservados."
   echo "Produtos, vínculos, ACL e estado de franquia foram preservados no Connection Engine."
   echo "A configuração do Automation Legacy foi preservada, mas seu listener foi fechado e a conta de integração ficou bloqueada."
+  echo "O estado/idempotência da Automation v2 foi preservado, mas o daemon/socket local foi removido."
   echo "O histórico consolidado de uso em /var/lib/manager/identity-usage foi preservado."
   echo "Leases runtime e regras runtime do IPv6 Guard foram descartadas; estado persistente permanece para reinstalação."
   echo "Hooks PAM/OpenVPN e o bridge de protocolos foram desanexados antes da remoção do código."
