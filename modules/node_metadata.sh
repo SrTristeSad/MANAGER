@@ -80,11 +80,10 @@ init_state() {
   install -d -m 0700 "$STATE_DIR"
   touch "$LOCK_FILE"
   chmod 0600 "$LOCK_FILE"
-  flock -x "$LOCK_FILE" bash -c '
-    set -Eeuo pipefail
-    export MANAGER_HOME="$1" MANAGER_ETC="$2"
-    exec "$1/modules/node_metadata.sh" --init-unlocked
-  ' _ "$MANAGER_HOME" "$MANAGER_ETC"
+  (
+    flock -x 9
+    init_state_unlocked
+  ) 9>"$LOCK_FILE"
 }
 
 field_value_or_default() {
@@ -120,10 +119,16 @@ set_field_unlocked() {
       valid_country "$value" || { err "country deve ser vazio ou código ISO de 2 letras, como BR"; return 64; }
       ;;
     capacity|weight)
-      valid_uint "$value" && (( value >= 1 && value <= 1000000 )) || { err "$field deve ser inteiro entre 1 e 1000000"; return 64; }
+      if ! valid_uint "$value" || (( value < 1 || value > 1000000 )); then
+        err "$field deve ser inteiro entre 1 e 1000000"
+        return 64
+      fi
       ;;
     max_sessions)
-      valid_uint "$value" && (( value <= 10000000 )) || { err "max_sessions deve ser 0 (sem limite declarado) ou inteiro positivo"; return 64; }
+      if ! valid_uint "$value" || (( value > 10000000 )); then
+        err "max_sessions deve ser 0 (sem limite declarado) ou inteiro positivo"
+        return 64
+      fi
       ;;
     enabled)
       [[ "$value" == 0 || "$value" == 1 ]] || { err "enabled aceita somente 0 ou 1"; return 64; }
