@@ -52,6 +52,15 @@ Uso:
   manager automation legacy restart
   manager automation legacy rotate-password
                                   controla a compatibilidade syncpainel (desligada por padrão)
+  manager automation v2 status    mostra estado do daemon/socket/RBAC
+  manager automation v2 principals
+                                  lista principals locais da Automation v2
+  manager automation v2 principal show ID
+  manager automation v2 principal create ID ROLE SUBJECT [PRODUCTS]
+  manager automation v2 principal enable ID
+  manager automation v2 principal disable ID
+  manager automation v2 principal products ID SCOPE
+                                  administra principals/RBAC localmente
   manager --diagnostics           abre o diagnóstico
   manager --version               mostra a versão
   manager --help                  mostra esta ajuda
@@ -214,14 +223,50 @@ case "${1:-}" in
     exec "$MANAGER_HOME/modules/node_metadata.sh" --set "$2" "${3:-}"
     ;;
   automation)
-    [[ "${2:-}" == legacy ]] || { err "Uso: manager automation legacy {status|enable|disable|restart|rotate-password}"; exit 64; }
-    case "${3:-status}" in
-      status) exec "$MANAGER_HOME/modules/automation_legacy.sh" --status ;;
-      enable) exec "$MANAGER_HOME/modules/automation_legacy.sh" --enable "${4:-}" ;;
-      disable) exec "$MANAGER_HOME/modules/automation_legacy.sh" --disable ;;
-      restart) exec "$MANAGER_HOME/modules/automation_legacy.sh" --restart ;;
-      rotate-password) exec "$MANAGER_HOME/modules/automation_legacy.sh" --rotate-password ;;
-      *) err "Ação Legacy inválida: ${3:-}"; exit 64 ;;
+    case "${2:-}" in
+      legacy)
+        case "${3:-status}" in
+          status) exec "$MANAGER_HOME/modules/automation_legacy.sh" --status ;;
+          enable) exec "$MANAGER_HOME/modules/automation_legacy.sh" --enable "${4:-}" ;;
+          disable) exec "$MANAGER_HOME/modules/automation_legacy.sh" --disable ;;
+          restart) exec "$MANAGER_HOME/modules/automation_legacy.sh" --restart ;;
+          rotate-password) exec "$MANAGER_HOME/modules/automation_legacy.sh" --rotate-password ;;
+          *) err "Ação Legacy inválida: ${3:-}"; exit 64 ;;
+        esac
+        ;;
+      v2)
+        case "${3:-status}" in
+          status) exec "$MANAGER_HOME/modules/automation_v2.sh" --status ;;
+          principals) exec "$MANAGER_HOME/modules/automation_principals.sh" --list ;;
+          principal)
+            case "${4:-}" in
+              show)
+                [[ -n "${5:-}" ]] || { err "Uso: manager automation v2 principal show ID"; exit 64; }
+                exec "$MANAGER_HOME/modules/automation_principals.sh" --show "$5"
+                ;;
+              create)
+                [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager automation v2 principal create ID ROLE SUBJECT [PRODUCTS]"; exit 64; }
+                exec "$MANAGER_HOME/modules/automation_principals.sh" --create "$5" "$6" "${7:-}" "${8:-*}"
+                ;;
+              enable)
+                [[ -n "${5:-}" ]] || { err "Uso: manager automation v2 principal enable ID"; exit 64; }
+                exec "$MANAGER_HOME/modules/automation_principals.sh" --enable "$5"
+                ;;
+              disable)
+                [[ -n "${5:-}" ]] || { err "Uso: manager automation v2 principal disable ID"; exit 64; }
+                exec "$MANAGER_HOME/modules/automation_principals.sh" --disable "$5"
+                ;;
+              products)
+                [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager automation v2 principal products ID SCOPE"; exit 64; }
+                exec "$MANAGER_HOME/modules/automation_principals.sh" --set-products "$5" "$6"
+                ;;
+              *) err "Ação de principal inválida: ${4:-}"; exit 64 ;;
+            esac
+            ;;
+          *) err "Ação Automation v2 inválida: ${3:-}"; exit 64 ;;
+        esac
+        ;;
+      *) err "Uso: manager automation {legacy|v2} ..."; exit 64 ;;
     esac
     ;;
   --diagnostics) exec "$MANAGER_HOME/modules/diagnostics.sh" ;;
@@ -269,6 +314,7 @@ while true; do
   say ""
   say " ${C_WHITE}AUTOMAÇÃO${C_RESET}"
   say " ${C_CYAN}37${C_RESET}) Legacy v1 / compatibilidade syncpainel"
+  say " ${C_CYAN}38${C_RESET}) Automation v2 / principals e RBAC"
   say ""
   say " ${C_WHITE}MONITORAMENTO E MANUTENÇÃO${C_RESET}"
   say " ${C_CYAN}10${C_RESET}) Tráfego e conexões"
@@ -344,6 +390,7 @@ while true; do
       ;;
     36) run_module node_metadata.sh ;;
     37) run_module automation_legacy.sh ;;
+    38) run_module automation_principals.sh ;;
     90) self_update ;;
     0) clear 2>/dev/null || true; exit 0 ;;
     *) warn "Opção inválida"; sleep 1 ;;
