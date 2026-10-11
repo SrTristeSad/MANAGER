@@ -1,0 +1,262 @@
+name: Automation v2 Secure Transport
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  secure-transport:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install with remote transport closed by default
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo systemctl is-active --quiet manager-automation-v2.service
+          sudo test -S /run/manager-automation-v2/manager.sock
+          sudo manager automation v2 status | grep -q '^anti_replay=1$'
+          sudo manager automation v2 status | grep -q '^rate_limit=1$'
+          sudo manager automation v2 remote status | grep -q '^remote_enabled=0$'
+          if sudo systemctl is-active --quiet manager-automation-v2-remote.service; then
+            echo 'remote gateway unexpectedly active after install' >&2
+            exit 1
+          fi
+
+      - name: Enroll principals for transport tests
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager automation v2 principal create transport-admin admin
+          sudo manager automation v2 credential enroll transport-admin /tmp/transport-admin.credential
+          sudo manager automation v2 principal create rate-admin admin
+          sudo manager automation v2 credential enroll rate-admin /tmp/rate-admin.credential
+          test "$(sudo stat -c '%a' /tmp/transport-admin.credential)" = 600
+
+      - name: Build signed raw request helper
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cat > /tmp/make-signed-request.py <<'PY'
+          import base64, json, os, secrets, subprocess, sys, tempfile, time
+          credential_path, request_id, offset, output = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+          credential=json.load(open(credential_path))
+          request={
+              'version':1,
+              'request_id':request_id,
+              'principal_id':credential['principal_id'],
+              'action_id':'system.describe',
+              'params':{},
+              'issued_at':int(time.time())+offset,
+              'nonce':secrets.token_urlsafe(24),
+          }
+          canonical={
+              'contract':'manager-automation-v2-local-v1',
+              'version':request['version'],
+              'request_id':request['request_id'],
+              'principal_id':request['principal_id'],
+              'action_id':request['action_id'],
+              'params':request['params'],
+              'issued_at':request['issued_at'],
+              'nonce':request['nonce'],
+          }
+          fd,key=tempfile.mkstemp(); os.close(fd)
+          fd,data=tempfile.mkstemp(); os.close(fd)
+          fd,sig=tempfile.mkstemp(); os.close(fd)
+          try:
+              open(key,'w').write(credential['private_key_pem']); os.chmod(key,0o600)
+              open(data,'wb').write(json.dumps(canonical,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode())
+              subprocess.check_call(['openssl','pkeyutl','-sign','-inkey',key,'-rawin','-in',data,'-out',sig], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+              signature=open(sig,'rb').read()
+          finally:
+              for p in (key,data,sig):
+                  try: os.unlink(p)
+                  except FileNotFoundError: pass
+          request['auth']={'scheme':'ed25519-v2','key_id':credential['key_id'],'signature':base64.b64encode(signature).decode()}
+          with open(output,'w') as fh: json.dump(request,fh,sort_keys=True,separators=(',',':'))
+          os.chmod(output,0o600)
+          PY
+          cat > /tmp/send-unix-request.py <<'PY'
+          import json, socket, sys
+          request=json.load(open(sys.argv[1]))
+          s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+          s.connect('/run/manager-automation-v2/manager.sock')
+          s.sendall((json.dumps(request,sort_keys=True,separators=(',',':'))+'\n').encode())
+          data=b''
+          while b'\n' not in data:
+              chunk=s.recv(4096)
+              if not chunk: break
+              data+=chunk
+          s.close()
+          print(data.split(b'\n',1)[0].decode())
+          PY
+
+      - name: Reject exact replay and stale or future envelopes
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo python3 /tmp/make-signed-request.py /tmp/transport-admin.credential transport-replay-0001 0 /tmp/replay.json
+          sudo python3 /tmp/send-unix-request.py /tmp/replay.json > /tmp/replay-first.json
+          sudo python3 /tmp/send-unix-request.py /tmp/replay.json > /tmp/replay-second.json
+          sudo python3 /tmp/make-signed-request.py /tmp/transport-admin.credential transport-stale-00001 -300 /tmp/stale.json
+          sudo python3 /tmp/send-unix-request.py /tmp/stale.json > /tmp/stale-response.json
+          sudo python3 /tmp/make-signed-request.py /tmp/transport-admin.credential transport-future-0001 300 /tmp/future.json
+          sudo python3 /tmp/send-unix-request.py /tmp/future.json > /tmp/future-response.json
+          python3 - <<'PY'
+          import json
+          first=json.load(open('/tmp/replay-first.json'))
+          second=json.load(open('/tmp/replay-second.json'))
+          stale=json.load(open('/tmp/stale-response.json'))
+          future=json.load(open('/tmp/future-response.json'))
+          assert first['ok'] is True and first['code']==0
+          assert second['ok'] is False and second['code']==67 and 'replay' in second['error']
+          assert stale['ok'] is False and stale['code']==67
+          assert future['ok'] is False and future['code']==67
+          PY
+          sudo grep -q '"replay_decision":"deny"' /var/log/manager/automation-v2-audit.jsonl
+          if sudo grep -q '"nonce"' /var/log/manager/automation-v2-audit.jsonl; then
+            echo 'audit leaked nonce' >&2
+            exit 1
+          fi
+
+      - name: Preserve idempotent retry with a fresh nonce
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo managerctl --credential /tmp/transport-admin.credential describe --request-id transport-idem-00001 > /tmp/idem1.json
+          sudo managerctl --credential /tmp/transport-admin.credential describe --request-id transport-idem-00001 > /tmp/idem2.json
+          python3 - <<'PY'
+          import json
+          a=json.load(open('/tmp/idem1.json')); b=json.load(open('/tmp/idem2.json'))
+          assert a['ok'] is True and a['cached'] is False
+          assert b['ok'] is True and b['cached'] is True
+          PY
+
+      - name: Enforce per-principal action burst limit
+        shell: bash
+        run: |
+          set -euxo pipefail
+          hit=0
+          set +e
+          for i in $(seq 1 60); do
+            sudo managerctl --credential /tmp/rate-admin.credential describe --request-id "rate-limit-$(printf '%04d' "$i")" > "/tmp/rate-$i.json"
+            rc=$?
+            if [[ "$rc" -eq 75 ]]; then hit=1; break; fi
+            if [[ "$rc" -ne 0 ]]; then echo "unexpected rc=$rc" >&2; exit 1; fi
+          done
+          set -e
+          test "$hit" -eq 1
+          sudo grep -q '"rate_limit_decision":"deny"' /var/log/manager/automation-v2-audit.jsonl
+
+      - name: Enable TLS 1.3 gateway explicitly
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager automation v2 remote enable 127.0.0.1 19443 > /tmp/remote-enable.txt
+          sudo systemctl is-active --quiet manager-automation-v2-remote.service
+          sudo manager automation v2 remote status > /tmp/remote-status.txt
+          grep -q '^remote_enabled=1$' /tmp/remote-status.txt
+          grep -q '^remote_service=active$' /tmp/remote-status.txt
+          grep -q '^remote_bind=127.0.0.1$' /tmp/remote-status.txt
+          grep -q '^remote_port=19443$' /tmp/remote-status.txt
+          fp="$(awk -F= '/^server_fingerprint=/{print $2}' /tmp/remote-status.txt)"
+          test -n "$fp"
+          printf '%s' "$fp" > /tmp/server-fingerprint.txt
+          sudo ss -ltn | grep -q ':19443 '
+
+      - name: Require signed remote principal and pinned server certificate
+        shell: bash
+        run: |
+          set -euxo pipefail
+          fp="$(cat /tmp/server-fingerprint.txt)"
+          sudo managerctl --remote 127.0.0.1:19443 --server-fingerprint "$fp" --credential /tmp/transport-admin.credential describe --request-id remote-good-000001 > /tmp/remote-good.json
+          python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/remote-good.json'))
+          assert r['ok'] is True and r['principal_id']=='transport-admin'
+          PY
+
+          wrong='SHA256:0000000000000000000000000000000000000000000000000000000000000000'
+          set +e
+          sudo managerctl --remote 127.0.0.1:19443 --server-fingerprint "$wrong" --credential /tmp/transport-admin.credential describe --request-id remote-wrong-pin01 >/tmp/wrong-pin.out 2>/tmp/wrong-pin.err
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+          grep -q 'fingerprint TLS do servidor não confere' /tmp/wrong-pin.err
+
+          set +e
+          sudo managerctl --remote 127.0.0.1:19443 --server-fingerprint "$fp" describe --request-id remote-no-cred-001 >/tmp/no-cred.out 2>/tmp/no-cred.err
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+          grep -q 'exige --credential' /tmp/no-cred.err
+          sudo grep -q '"transport":"remote-tls-v1"' /var/log/manager/automation-v2-audit.jsonl
+
+      - name: Reject TLS 1.2 and rotate the pinned certificate
+        shell: bash
+        run: |
+          set -euxo pipefail
+          set +e
+          timeout 5 openssl s_client -connect 127.0.0.1:19443 -tls1_2 </dev/null >/tmp/tls12.out 2>&1
+          tls12_rc=$?
+          set -e
+          test "$tls12_rc" -ne 0
+
+          old_fp="$(cat /tmp/server-fingerprint.txt)"
+          sudo manager automation v2 remote rotate-certificate > /tmp/rotated.txt
+          new_fp="$(awk -F= '/^server_fingerprint=/{print $2}' /tmp/rotated.txt)"
+          test -n "$new_fp"
+          test "$new_fp" != "$old_fp"
+          sudo systemctl is-active --quiet manager-automation-v2-remote.service
+
+          set +e
+          sudo managerctl --remote 127.0.0.1:19443 --server-fingerprint "$old_fp" --credential /tmp/transport-admin.credential describe --request-id remote-old-pin-001 >/tmp/old-pin.out 2>/tmp/old-pin.err
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+          sudo managerctl --remote 127.0.0.1:19443 --server-fingerprint "$new_fp" --credential /tmp/transport-admin.credential describe --request-id remote-new-pin-001 > /tmp/new-pin.json
+          python3 - <<'PY'
+          import json
+          assert json.load(open('/tmp/new-pin.json'))['ok'] is True
+          PY
+
+      - name: Disable gateway and preserve durable security state through reinstall
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager automation v2 remote disable
+          sudo manager automation v2 remote status | grep -q '^remote_enabled=0$'
+          if sudo systemctl is-active --quiet manager-automation-v2-remote.service; then exit 1; fi
+          if sudo ss -ltn | grep -q ':19443 '; then echo 'listener survived disable' >&2; exit 1; fi
+          sudo test -f /etc/manager/automation/v2/remote.conf
+          sudo test -f /etc/manager/automation/v2/tls/server.crt
+          sudo test -d /var/lib/manager/automation-v2/replay
+
+          sudo /opt/manager/uninstall.sh
+          sudo test ! -e /etc/systemd/system/manager-automation-v2.service
+          sudo test ! -e /etc/systemd/system/manager-automation-v2-remote.service
+          sudo test -f /etc/manager/automation/v2/remote.conf
+          sudo test -f /etc/manager/automation/v2/tls/server.crt
+          sudo test -d /var/lib/manager/automation-v2/replay
+
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo systemctl is-active --quiet manager-automation-v2.service
+          sudo manager automation v2 remote status | grep -q '^remote_enabled=0$'
+          if sudo systemctl is-active --quiet manager-automation-v2-remote.service; then exit 1; fi
+
+      - name: Purge removes remote and anti-replay server state
+        shell: bash
+        run: |
+          set -euxo pipefail
+          printf 'PURGAR\n' | sudo /opt/manager/uninstall.sh --purge
+          sudo test ! -e /etc/manager/automation/v2
+          sudo test ! -e /var/lib/manager/automation-v2
+          sudo test ! -e /etc/systemd/system/manager-automation-v2-remote.service
