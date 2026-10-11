@@ -14,6 +14,7 @@ CONFIG_FILE="$STATE_DIR/config"
 SSHD_CONFIG="$STATE_DIR/sshd_config"
 SERVICE_FILE="/etc/systemd/system/manager-automation-legacy.service"
 MAIN_SSH_GUARD="/etc/ssh/sshd_config.d/64-manager-automation-legacy.conf"
+SUDOERS_FILE="/etc/sudoers.d/manager-automation-legacy"
 AUDIT_DIR="/var/log/manager"
 AUDIT_FILE="$AUDIT_DIR/legacy-events.log"
 LEGACY_USER="manager-legacy"
@@ -70,14 +71,17 @@ log_event() {
   printf '%s action=%s subject=%s result=%s\n' "$(date -Is)" "$action" "$subject" "$result" >> "$AUDIT_FILE"
 }
 
-ensure_sshd_available() {
-  if command -v sshd >/dev/null 2>&1; then
-    return 0
+ensure_dependencies() {
+  local need=0
+  command -v sshd >/dev/null 2>&1 || need=1
+  command -v sudo >/dev/null 2>&1 || need=1
+  command -v visudo >/dev/null 2>&1 || need=1
+  if (( need == 1 )); then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y
+    apt-get install -y openssh-server sudo
   fi
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y openssh-server
-  command -v sshd >/dev/null 2>&1
+  command -v sshd >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1 && command -v visudo >/dev/null 2>&1
 }
 
 ensure_legacy_user() {
@@ -114,12 +118,13 @@ write_main_ssh_guard() {
   install -d -m 0755 /etc/ssh/sshd_config.d
   tmp="$(mktemp)"
   cat > "$tmp" <<EOF
-# Managed by MANAGER. Prevent the Legacy account from becoming a normal SSH shell.
+# Managed by MANAGER. The Legacy credential is never a normal SSH shell.
 Match User $LEGACY_USER
     ForceCommand /usr/bin/false
     DisableForwarding yes
     PermitTTY no
     X11Forwarding no
+Match all
 EOF
   install -m 0644 "$tmp" "$MAIN_SSH_GUARD"
   rm -f "$tmp"
@@ -133,6 +138,24 @@ EOF
     fi
     systemctl reload ssh >/dev/null 2>&1 || systemctl reload sshd >/dev/null 2>&1 || true
   fi
+}
+
+write_sudoers() {
+  local tmp
+  tmp="$(mktemp)"
+  cat > "$tmp" <<EOF
+# Managed by MANAGER. This is the only privileged command exposed to the Legacy account.
+Defaults:$LEGACY_USER env_keep += "SSH_ORIGINAL_COMMAND"
+$LEGACY_USER ALL=(root) NOPASSWD: $MANAGER_HOME/modules/automation_legacy.sh --forced-command
+EOF
+  chmod 0440 "$tmp"
+  if ! visudo -cf "$tmp" >/dev/null; then
+    rm -f "$tmp"
+    err "A regra sudoers do Legacy foi recusada por visudo."
+    return 1
+  fi
+  install -m 0440 "$tmp" "$SUDOERS_FILE"
+  rm -f "$tmp"
 }
 
 write_legacy_sshd_config() {
@@ -151,6 +174,7 @@ write_legacy_sshd_config() {
     done
     printf 'UsePAM yes\n'
     printf 'PasswordAuthentication yes\n'
+    printf 'PubkeyAuthentication no\n'
     printf 'KbdInteractiveAuthentication no\n'
     printf 'PermitRootLogin no\n'
     printf 'PermitEmptyPasswords no\n'
@@ -162,7 +186,7 @@ write_legacy_sshd_config() {
     printf 'GatewayPorts no\n'
     printf 'PermitTTY no\n'
     printf 'PermitUserEnvironment no\n'
-    printf 'ForceCommand %s/modules/automation_legacy.sh --forced-command\n' "$MANAGER_HOME"
+    printf 'ForceCommand /usr/bin/sudo -n %s/modules/automation_legacy.sh --forced-command\n' "$MANAGER_HOME"
     printf 'LogLevel VERBOSE\n'
   } > "$tmp"
 
@@ -182,6 +206,7 @@ write_service() {
 Description=MANAGER Automation Legacy v1 compatibility SSH bridge
 After=network.target
 ConditionPathExists=$SSHD_CONFIG
+ConditionPathExists=$SUDOERS_FILE
 
 [Service]
 Type=simple
@@ -197,8 +222,9 @@ EOF
 }
 
 port_in_use_by_other() {
-  local port="$1"
-  if systemctl is-active --quiet manager-automation-legacy.service 2>/dev/null; then
+  local port="$1" current
+  current="$(config_get port)"
+  if systemctl is-active --quiet manager-automation-legacy.service 2>/dev/null && [[ "$port" == "$current" ]]; then
     return 1
   fi
   ss -H -ltn 2>/dev/null | awk -v p=":$port" '$4 ~ (p "$") {found=1} END {exit !found}'
@@ -233,6 +259,30 @@ identity_update_policy() {
   ( flock -x 9; identity_write "$id" "$owner" "$enabled" "$expires" "$max" "$protocols" "$created" "$now" "$ssh_user" "$wg" "$ovpn" ) 9>"$IDENTITY_LOCK"
 }
 
+identity_clear_ssh_binding() {
+  local id="$1" owner enabled expires max protocols created wg ovpn now
+  identity_exists "$id" || return 0
+  owner="$(identity_read "$id" owner)"
+  enabled="$(identity_read "$id" enabled)"
+  expires="$(identity_read "$id" expires_epoch)"
+  max="$(identity_read "$id" max_sessions)"
+  protocols="$(identity_read "$id" protocols)"
+  created="$(identity_read "$id" created_epoch)"
+  wg="$(identity_read "$id" wireguard_client)"
+  ovpn="$(identity_read "$id" openvpn_client)"
+  now="$(date +%s)"
+  ( flock -x 9; identity_write "$id" "$owner" "$enabled" "$expires" "$max" "$protocols" "$created" "$now" '' "$wg" "$ovpn" ) 9>"$IDENTITY_LOCK"
+}
+
+legacy_managed_target() {
+  local user="$1" bound
+  [[ -n "$user" && "$user" != root && "$user" != "$LEGACY_USER" ]] || return 1
+  id "$user" >/dev/null 2>&1 || return 1
+  identity_exists "$user" || return 1
+  bound="$(identity_read "$user" ssh_user)"
+  [[ "$bound" == "$user" ]]
+}
+
 legacy_create() {
   local user="${1:-}" pass="${2:-}" days="${3:-}" limit="${4:-}" expiry_date expires_epoch
   if [[ -z "$user" ]]; then printf '4\n'; return 1; fi
@@ -265,7 +315,8 @@ legacy_create() {
 
   if [[ -x "$CONNECTION_MODULE" ]]; then
     if ! "$CONNECTION_MODULE" --import-name "$user" '' "$expires_epoch" "$limit" >/dev/null 2>&1; then
-      passwd -l "$user" >/dev/null 2>&1 || true
+      userdel -r "$user" >/dev/null 2>&1 || userdel "$user" >/dev/null 2>&1 || true
+      update_limit_file "$user" 0
       log_event create "$user" identity-import-failed
       printf '14\n'
       return 1
@@ -277,28 +328,26 @@ legacy_create() {
 
 legacy_remove() {
   local user="${1:-}"
-  [[ -n "$user" && "$user" != root ]] || { printf '2\n'; return 2; }
-  if ! id "$user" >/dev/null 2>&1; then
+  if ! legacy_managed_target "$user"; then
     printf '2\n'
     return 2
   fi
-  if identity_exists "$user"; then
-    "$CONNECTION_MODULE" --disable "$user" >/dev/null 2>&1 || true
-    [[ -x "$SESSION_MODULE" ]] && "$SESSION_MODULE" --revoke-all "$user" >/dev/null 2>&1 || true
-  fi
+  "$CONNECTION_MODULE" --disable "$user" >/dev/null 2>&1 || true
+  [[ -x "$SESSION_MODULE" ]] && "$SESSION_MODULE" --revoke-all "$user" >/dev/null 2>&1 || true
   pkill -TERM -u "$user" >/dev/null 2>&1 || true
   sleep 0.2
   pkill -KILL -u "$user" >/dev/null 2>&1 || true
   userdel -r "$user" >/dev/null 2>&1 || userdel "$user" >/dev/null 2>&1 || true
   update_limit_file "$user" 0
+  identity_clear_ssh_binding "$user"
   log_event remove "$user" ok
   printf '1\n'
 }
 
 legacy_password() {
   local user="${1:-}" pass="${2:-}"
-  [[ -n "$user" && -n "$pass" && "$user" != root ]] || return 1
-  id "$user" >/dev/null 2>&1 || return 1
+  legacy_managed_target "$user" || return 1
+  [[ -n "$pass" ]] || return 1
   (( ${#pass} <= 128 )) || return 1
   printf '%s:%s\n' "$user" "$pass" | chpasswd
   pkill -TERM -u "$user" >/dev/null 2>&1 || true
@@ -308,13 +357,13 @@ legacy_password() {
 
 legacy_expiry() {
   local user="${1:-}" days="${2:-}" expiry_date expires_epoch max
-  [[ -n "$user" && "$days" =~ ^[0-9]+$ ]] || return 1
+  legacy_managed_target "$user" || return 1
+  [[ "$days" =~ ^[0-9]+$ ]] || return 1
   (( days >= 1 && days <= 3650 )) || return 1
-  id "$user" >/dev/null 2>&1 || return 1
   expiry_date="$(date -d "+$days days" '+%F')"
   expires_epoch="$(date -d "$expiry_date 23:59:59" '+%s')"
   chage -E "$expiry_date" "$user"
-  max="$(identity_read "$user" max_sessions 2>/dev/null || true)"
+  max="$(identity_read "$user" max_sessions)"
   [[ "$max" =~ ^[0-9]+$ ]] || max=1
   identity_update_policy "$user" "$expires_epoch" "$max"
   log_event expiry "$user" ok
@@ -323,11 +372,11 @@ legacy_expiry() {
 
 legacy_limit() {
   local user="${1:-}" limit="${2:-}" expires
-  [[ -n "$user" && "$limit" =~ ^[0-9]+$ ]] || { printf '2\n'; return 1; }
+  [[ "$limit" =~ ^[0-9]+$ ]] || { printf '2\n'; return 1; }
   (( limit >= 1 && limit <= 50 )) || { printf '3\n'; return 1; }
-  id "$user" >/dev/null 2>&1 || { printf '5\n'; return 1; }
+  legacy_managed_target "$user" || { printf '5\n'; return 1; }
   update_limit_file "$user" "$limit"
-  expires="$(identity_read "$user" expires_epoch 2>/dev/null || true)"
+  expires="$(identity_read "$user" expires_epoch)"
   [[ "$expires" =~ ^[0-9]+$ ]] || expires=0
   identity_update_policy "$user" "$expires" "$limit"
   log_event limit "$user" ok
@@ -336,8 +385,7 @@ legacy_limit() {
 
 legacy_kill() {
   local user="${1:-}"
-  [[ -n "$user" && "$user" != root ]] || return 1
-  id "$user" >/dev/null 2>&1 || { printf 'nao existe\n'; return 2; }
+  legacy_managed_target "$user" || { printf 'nao existe\n'; return 2; }
   pkill -TERM -u "$user" >/dev/null 2>&1 || true
   sleep 0.2
   pkill -KILL -u "$user" >/dev/null 2>&1 || true
@@ -398,9 +446,10 @@ legacy_enable() {
     err "A porta $port já está em uso."
     return 65
   fi
-  ensure_sshd_available || { err "openssh-server não pôde ser instalado/localizado."; return 69; }
+  ensure_dependencies || { err "openssh-server/sudo não puderam ser instalados ou localizados."; return 69; }
   ensure_legacy_user
   write_main_ssh_guard
+  write_sudoers
   write_legacy_sshd_config "$port"
   write_service
 
@@ -410,9 +459,11 @@ legacy_enable() {
     password="$(set_random_password)"
   fi
 
-  systemctl enable --now manager-automation-legacy.service >/dev/null
+  systemctl enable manager-automation-legacy.service >/dev/null
+  systemctl restart manager-automation-legacy.service
   if ! systemctl is-active --quiet manager-automation-legacy.service; then
     passwd -l "$LEGACY_USER" >/dev/null 2>&1 || true
+    rm -f "$SUDOERS_FILE"
     err "O listener Legacy não ficou ativo."
     return 70
   fi
@@ -439,6 +490,7 @@ legacy_disable() {
   port="$(config_get port)"
   created="$(config_get created_epoch)"
   systemctl disable --now manager-automation-legacy.service >/dev/null 2>&1 || true
+  rm -f "$SUDOERS_FILE"
   if id "$LEGACY_USER" >/dev/null 2>&1; then
     passwd -l "$LEGACY_USER" >/dev/null 2>&1 || true
   fi
@@ -451,6 +503,10 @@ legacy_disable() {
 legacy_restart() {
   ensure_config
   [[ "$(config_get enabled)" == 1 ]] || { err "Legacy v1 está desativado."; return 68; }
+  ensure_dependencies || return 69
+  ensure_legacy_user
+  write_main_ssh_guard
+  write_sudoers
   write_legacy_sshd_config "$(config_get port)"
   write_service
   systemctl restart manager-automation-legacy.service
@@ -471,7 +527,7 @@ rotate_password() {
 }
 
 legacy_status() {
-  local enabled port service locked="unknown"
+  local enabled port service locked="unknown" listening=0
   ensure_config
   enabled="$(config_get enabled)"
   port="$(config_get port)"
@@ -482,11 +538,15 @@ legacy_status() {
       *) locked=0 ;;
     esac
   fi
+  if validate_port "${port:-}" && ss -H -ltn 2>/dev/null | awk -v p=":$port" '$4 ~ (p "$") {found=1} END {exit !found}'; then
+    listening=1
+  fi
   printf 'contract=manager-automation-legacy-v1\n'
   printf 'enabled=%s\n' "${enabled:-0}"
   printf 'service=%s\n' "$service"
   printf 'login_server=%s\n' "$LEGACY_USER"
   printf 'porta=%s\n' "${port:-$DEFAULT_PORT}"
+  printf 'port_listening=%s\n' "$listening"
   printf 'account_locked=%s\n' "$locked"
   printf 'transport=ssh-force-command\n'
   printf 'root_login=0\n'
@@ -496,22 +556,32 @@ legacy_status() {
 }
 
 legacy_install() {
+  local port created
   ensure_config
-  if [[ "$(config_get enabled)" == 1 ]]; then
-    ensure_sshd_available || return 69
-    ensure_legacy_user
-    write_main_ssh_guard
-    write_legacy_sshd_config "$(config_get port)"
-    write_service
-    passwd -u "$LEGACY_USER" >/dev/null 2>&1 || true
-    systemctl enable --now manager-automation-legacy.service >/dev/null 2>&1 || return 70
+  [[ "$(config_get enabled)" == 1 ]] || return 0
+  port="$(config_get port)"
+  created="$(config_get created_epoch)"
+  ensure_dependencies || return 69
+  ensure_legacy_user
+  if ! legacy_has_password; then
+    [[ "$created" =~ ^[0-9]+$ ]] || created="$(date +%s)"
+    config_write 0 "${port:-$DEFAULT_PORT}" "$created"
+    passwd -l "$LEGACY_USER" >/dev/null 2>&1 || true
+    err "A credencial Legacy não existe mais; o listener permaneceu desligado. Execute enable para gerar uma nova."
+    return 68
   fi
+  write_main_ssh_guard
+  write_sudoers
+  write_legacy_sshd_config "$port"
+  write_service
+  passwd -u "$LEGACY_USER" >/dev/null 2>&1 || true
+  systemctl enable --now manager-automation-legacy.service >/dev/null 2>&1 || return 70
 }
 
 legacy_detach() {
   ensure_config
   systemctl disable --now manager-automation-legacy.service >/dev/null 2>&1 || true
-  rm -f "$SERVICE_FILE"
+  rm -f "$SERVICE_FILE" "$SUDOERS_FILE"
   if id "$LEGACY_USER" >/dev/null 2>&1; then
     passwd -l "$LEGACY_USER" >/dev/null 2>&1 || true
   fi
