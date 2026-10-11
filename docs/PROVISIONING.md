@@ -1,6 +1,6 @@
-# Provisionamento Unificado — 0.6.6
+# Provisionamento Unificado — 0.6.6+
 
-A 0.6.6 adiciona uma operação única para criar uma identidade MANAGER, aplicar um produto/plano e materializar os recursos técnicos permitidos por esse produto.
+A 0.6.6 adicionou uma operação única para criar uma identidade MANAGER, aplicar um produto/plano e materializar os recursos técnicos permitidos por esse produto. A 0.6.7 remove a dependência de SSH para clientes de revenda ao integrar o provisionador às cotas por identidade e produto.
 
 ## Objetivo
 
@@ -20,6 +20,8 @@ O provisionador reúne essas etapas em uma transação controlada:
 
 ```text
 preflight
+   ↓
+reserva de cota, quando houver OWNER
    ↓
 identidade
    ↓
@@ -50,6 +52,7 @@ Exemplos:
 manager --provision maria brasil-premium
 manager --provision maria brasil-premium '' wireguard,openvpn
 manager --provision cliente01 plano-ssh revenda01 ssh
+manager --provision cliente02 plano-vpn revenda01 wireguard
 ```
 
 Revogar todos os acessos técnicos vinculados:
@@ -64,7 +67,7 @@ Preflight interno, útil para automação futura:
 /opt/manager/modules/provision.sh --preflight ID PLANO OWNER PROTOCOLS
 ```
 
-O preflight não cria recursos. Ele valida o ID, existência/estado do produto, protocolos solicitados, conflitos de nomes, disponibilidade dos servidores VPN e, quando aplicável, estado/cota do revendedor.
+O preflight não cria recursos. Ele valida ID, produto, protocolos, conflitos de nomes, disponibilidade dos servidores VPN e, quando houver proprietário, cota total da identidade, estado do revendedor/subrevendedor e cota específica do produto.
 
 ## Seleção de protocolos
 
@@ -78,7 +81,7 @@ wireguard
 openvpn
 ```
 
-Quando `PROTOCOLS` fica vazio, o provisionador usa a lista do produto. Se o produto usa `protocols=*`, a seleção padrão desta etapa é:
+Quando `PROTOCOLS` fica vazio, o provisionador usa a lista do produto. Se o produto usa `protocols=*`, a seleção padrão é:
 
 ```text
 ssh,wireguard,openvpn
@@ -98,43 +101,19 @@ O provisionador:
 6. reconcilia produto e política;
 7. libera a senha somente depois do commit.
 
-A senha é retornada uma única vez na saída da operação:
-
-```text
-ssh_password=...
-```
-
-Ela não é gravada em `provision-events.log` e não é adicionada a arquivos de compatibilidade em texto claro.
+A senha é retornada uma única vez como `ssh_password=...`. Ela não é gravada em `provision-events.log` nem em arquivos de compatibilidade em texto claro.
 
 ## WireGuard
 
-WireGuard só pode ser provisionado quando o servidor MANAGER já está configurado.
+WireGuard só pode ser provisionado quando o servidor MANAGER já está configurado. O provisionador escolhe endereço livre, gera chave privada/pública e PSK, grava perfil restrito, adiciona somente o peer correspondente em `wg0.conf`, recarrega a unidade quando necessário e cria o binding.
 
-O provisionador:
-
-- escolhe um endereço livre na rede gerenciada atual;
-- gera chave privada, chave pública e PSK;
-- grava o perfil do cliente com permissão restrita;
-- adiciona somente o bloco do peer correspondente em `wg0.conf`;
-- recarrega/reinicia somente `wg-quick@wg0` quando necessário;
-- cria o binding da identidade.
-
-Em caso de rollback, remove somente o peer e os arquivos daquela tentativa. Não existe flush de firewall nem substituição global da configuração.
-
-A saída informa o caminho do perfil e o IP atribuído, não replica a chave privada no log de eventos.
+Em rollback, remove somente o peer e os arquivos daquela tentativa. Não existe flush global de firewall nem substituição global da configuração.
 
 ## OpenVPN
 
-OpenVPN também exige que o servidor MANAGER já esteja configurado.
+OpenVPN também exige que o servidor MANAGER já esteja configurado. O provisionador usa a PKI Easy-RSA existente para gerar certificado/chave, produzir o `.ovpn`, registrar metadados e criar binding.
 
-O provisionador usa a PKI Easy-RSA existente para:
-
-- gerar o certificado/chave do cliente;
-- produzir o perfil `.ovpn`;
-- registrar metadados do cliente;
-- criar o binding da identidade.
-
-Se a transação falhar depois da emissão, o certificado é revogado e a CRL é regenerada. O histórico de revogação da CA não é apagado para fingir que o certificado nunca existiu.
+Se a transação falhar depois da emissão, o certificado é revogado e a CRL é regenerada. O histórico da CA não é apagado.
 
 ## Produto, validade e sessões
 
@@ -150,15 +129,43 @@ quota_action
 ACL region/pool/node
 ```
 
-O provisionador não implementa um segundo sistema de limites. Depois do binding, Product Policy, Policy Engine e Session/Lease Engine continuam sendo as autoridades já existentes.
+O provisionador não implementa um segundo sistema de limites. Product Policy, Policy Engine e Session/Lease Engine continuam sendo as autoridades existentes.
+
+## Revendedores e cotas — 0.6.7
+
+Um `OWNER` pode agora receber identidade:
+
+```text
+ssh
+wireguard
+openvpn
+ssh + wireguard
+wireguard + openvpn
+ssh + wireguard + openvpn
+```
+
+sem depender de usuário Linux para ser contado.
+
+Antes da criação, o preflight verifica:
+
+```text
+cota total do owner
+cota agregada do revendedor pai
+cota do produto do owner
+cota agregada do produto no pai
+```
+
+A criação da identidade reserva um slot em `/etc/manager/access/identity-slots/` sob lock. Uma identidade consome uma vaga independentemente da quantidade de protocolos vinculados.
+
+Atribuição direta por `products.sh --assign` também verifica a cota de produto, portanto esse limite não pode ser contornado usando um caminho administrativo diferente do provisionador.
+
+Documentação detalhada: [`RESELLER_QUOTAS.md`](RESELLER_QUOTAS.md).
 
 ## Sinalização transacional de política
 
 Uma criação completa produz várias alterações na identidade. Pela CLI oficial, o MANAGER adia os sinais intermediários usados pelo watcher `manager-policy-reconcile.path` e emite um sinal ao final da operação.
 
-Isso evita que uma unidade systemd tente aplicar uma identidade parcialmente construída enquanto o provisionador ainda está criando bindings/credenciais.
-
-A reconciliação necessária para validar o commit continua ocorrendo dentro da transação antes de o SSH ser desbloqueado.
+Isso evita que uma unidade systemd tente aplicar uma identidade parcialmente construída enquanto bindings e credenciais ainda estão sendo preparados. A reconciliação necessária para validar o commit continua ocorrendo dentro da transação antes de o SSH ser desbloqueado.
 
 ## Revogação
 
@@ -170,19 +177,9 @@ WireGuard → peer/configuração do cliente removidos
 OpenVPN   → certificado revogado + CRL atualizada
 ```
 
-O produto é desvinculado e os bindings são limpos.
+O produto é desvinculado e os bindings são limpos. Quando toda a revogação termina sem erro, a vaga de revenda da identidade é liberada.
 
-A identidade lógica **não é apagada**. Ela permanece em estado `disabled`, permitindo histórico, auditoria e uma futura política explícita de reativação/reprovisionamento.
-
-Se uma etapa da revogação falhar, a identidade permanece desativada e a operação retorna erro parcial em vez de reabilitar acesso incompleto.
-
-## Revendedores — limite temporário da 0.6.6
-
-A camada antiga de cotas de revenda ainda conta contas SSH/Linux. Por isso, nesta etapa, um provisionamento com `OWNER` exige que `ssh` esteja entre os protocolos selecionados.
-
-Isso evita criar uma identidade WireGuard/OpenVPN de revenda que não seria contabilizada pela cota antiga.
-
-A próxima migração deve mover a cota de revenda para **produto/identidade**, permitindo revendedores criarem identidades VPN-only sem depender de usuário Linux.
+A identidade lógica **não é apagada**. Ela permanece em estado `disabled`, permitindo histórico/auditoria. Se alguma etapa falhar, a identidade continua desativada e a vaga não é liberada prematuramente.
 
 ## Auditoria
 
@@ -192,34 +189,17 @@ Eventos ficam em:
 /var/log/manager/provision-events.log
 ```
 
-O registro contém somente metadados operacionais:
-
-```text
-action
-identity id
-product
-owner
-protocols
-result
-```
-
-Senhas, chaves privadas WireGuard e chaves privadas OpenVPN não são gravadas nesse log.
+O registro contém somente metadados operacionais (`action`, ID, produto, owner, protocolos e resultado). Senhas e chaves privadas não são gravadas nesse log.
 
 ## Lifecycle
 
-O módulo é instalado em:
+O módulo é instalado em `/opt/manager/modules/provision.sh`. O estado durável continua nos diretórios usados pelos motores existentes; não existe banco paralelo para identidades/produtos.
 
-```text
-/opt/manager/modules/provision.sh
-```
-
-O estado durável continua nos diretórios já usados pelos motores existentes. A 0.6.6 não cria um banco paralelo para identidades/produtos.
-
-Uninstall normal preserva o estado lógico que já era preservado pelo Connection Engine. Recursos explicitamente revogados pelo operador não são recriados por uma reinstalação.
+Uninstall normal preserva o estado lógico do Connection Engine e da revenda. Recursos explicitamente revogados não são recriados por uma reinstalação.
 
 ## Automation v2
 
-O contrato desta versão prepara a futura Automation v2:
+O contrato prepara a futura Automation v2:
 
 ```text
 preflight
