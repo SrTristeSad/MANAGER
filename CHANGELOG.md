@@ -4,6 +4,41 @@ Todas as mudanças relevantes do MANAGER são registradas aqui. O projeto usa ve
 
 > O histórico detalhado das revisões antigas continua disponível no histórico Git. A partir da série 0.7, este arquivo prioriza as mudanças de arquitetura e segurança que afetam contratos públicos/operacionais.
 
+## [0.7.3] - 2026-10-11
+
+### Autenticação criptográfica e enrollment da Automation v2
+
+- Adicionado registry de credenciais Ed25519 em `/etc/manager/automation/v2/credentials/<principal>/`.
+- Cada principal não-local pode receber uma ou mais credenciais criptográficas por enrollment explícito.
+- O servidor guarda somente chave pública, `key_id`, fingerprint, estado e timestamps de criação/revogação; a chave privada não é armazenada no registry do MANAGER.
+- Arquivo privado de credencial é criado explicitamente em caminho fornecido pelo administrador, modo `0600`, e não entra em backup do estado do servidor.
+- `local-root` continua autenticado pelo `SO_PEERCRED` do socket Unix e não aceita credencial externa.
+- Todos os demais principals exigem assinatura Ed25519 válida antes de RBAC, dispatcher ou consulta ao cache idempotente.
+- Envelope assinado inclui contrato, versão, `request_id`, `principal_id`, `action_id` e `params`, impedindo alteração silenciosa do payload depois da assinatura.
+- `managerctl --credential FILE ...` carrega a credencial privada localmente e assina a requisição com OpenSSL.
+- Enrollment, listagem, rotação e revogação ficam disponíveis em `manager automation v2 credential ...`.
+- Rotação cria a nova chave antes de desativar as credenciais anteriores; a chave antiga deixa de autenticar imediatamente.
+- Revogação é independente do RBAC e é reavaliada antes de qualquer replay idempotente.
+- `key_id` deriva do SHA-256 da chave pública DER e cada registro também possui fingerprint SHA-256 estável.
+- Daemon recalcula `key_id` e fingerprint da chave pública antes de confiar no registro, reduzindo risco de metadado adulterado.
+- Audit registra esquema, `key_id`, fingerprint e decisão de autenticação, sem armazenar assinatura ou chave privada.
+- Registry público sobrevive a uninstall/reinstall normal; purge remove o estado server-side. Arquivos privados externos não são apagados pelo purge.
+- Novo CI `Automation v2 Authentication` cobre assinatura válida, chamada sem assinatura, chave privada incorreta, rotação, fencing da chave antiga, revogação, audit sem segredo e purge.
+- CI RBAC passou a exercitar todos os principals não-locais por chamadas assinadas.
+
+### Limite de confiança desta versão
+
+- O transporte continua Unix/local e root-only; `remote_transport=0`.
+- A 0.7.3 prova criptograficamente a identidade de principals não-locais dentro da fronteira atual, mas ainda não abre listener remoto.
+- Anti-replay temporal/nonce e rate limiting continuam explicitamente desativados (`anti_replay=0`, `rate_limit=0`) e pertencem à 0.7.4.
+- Nenhuma ação de shell/comando/caminho arbitrário foi adicionada.
+
+### Próxima etapa
+
+- 0.7.4: timestamp/nonce, janela de validade, cache anti-replay, rate limiting por principal/ação e transporte remoto autenticado/criptografado.
+- Unix socket permanece a fronteira privilegiada local.
+- Colmeia continua somente depois do fechamento da série 0.7.
+
 ## [0.7.2] - 2026-10-11
 
 ### Principals e RBAC da Automation v2
