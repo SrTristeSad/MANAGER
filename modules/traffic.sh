@@ -60,6 +60,15 @@ top_processes() {
   pause
 }
 
+identity_usage() {
+  if [[ -x "$MANAGER_HOME/modules/identity_usage.sh" ]]; then
+    "$MANAGER_HOME/modules/identity_usage.sh"
+  else
+    err "Módulo de uso por identidade não está instalado"
+    pause
+  fi
+}
+
 while true; do
   header
   say "${C_WHITE}TRÁFEGO E CONEXÕES${C_RESET}\n"
@@ -68,6 +77,7 @@ while true; do
   say " 3) Processos/portas em escuta"
   say " 4) Instalar vnStat"
   say " 5) Relatório vnStat"
+  say " 6) Uso e atividade por identidade"
   say " 0) Voltar"
   say ""
   read -r -p "Opção: " opt
@@ -77,6 +87,7 @@ while true; do
     3) top_processes ;;
     4) install_vnstat ;;
     5) vnstat_report ;;
+    6) identity_usage ;;
     0) exit 0 ;;
     *) warn "Opção inválida"; sleep 1 ;;
   esac
