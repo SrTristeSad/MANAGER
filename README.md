@@ -4,7 +4,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 > O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva capacidades úteis, substitui implementações inseguras/obsoletas e evolui para uma arquitetura própria de identidade, automação, VPN, revenda e operação multi-servidor.
 
-Versão atual: **0.7.1**.
+Versão atual: **0.7.2**.
 
 ## Princípios
 
@@ -15,7 +15,8 @@ Versão atual: **0.7.1**.
 - preservar configurações alheias ao MANAGER sempre que possível;
 - compatibilidade com legado não significa copiar fragilidades do legado;
 - integrações novas usam operações estruturadas e nunca shell remoto arbitrário;
-- senhas/chaves privadas não são guardadas em texto claro para permitir replay posterior.
+- senhas/chaves privadas não são guardadas em texto claro para permitir replay posterior;
+- autorização e autenticação são camadas separadas: a 0.7.2 conclui RBAC, mas ainda não anuncia autenticação remota criptográfica.
 
 ## Recursos atuais
 
@@ -145,9 +146,9 @@ O Legacy usa conta não-root, listener OpenSSH dedicado, `ForceCommand`, sudoers
 
 Documentação: [`docs/AUTOMATION_LEGACY.md`](docs/AUTOMATION_LEGACY.md).
 
-## Automation v2 local — 0.7.1
+## Automation v2 — 0.7.1 + 0.7.2
 
-A Automation v2 é a interface oficial para integrações novas. A primeira etapa é propositalmente **local-only** para estabilizar o contrato antes de adicionar autenticação remota.
+A Automation v2 é a interface oficial para integrações novas. Ela ainda é **local-only**: primeiro estabilizamos contrato, idempotência e autorização; autenticação/transportes remotos vêm depois.
 
 ### managerd / managerctl
 
@@ -160,16 +161,7 @@ manager-automation-v2.service
 /usr/local/sbin/managerctl
 ```
 
-O runtime é `0700` e o socket Unix é `0600`. O daemon valida o peer com `SO_PEERCRED`; na 0.7.1 somente UID 0 é aceito.
-
-```bash
-managerctl describe
-managerctl node.usage
-managerctl connection.status id=maria
-managerctl connection.preflight id=maria plan=premium protocols=wireguard,openvpn
-managerctl connection.create id=maria plan=premium protocols=wireguard,openvpn
-managerctl connection.revoke id=maria
-```
+O runtime é `0700` e o socket Unix é `0600`. O daemon valida o peer com `SO_PEERCRED`; somente root local entra na fronteira privilegiada nesta etapa.
 
 Contrato:
 
@@ -177,7 +169,21 @@ Contrato:
 manager-automation-v2-local-v1
 ```
 
-A allowlist inicial é fixa:
+Status atual:
+
+```text
+remote_transport=0
+rbac=1
+principal_assertion=root-local
+cryptographic_auth=0
+anti_replay=0
+rate_limit=0
+idempotency=1
+audit=1
+secret_replay=0
+```
+
+### Ações allowlisted
 
 ```text
 system.describe
@@ -190,35 +196,103 @@ connection.revoke
 
 Não existe ação de shell, comando arbitrário ou caminho executável informado pelo cliente.
 
+### Principals e RBAC — 0.7.2
+
+Principals persistentes ficam em:
+
+```text
+/etc/manager/automation/v2/principals/
+```
+
+Papéis:
+
+```text
+admin
+reseller
+subreseller
+user
+```
+
+O principal reservado `local-root` é admin e mantém compatibilidade com chamadas locais que não informam principal.
+
+Administração:
+
+```bash
+manager automation v2 status
+manager automation v2 principals
+manager automation v2 principal show ID
+manager automation v2 principal create ID ROLE SUBJECT [PRODUCTS]
+manager automation v2 principal enable ID
+manager automation v2 principal disable ID
+manager automation v2 principal products ID SCOPE
+```
+
+Exemplo:
+
+```bash
+manager automation v2 principal create loja01 reseller loja01 premium,basic
+managerctl --principal loja01 connection.status id=maria
+```
+
+A matriz é conservadora:
+
+| Ação | admin | reseller | subreseller | user |
+|---|---:|---:|---:|---:|
+| `system.describe` | sim | sim | sim | sim |
+| `node.usage` | sim | não | não | não |
+| `connection.preflight/create` | sim | escopo | escopo próprio | não |
+| `connection.status` | sim | escopo | escopo próprio | própria identidade |
+| `connection.revoke` | sim | escopo | escopo próprio | não |
+
+`reseller` pode atuar em suas identidades e nas de subrevendedores filhos diretos. `subreseller` não sobe para o pai e não cruza para outra árvore. `user` só consulta sua identidade vinculada.
+
+Para criação por revenda:
+
+- produto precisa estar no escopo do principal;
+- `owner` omitido é preenchido pelo MANAGER com o owner autorizado;
+- `owner` apontando para outra revenda é recusado;
+- a autorização acontece antes do dispatcher privilegiado.
+
 ### Request ID e idempotência
 
-Cada requisição usa envelope versionado com `request_id` e `action_id`.
+Cada requisição usa `request_id`, `principal_id` e `action_id`.
 
-- mesmo `request_id` + mesmo payload: retorna o resultado cacheado sem reexecutar a operação;
-- mesmo `request_id` + payload diferente: conflito (`65`);
-- cache persistente fica root-only em `/var/lib/manager/automation-v2/idempotency/`.
+- mesmo principal + mesma ação + mesmo payload normalizado: replay idempotente;
+- mesmo `request_id` com principal/payload diferente: conflito `65`;
+- principal desabilitado é negado **antes** da consulta ao cache;
+- cache root-only em `/var/lib/manager/automation-v2/idempotency/`.
 
-Segredos são **one-shot**. Uma senha SSH gerada aparece apenas na primeira resposta. O cache de idempotência é sanitizado antes de ser gravado e não guarda nem reproduz o segredo em retries.
+Segredos são **one-shot**. Uma senha SSH gerada aparece somente na primeira resposta; o cache persistente é sanitizado e não permite recuperá-la depois.
 
-### Auditoria
+### Auditoria RBAC
 
 ```text
 /var/log/manager/automation-v2-audit.jsonl
 ```
 
-O audit registra somente metadados de operação (`request_id`, ação, UID local, código, sucesso/cache). Senhas, chaves privadas e stdout da criação não entram no audit.
-
-### Limites intencionais da 0.7.1
+O audit registra metadados, principal efetivo e decisão:
 
 ```text
-remote_transport=0
-rbac=0
-cryptographic_auth=0
-anti_replay=0
-rate_limit=0
+principal_id
+principal_role
+principal_subject
+rbac_decision=allow|deny
+rbac_reason
 ```
 
-Esses itens pertencem às próximas etapas da série 0.7. Não são anunciados como prontos.
+Senha, chave privada e stdout sensível não entram no audit.
+
+### Importante: `--principal` ainda não é autenticação remota
+
+Na 0.7.2:
+
+```bash
+managerctl --principal loja01 ...
+```
+
+é uma asserção aceita apenas porque o chamador já é root local em um socket `0600`. Nenhuma integração remota deve ser considerada autenticada apenas por fornecer esse texto.
+
+A **0.7.3** adicionará identidade criptográfica/enrollment e vinculará a chave autenticada ao `principal_id`.
 
 Documentação: [`docs/AUTOMATION_V2.md`](docs/AUTOMATION_V2.md).
 
@@ -232,7 +306,7 @@ manager-uninstall
 manager-uninstall --purge
 ```
 
-Uninstall normal fecha listeners/sockets e remove código, mas preserva estado durável para reinstalação. O purge remove também o estado do MANAGER.
+Uninstall normal fecha listeners/sockets e remove código, mas preserva estado durável — incluindo principals da Automation v2 — para reinstalação. O purge remove também o estado do MANAGER.
 
 ## Segurança
 
@@ -240,11 +314,14 @@ Uninstall normal fecha listeners/sockets e remove código, mas preserva estado d
 - Squid sem `http_access allow all`;
 - credenciais VPN com permissões restritas;
 - provisionamento não registra senha/chaves privadas no audit log;
-- cache de idempotência da Automation v2 nunca persiste senha gerada;
+- cache de idempotência nunca persiste senha gerada;
 - ACL restrita de região/pool/nó falha fechada;
 - `manager-connection-actions-v1` não aceita shell, comando ou caminho arbitrário;
 - Legacy v1 usa conta não-root, SSH dedicado, `ForceCommand` e allowlist;
-- Automation v2 0.7.1 não abre porta TCP: socket Unix root-only.
+- Automation v2 não abre porta TCP na 0.7.2;
+- principal file precisa ser regular, root-owned e sem permissões de grupo/mundo;
+- RBAC é reavaliado antes do replay idempotente;
+- revenda desabilitada invalida o principal vinculado na próxima requisição.
 
 ## CLI principal
 
@@ -271,18 +348,21 @@ manager --node-set FIELD VALUE
 manager automation legacy status
 manager automation legacy enable [PORT]
 manager automation legacy disable
-managerctl describe
-managerctl ACTION [key=value ...] [--request-id ID]
+manager automation v2 status
+manager automation v2 principals
+manager automation v2 principal create ID ROLE SUBJECT [PRODUCTS]
+managerctl [--principal ID] ACTION [key=value ...] [--request-id ID]
 manager --diagnostics
 manager --version
 ```
 
-Contratos internos principais:
+Contratos/módulos internos principais:
 
 ```text
 /opt/manager/modules/connection_actions.sh
 /opt/manager/modules/node_usage.sh
 /opt/manager/modules/automation_legacy.sh
+/opt/manager/modules/automation_principals.sh
 /opt/manager/modules/automation_v2.sh
 ```
 
@@ -321,18 +401,36 @@ Plano detalhado: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 0.6.x  Connection/Policy/Session Engine completo                     ✅
 0.7.0  Automation Legacy v1                                          ✅
 0.7.1  Automation v2 — núcleo local estruturado                       ✅
-0.7.x  RBAC + autenticação/anti-replay/rate-limit                     próximo
-0.8.0  Modo Colmeia
-0.9.0  Telegram Bot + Mini App
+0.7.2  Principals + RBAC                                              ✅
+0.7.3  autenticação criptográfica + enrollment                        próximo
+0.7.4  anti-replay + rate limit + transporte remoto
+0.8.x  Modo Colmeia
+0.9.x  Telegram Bot + Mini App
 0.9.5  migração e escala
 1.0.0  release de produção
 ```
 
-A próxima etapa da série 0.7 é introduzir principals/RBAC e, depois, autenticação criptográfica, anti-replay, rate limiting e transporte remoto estruturado. Somente depois a fase 0.8 adiciona heartbeat, scheduler, drain/failover e autoridade global.
+A próxima etapa é **0.7.3: autenticação criptográfica + enrollment**. Somente depois vêm anti-replay/rate limiting/transporte remoto e, então, a fase 0.8 Colmeia com heartbeat, scheduler, drain/failover e autoridade global.
 
 ## Testes
 
-O CI cobre sintaxe/ShellCheck, regressões de segurança, install/update/rollback/uninstall, Connection/Policy/Session Engine, Protocol Lease Bridge, accounting, produtos/ACL, revenda, IPv6, metadados de nó, Legacy v1 e Automation v2 local — incluindo bloqueio de ação arbitrária, idempotência, conflito de `request_id`, cache sem segredo, auditoria sem senha e lifecycle de reinstall.
+O CI cobre, entre outros:
+
+- syntax/ShellCheck e regressões de segurança;
+- install/update/rollback/uninstall;
+- Connection/Policy/Session Engine e Protocol Lease Bridge;
+- accounting, produtos/ACL, revenda e IPv6;
+- Legacy v1;
+- Automation v2 Core;
+- principals root-only;
+- isolamento reseller/subreseller/user;
+- owner forçado no provisionamento de revenda;
+- escopo de produto;
+- `node.usage` admin-only;
+- disable/re-enable antes de replay idempotente;
+- conflito de `request_id` entre principals;
+- auditoria RBAC sem segredos;
+- persistência de principals após uninstall/reinstall.
 
 ## Origem
 
