@@ -94,13 +94,30 @@ identity_is_expired() {
 }
 
 identity_effective_state() {
-  local id="$1" enabled
+  local id="$1" enabled product_state
   enabled="$(identity_read "$id" enabled)"
   if [[ "$enabled" != 1 ]]; then
     printf 'disabled\n'
   elif identity_is_expired "$id"; then
     printf 'expired\n'
+  elif declare -F product_identity_state >/dev/null 2>&1; then
+    product_state="$(product_identity_state "$id")"
+    if [[ "$product_state" == active ]]; then
+      printf 'active\n'
+    else
+      printf '%s\n' "$product_state"
+    fi
   else
     printf 'active\n'
   fi
 }
+
+# A camada de produto é opcional para preservar rollback/compatibilidade com
+# versões anteriores. Quando instalada, acrescenta estado de plano/franquia à
+# identidade sem alterar o contrato base do Connection Engine.
+_product_policy_lib="${MANAGER_HOME:-/opt/manager}/lib/product_policy.sh"
+if [[ -r "$_product_policy_lib" ]]; then
+  # shellcheck source=/dev/null
+  source "$_product_policy_lib"
+fi
+unset _product_policy_lib
