@@ -37,6 +37,9 @@ fi
 if [[ -x "$INSTALL_DIR/modules/products.sh" ]]; then
   "$INSTALL_DIR/modules/products.sh" --detach >/dev/null 2>&1 || true
 fi
+if [[ -x "$INSTALL_DIR/modules/ipv6_guard.sh" ]]; then
+  "$INSTALL_DIR/modules/ipv6_guard.sh" --detach >/dev/null 2>&1 || true
+fi
 if [[ -x "$INSTALL_DIR/modules/protocol_leases.sh" ]]; then
   "$INSTALL_DIR/modules/protocol_leases.sh" --detach >/dev/null 2>&1 || true
 fi
@@ -78,6 +81,15 @@ if [[ -x "$INSTALL_DIR/modules/policy_engine.sh" ]]; then
 fi
 if [[ -x "$INSTALL_DIR/modules/protocol_leases.sh" ]]; then
   "$INSTALL_DIR/modules/protocol_leases.sh" --install >/dev/null 2>&1 || true
+fi
+if [[ -x "$INSTALL_DIR/modules/ipv6_guard.sh" ]]; then
+  "$INSTALL_DIR/modules/ipv6_guard.sh" --install >/dev/null 2>&1 || true
+else
+  systemctl disable --now manager-ipv6-guard.timer >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-ipv6-guard.timer \
+    /etc/systemd/system/manager-ipv6-guard.service
+  rm -rf /run/manager-ipv6-guard
+  systemctl daemon-reload || true
 fi
 if [[ -x "$INSTALL_DIR/modules/identity_usage.sh" ]]; then
   "$INSTALL_DIR/modules/identity_usage.sh" --install >/dev/null 2>&1 || true
