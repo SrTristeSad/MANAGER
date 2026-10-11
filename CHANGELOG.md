@@ -4,6 +4,57 @@ Todas as mudanças relevantes do MANAGER serão registradas aqui.
 
 O projeto usa versionamento semântico (`MAJOR.MINOR.PATCH`) enquanto a API/estrutura ainda está evoluindo.
 
+## [0.6.5] - 2026-10-10
+
+### Produtos, planos e política efetiva
+
+- Novo `products.sh` cria um catálogo de produtos/planos separado das credenciais técnicas de SSH, WireGuard e OpenVPN.
+- Produtos podem restringir protocolos, duração, expiração e `max_sessions` de uma identidade MANAGER.
+- Antes da atribuição, o MANAGER preserva `base_max_sessions`, `base_protocols` e `base_expires_epoch`; ao desvincular o produto, esses valores são restaurados.
+- Protocolos do produto funcionam como interseção com a política base e nunca ampliam silenciosamente os privilégios da identidade.
+- Atualização de produto reaplica a política às identidades vinculadas e recusa uma alteração que deixaria uma delas sem protocolo compatível.
+- Produto desabilitado adiciona o estado efetivo `product-disabled`, reaproveitando o mesmo caminho de enforcement do Policy/Session Engine.
+
+### ACL e Colmeia
+
+- Produtos ganharam ACL de `region`, `pool` e `node`, além da restrição de protocolo.
+- Novo contrato `products.sh --authorize ID PROTOCOL REGION POOL NODE` valida estado, protocolo e as três dimensões de destino.
+- A restrição de protocolo já é aplicada automaticamente na identidade local.
+- ACL de região/pool/nó fica preparada para receber o contexto automático de endpoint quando os metadados de nó/região forem adicionados antes da Colmeia.
+
+### Franquias de tráfego
+
+- Produtos podem definir `traffic_quota_bytes`, ciclo `monthly` ou `lifetime` e ação `warn` ou `block`.
+- A atribuição usa o acumulado atual como baseline, evitando cobrar tráfego anterior ao plano.
+- Reset administrativo da franquia avança somente o baseline; o histórico consolidado do Identity Usage não é apagado.
+- Em `warn`, o excesso permanece visível sem bloquear a identidade.
+- Em `block`, uma identidade com accounting completo passa para `quota-exceeded`, que é consumido pelo Policy e Session Engine.
+- Franquia mensal muda de ciclo em UTC e o reconciliador estabelece um novo baseline na primeira execução do novo mês.
+- Identidades com SSH vinculado podem mostrar excesso, mas recebem `quota_enforceable=0` enquanto bytes SSH não forem medidos de forma confiável, evitando bloqueio por accounting parcial.
+
+### CLI, persistência e lifecycle
+
+- Novos comandos `manager --products`, `manager --product ID` e `manager --product-assignment ID`.
+- Novo menu `Produtos, planos, ACL e franquias`.
+- Catálogo e vínculos ficam em `/etc/manager/connection/products`; baselines/estado de franquia ficam em `/etc/manager/connection/product-usage`.
+- Esse estado usa o backup já existente do Connection Engine e é preservado no uninstall normal.
+- Novo `manager-product-policy.timer` reconcilia produtos e franquias periodicamente.
+- Rollback desanexa o reconciliador antes da troca de código e só o reinstala quando a versão restaurada possui o módulo.
+- `--purge` remove explicitamente produtos, ACL e estado de franquia junto com `/etc/manager`.
+
+### Testes e documentação
+
+- Nova documentação `docs/PRODUCTS.md` detalha política base/efetiva, ACL, franquia, `warn/block`, segurança do accounting SSH e lifecycle.
+- CI dedicado cobre atribuição, ACL, limite `max_sessions`, franquia medida, `quota-exceeded`, `warn`, produto desabilitado, SSH parcial, restauração da política base, uninstall/reinstall e purge.
+- Shell CI, Identity Usage e Protocol Lease Security continuam executando em paralelo para detectar regressões cruzadas.
+
+### Limites desta etapa
+
+- A franquia e a autoridade continuam locais a uma VPS; não são faturamento nem cota global da Colmeia.
+- Cotas de revendedor ainda usam o modelo anterior e serão migradas para produto/identidade em etapa própria.
+- ACL de região/pool/nó possui contrato pronto, mas ainda depende da futura passagem automática de metadados do nó para cada autorização.
+- Byte accounting de SSH continua fora do enforcement de franquia até existir uma medição confiável por sessão.
+
 ## [0.6.4] - 2026-10-10
 
 ### Identity Usage Accounting
