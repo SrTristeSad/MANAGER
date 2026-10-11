@@ -19,6 +19,14 @@ first_line() {
   printf '%s' "$line"
 }
 
+helper_owned() {
+  local line1="" line2=""
+  [[ -f "$HELPER" && ! -L "$HELPER" ]] || return 1
+  IFS= read -r line1 < "$HELPER" || true
+  line2="$(sed -n '2p' "$HELPER" 2>/dev/null || true)"
+  [[ "$line1" == '#!/usr/bin/env bash' && "$line2" == "$HELPER_MARKER" ]]
+}
+
 refuse_external() {
   local file="$1" marker="$2"
   [[ -e "$file" || -L "$file" ]] || return 0
@@ -33,7 +41,12 @@ refuse_external() {
 }
 
 write_helper() {
-  refuse_external "$HELPER" "$HELPER_MARKER" || return $?
+  if [[ -e "$HELPER" || -L "$HELPER" ]]; then
+    helper_owned || {
+      err "Recusando substituir helper que não pertence ao MANAGER: $HELPER"
+      return 65
+    }
+  fi
   install -d -m 0755 /usr/local/libexec
   local tmp
   tmp="$(mktemp /usr/local/libexec/.manager-hive-lifecycle.XXXXXX)"
@@ -49,7 +62,6 @@ SELF="/usr/local/libexec/manager-hive-lifecycle"
 WG_CONF="/etc/wireguard/mgh0.conf"
 WG_OWNER="/etc/manager/hive/network/mgh0.owner"
 WG_MARKER="# MANAGER-HIVE-NETWORK v1"
-OWNER_OK=0
 
 owned_runtime() {
   local first="" owner="" iface=""
@@ -90,7 +102,6 @@ case "${1:-}" in
     if ! systemctl is-enabled --quiet manager-automation-v2.service >/dev/null 2>&1; then
       rm -f "$DROPIN_FILE" "$SELF"
       rmdir /etc/systemd/system/manager-automation-v2.service.d 2>/dev/null || true
-      systemctl daemon-reload >/dev/null 2>&1 || true
     fi
     ;;
   *)
@@ -98,18 +109,8 @@ case "${1:-}" in
     ;;
 esac
 EOF
-  # marker precisa ser a primeira linha depois do shebang para execução; a
-  # ownership check aceita também a segunda linha explicitamente abaixo.
   install -m 0755 "$tmp" "$HELPER"
   rm -f "$tmp"
-}
-
-helper_owned() {
-  local line1="" line2=""
-  [[ -f "$HELPER" && ! -L "$HELPER" ]] || return 1
-  IFS= read -r line1 < "$HELPER" || true
-  line2="$(sed -n '2p' "$HELPER" 2>/dev/null || true)"
-  [[ "$line1" == '#!/usr/bin/env bash' && "$line2" == "$HELPER_MARKER" ]]
 }
 
 write_dropin() {
