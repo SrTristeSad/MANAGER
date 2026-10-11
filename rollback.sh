@@ -34,8 +34,9 @@ read -r -p "Restaurar o código anterior? [s/N]: " answer
 if [[ -x "$INSTALL_DIR/modules/automation_v2.sh" ]]; then
   "$INSTALL_DIR/modules/automation_v2.sh" --detach >/dev/null 2>&1 || true
 else
-  systemctl disable --now manager-automation-v2.service >/dev/null 2>&1 || true
-  rm -f /etc/systemd/system/manager-automation-v2.service
+  systemctl disable --now manager-automation-v2-remote.service manager-automation-v2.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-automation-v2-remote.service \
+    /etc/systemd/system/manager-automation-v2.service
   rm -rf /run/manager-automation-v2
   systemctl daemon-reload >/dev/null 2>&1 || true
 fi
@@ -132,8 +133,9 @@ fi
 if [[ -x "$INSTALL_DIR/modules/automation_v2.sh" ]]; then
   "$INSTALL_DIR/modules/automation_v2.sh" --install >/dev/null 2>&1 || true
 else
-  systemctl disable --now manager-automation-v2.service >/dev/null 2>&1 || true
-  rm -f /etc/systemd/system/manager-automation-v2.service
+  systemctl disable --now manager-automation-v2-remote.service manager-automation-v2.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-automation-v2-remote.service \
+    /etc/systemd/system/manager-automation-v2.service
   rm -rf /run/manager-automation-v2
   systemctl daemon-reload >/dev/null 2>&1 || true
 fi
