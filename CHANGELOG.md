@@ -4,6 +4,47 @@ Todas as mudanças relevantes do MANAGER serão registradas aqui.
 
 O projeto usa versionamento semântico (`MAJOR.MINOR.PATCH`) enquanto a API/estrutura ainda está evoluindo.
 
+## [0.6.4] - 2026-10-10
+
+### Identity Usage Accounting
+
+- Novo `identity_usage.sh` consolida tráfego e atividade em torno da identidade MANAGER, em vez de manter métricas isoladas por protocolo.
+- WireGuard passa a alimentar o accounting usando os contadores reais de transferência de cada peer vinculado.
+- OpenVPN passa a alimentar o accounting usando `Bytes Received` e `Bytes Sent` do status do servidor, com suporte aos formatos moderno e legado do arquivo de status.
+- Bytes recebidos pelo servidor são tratados como upload da identidade; bytes enviados pelo servidor são tratados como download.
+- A primeira observação de cada fonte vira baseline e não é somada retroativamente, evitando transformar tráfego anterior à ativação do coletor em consumo novo.
+- Quando um daemon/interface reinicia e o contador absoluto diminui, o valor atual passa a ser tratado como delta após o reset, preservando o acumulado histórico.
+- Totais gerais e por protocolo são persistidos em `/var/lib/manager/identity-usage/identities` com arquivos `0600`.
+- Snapshots usados apenas para calcular deltas ficam separados em `/var/lib/manager/identity-usage/sources`.
+
+### Sessões, atividade e cobertura
+
+- Heartbeats de leases reais alimentam `last_activity`, `last_protocol` e `last_resource` da identidade.
+- SSH participa da visão de sessão e última atividade, mas a 0.6.4 não contabiliza bytes SSH usando tráfego genérico do UID Linux, pois isso poderia misturar processos fora da sessão.
+- Novo indicador `traffic_complete` diferencia identidades cujo tráfego vinculado é completamente mensurável das que possuem SSH e, portanto, têm accounting de bytes parcial.
+- A saída expõe explicitamente `metered_protocols=wireguard,openvpn` e `ssh_bytes_supported=0` para impedir interpretação falsa dos totais.
+
+### CLI, lifecycle e backup
+
+- Novo comando `manager --usage [ID]` para listar ou detalhar uso, sessões e última atividade por identidade.
+- Novo menu `Uso e atividade por identidade`, também acessível pelo módulo `Tráfego e conexões`.
+- Novas unidades `manager-identity-usage.service` e `.timer` fazem coleta periódica a cada 30 segundos.
+- Uninstall normal remove somente as unidades do coletor e preserva o histórico consolidado; `--purge` remove também `/var/lib/manager/identity-usage`.
+- Rollback desanexa o coletor antes da troca de código e o reinstala somente se a versão restaurada possuir o módulo.
+- Backup principal transporta apenas os acumulados consolidados; snapshots/baselines do nó de origem ficam fora do arquivo para não contaminar uma restauração em outra VPS.
+- Após restore, o coletor cria baselines locais novos para as fontes disponíveis.
+
+### Testes e documentação
+
+- Nova documentação `docs/IDENTITY_USAGE.md` descreve semântica de upload/download, baseline, reset de contador, persistência, cobertura parcial de SSH e limites da etapa.
+- CI dedicado valida baseline inicial, deltas, reset de contador, rejeição de recurso não vinculado, persistência através de uninstall/reinstall e remoção no purge.
+- O parser de atividade de leases passou a identificar campos por nome, reduzindo acoplamento à ordem textual da saída do Session Engine.
+
+### Limite desta etapa
+
+- O accounting da 0.6.4 é local à VPS e ainda não é um sistema global de cobrança/franquia.
+- Períodos de faturamento, limites de bytes, ações ao atingir cota, histórico diário/mensal e agregação multi-nó ficam para as próximas etapas sobre produto/plano e Colmeia.
+
 ## [0.6.3] - 2026-10-10
 
 ### Protocol Lease Bridge
