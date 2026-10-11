@@ -31,7 +31,9 @@ service_name() { printf 'openvpn-server@%s' "$OVPN_NAME"; }
 
 state_value() {
   local key="$1"
-  [[ -f "$STATE_DIR/$key" ]] && tr -d '[:space:]' < "$STATE_DIR/$key" || true
+  if [[ -f "$STATE_DIR/$key" ]]; then
+    tr -d '[:space:]' < "$STATE_DIR/$key"
+  fi
 }
 
 ipv6_enabled() { [[ "$(state_value ipv6-enabled)" == 1 ]]; }
@@ -99,21 +101,12 @@ install_server() {
   read -r -p "Transporte [udp/tcp] (udp): " transport
   transport="${transport:-udp}"
   [[ "$transport" == udp || "$transport" == tcp ]] || { err "Protocolo inválido"; pause; return; }
-  if port_busy "$port" "$transport"; then
-    err "A porta $port/$transport já está em uso."
-    pause
-    return
-  fi
+  if port_busy "$port" "$transport"; then err "A porta $port/$transport já está em uso."; pause; return; fi
   if [[ "$transport" == tcp ]]; then server_proto="tcp-server"; else server_proto="udp"; fi
 
   iface="$(ip -4 route show default | awk 'NR==1 {print $5}')"
   [[ -n "$iface" ]] || { err "Não encontrei a interface de saída IPv4 padrão"; pause; return; }
-  if ipv6_egress_available; then
-    iface6="$(ipv6_default_interface)"
-    ipv6=1
-  else
-    iface6=""
-  fi
+  if ipv6_egress_available; then iface6="$(ipv6_default_interface)"; ipv6=1; else iface6=""; fi
   endpoint="$(curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null || curl -6fsS --max-time 5 https://api64.ipify.org 2>/dev/null || true)"
   read -r -p "IP/domínio público do servidor [$endpoint]: " endpoint_in
   endpoint="${endpoint_in:-$endpoint}"
@@ -187,10 +180,8 @@ status /run/openvpn/manager-status.log
 verb 3
 EOF
   if (( ipv6 == 1 )); then
-    {
-      printf 'server-ipv6 %s\n' "$VPN_NET6"
-      printf 'push "redirect-gateway ipv6"\n'
-    } >> "$OVPN_CONF"
+    printf 'server-ipv6 %s\n' "$VPN_NET6" >> "$OVPN_CONF"
+    printf 'push "redirect-gateway ipv6"\n' >> "$OVPN_CONF"
   fi
   chmod 0644 "$OVPN_CONF"
 
@@ -230,10 +221,7 @@ add_client() {
   file="$CLIENT_DIR/$name.ovpn"
   [[ ! -e "$file" ]] || { err "Cliente já existe"; pause; return; }
 
-  (
-    cd "$EASYRSA_DIR"
-    EASYRSA_BATCH=1 ./easyrsa build-client-full "$name" nopass
-  )
+  ( cd "$EASYRSA_DIR"; EASYRSA_BATCH=1 ./easyrsa build-client-full "$name" nopass )
   endpoint="$(cat "$STATE_DIR/endpoint")"
   port="$(cat "$STATE_DIR/port")"
   transport="$(cat "$STATE_DIR/transport")"
@@ -315,17 +303,9 @@ revoke_client() {
   read -r -p "Cliente para revogar: " name
   meta="$META_DIR/$name.meta"
   [[ -f "$meta" ]] || { err "Cliente não encontrado"; pause; return; }
-  if grep -q '^status=revoked$' "$meta"; then
-    warn "Cliente já revogado"
-    pause
-    return
-  fi
+  if grep -q '^status=revoked$' "$meta"; then warn "Cliente já revogado"; pause; return; fi
   confirm "Revogar permanentemente o certificado de $name?" || return
-  (
-    cd "$EASYRSA_DIR"
-    EASYRSA_BATCH=1 ./easyrsa revoke "$name"
-    EASYRSA_BATCH=1 EASYRSA_CRL_DAYS=3650 ./easyrsa gen-crl
-  )
+  ( cd "$EASYRSA_DIR"; EASYRSA_BATCH=1 ./easyrsa revoke "$name"; EASYRSA_BATCH=1 EASYRSA_CRL_DAYS=3650 ./easyrsa gen-crl )
   install -m 0644 "$EASYRSA_DIR/pki/crl.pem" "$CRL_FILE"
   sed -i 's/^status=.*/status=revoked/' "$meta"
   rm -f "$CLIENT_DIR/$name.ovpn"
@@ -387,12 +367,14 @@ enable_ipv6_existing() {
     write_ipv6_state 0 ""
     systemctl daemon-reload
     systemctl restart "$(service_name)" >/dev/null 2>&1 || true
-    rm -f "$conf_backup" "$override_backup" ${sysctl_backup:+"$sysctl_backup"}
+    rm -f "$conf_backup" "$override_backup"
+    [[ -z "$sysctl_backup" ]] || rm -f "$sysctl_backup"
     err "OpenVPN rejeitou a atualização IPv6; configuração anterior restaurada."
     pause
     return
   fi
-  rm -f "$conf_backup" "$override_backup" ${sysctl_backup:+"$sysctl_backup"}
+  rm -f "$conf_backup" "$override_backup"
+  [[ -z "$sysctl_backup" ]] || rm -f "$sysctl_backup"
   ok "OpenVPN atualizado para dual-stack em $VPN_NET6."
   pause
 }
