@@ -34,6 +34,7 @@ OVPN_RESTART_PENDING="$BRIDGE_RUNTIME/openvpn-lease-hook-pending-restart"
 OVPN_GROUP="manager-openvpn"
 LEASE_TTL="${MANAGER_PROTOCOL_LEASE_TTL:-60}"
 WG_ACTIVE_WINDOW="${MANAGER_WG_ACTIVE_WINDOW:-180}"
+ADOPTION_GRACE="${MANAGER_PROTOCOL_ADOPTION_GRACE:-10}"
 
 bridge_init() {
   identity_init
@@ -131,15 +132,24 @@ map_read_file() {
   awk -F= -v k="$key" '$1==k {sub(/^[^=]*=/,""); print; exit}' "$file" 2>/dev/null || true
 }
 
+map_in_adoption_grace() {
+  local file="$1" created now
+  created="$(map_read_file "$file" created_epoch)"
+  [[ "$created" =~ ^[0-9]+$ && "$ADOPTION_GRACE" =~ ^[0-9]+$ ]] || return 1
+  now="$(date +%s)"
+  (( now >= created && now - created <= ADOPTION_GRACE ))
+}
+
 token_value() {
   local token="$1" key="$2"
   printf '%s\n' "$token" | tr '\t' '\n' | awk -F= -v k="$key" '$1==k {print $2; exit}'
 }
 
 write_map() {
-  local protocol="$1" resource="$2" device="$3" identity="$4" session_id="$5" epoch="$6" source_pid="${7:-0}" remote="${8:--}" tty="${9:--}" file tmp
+  local protocol="$1" resource="$2" device="$3" identity="$4" session_id="$5" epoch="$6" source_pid="${7:-0}" remote="${8:--}" tty="${9:--}" file tmp now
   file="$(map_path "$protocol" "$device")"
   tmp="$(mktemp)"
+  now="$(date +%s)"
   {
     printf 'protocol=%s\n' "$protocol"
     printf 'resource=%s\n' "$resource"
@@ -147,6 +157,7 @@ write_map() {
     printf 'identity_id=%s\n' "$identity"
     printf 'session_id=%s\n' "$session_id"
     printf 'session_epoch=%s\n' "$epoch"
+    printf 'created_epoch=%s\n' "$now"
     printf 'source_pid=%s\n' "$source_pid"
     printf 'remote=%s\n' "$remote"
     printf 'tty=%s\n' "$tty"
@@ -292,7 +303,7 @@ reconcile_ssh() {
     pid="$(map_read_file "$file" source_pid)"
     tty="$(map_read_file "$file" tty)"
     remote="$(map_read_file "$file" remote)"
-    if { valid_pid "$pid" && kill -0 "$pid" 2>/dev/null; } || ssh_observed_present "$resource" "$tty" "$remote"; then
+    if { valid_pid "$pid" && kill -0 "$pid" 2>/dev/null; } || ssh_observed_present "$resource" "$tty" "$remote" || map_in_adoption_grace "$file"; then
       heartbeat_map "$file" || true
     else
       release_map_file "$file"
@@ -391,8 +402,12 @@ reconcile_openvpn() {
     [[ "$protocol" == openvpn ]] || continue
     client="$(map_read_file "$file" resource)"
     identity="$(map_read_file "$file" identity_id)"
-    if openvpn_client_present "$client" && heartbeat_map "$file"; then
-      clear_drop_rules openvpn "$identity" tun0
+    if openvpn_client_present "$client"; then
+      if heartbeat_map "$file"; then
+        clear_drop_rules openvpn "$identity" tun0
+      fi
+    elif map_in_adoption_grace "$file"; then
+      heartbeat_map "$file" || true
     else
       release_map_file "$file"
     fi
