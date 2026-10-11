@@ -89,6 +89,7 @@ FILES=(
   "modules/node_usage.sh"
   "modules/hive_identity.sh"
   "modules/hive_network.sh"
+  "modules/hive_lifecycle.sh"
   "modules/products.sh"
   "modules/provision.sh"
   "modules/connection_actions.sh"
@@ -239,6 +240,9 @@ fi
 }
 "$INSTALL_DIR/modules/automation_v2.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O Automation v2 local não pôde iniciar. Revise: systemctl status manager-automation-v2" >&2
+}
+"$INSTALL_DIR/modules/hive_lifecycle.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] A rede da Colmeia iniciou, mas não pôde se vincular ao lifecycle de uninstall/rollback. Revise: /opt/manager/modules/hive_lifecycle.sh --status" >&2
 }
 if [[ -d "$ETC_DIR/proxy" ]]; then
   "$INSTALL_DIR/modules/proxies.sh" --reconcile >/dev/null 2>&1 || true
