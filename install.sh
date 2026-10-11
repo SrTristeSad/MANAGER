@@ -63,7 +63,7 @@ esac
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y curl ca-certificates iproute2 iputils-ping procps passwd login coreutils gawk sed grep tar util-linux dnsutils openssh-client libpam-modules python3 openssl
+apt-get install -y curl ca-certificates iproute2 iputils-ping procps passwd login coreutils gawk sed grep tar util-linux dnsutils openssh-client libpam-modules python3 openssl wireguard-tools
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -88,6 +88,7 @@ FILES=(
   "modules/node_metadata.sh"
   "modules/node_usage.sh"
   "modules/hive_identity.sh"
+  "modules/hive_network.sh"
   "modules/products.sh"
   "modules/provision.sh"
   "modules/connection_actions.sh"
@@ -205,6 +206,9 @@ chmod 0644 "$ETC_DIR/installed-version"
 "$INSTALL_DIR/modules/hive_identity.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] A identidade criptográfica do nó da Colmeia não pôde ser inicializada." >&2
 }
+"$INSTALL_DIR/modules/hive_network.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] A rede privada da Colmeia não pôde ser inicializada/reconciliada. Use: manager hive network status" >&2
+}
 "$INSTALL_DIR/modules/resellers.sh" --init >/dev/null
 "$INSTALL_DIR/modules/automation_principals.sh" --init >/dev/null
 "$INSTALL_DIR/modules/automation_credentials.sh" --init >/dev/null
@@ -253,6 +257,7 @@ echo "Proxies:     manager --proxy-status"
 echo "Identidades: manager --identities"
 echo "Nó:          manager --node"
 echo "Colmeia:     manager hive status"
+echo "Rede Colmeia: manager hive network status"
 echo "Produtos:    manager --products"
 echo "Provisionar: manager --provision ID PLANO"
 echo "Sessões ID:  manager --identity-sessions"
