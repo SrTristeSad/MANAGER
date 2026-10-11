@@ -1,0 +1,113 @@
+name: Unified Provisioning
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  provisioning:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo test -x /opt/manager/modules/provision.sh
+
+      - name: Provision an SSH identity from a product
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/products.sh --create ci-basic 'CI Basic' 1 7 2 ssh 0 none warn '*' '*' '*'
+          sudo /opt/manager/modules/provision.sh --preflight ci-prov ci-basic '' ssh > /tmp/preflight.log
+          grep -q '^status=ready$' /tmp/preflight.log
+          grep -q '^protocols=ssh$' /tmp/preflight.log
+
+          sudo /opt/manager/manager --provision ci-prov ci-basic '' ssh > /tmp/provision.log
+          grep -q '^status=ok$' /tmp/provision.log
+          grep -q '^identity_id=ci-prov$' /tmp/provision.log
+          grep -q '^product_id=ci-basic$' /tmp/provision.log
+          grep -q '^protocols=ssh$' /tmp/provision.log
+          grep -q '^max_sessions=2$' /tmp/provision.log
+          grep -Eq '^ssh_password=[0-9a-f]{32}$' /tmp/provision.log
+
+          id ci-prov
+          test "$(sudo passwd -S ci-prov | awk '{print $2}')" = P
+          sudo /opt/manager/manager --identity ci-prov > /tmp/identity.log
+          grep -q '^state=active$' /tmp/identity.log
+          grep -q '^ssh_user=ci-prov$' /tmp/identity.log
+          grep -q '^max_sessions=2$' /tmp/identity.log
+          sudo /opt/manager/manager --product-assignment ci-prov > /tmp/assignment.log
+          grep -q '^product_id=ci-basic$' /tmp/assignment.log
+          grep -q '^effective_protocols=ssh$' /tmp/assignment.log
+          expires="$(awk -F= '$1=="effective_expires_epoch"{print $2}' /tmp/assignment.log)"
+          test "$expires" -gt "$(date +%s)"
+
+      - name: Reject duplicates without corrupting the existing identity
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if sudo /opt/manager/manager --provision ci-prov ci-basic '' ssh; then
+            echo 'Duplicate provisioning unexpectedly succeeded.' >&2
+            exit 1
+          fi
+          id ci-prov
+          sudo /opt/manager/manager --identity ci-prov | grep -q '^state=active$'
+
+      - name: Fail preflight before creating unavailable VPN resources
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/products.sh --create ci-wg 'CI WireGuard' 1 0 1 wireguard 0 none warn '*' '*' '*'
+          if sudo /opt/manager/modules/provision.sh --preflight ci-no-wg ci-wg '' wireguard; then
+            echo 'WireGuard preflight succeeded without a MANAGER WireGuard server.' >&2
+            exit 1
+          fi
+          if sudo /opt/manager/manager --identity ci-no-wg; then
+            echo 'Failed preflight left an identity behind.' >&2
+            exit 1
+          fi
+
+      - name: Revoke all provisioned access but preserve logical identity
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/manager --revoke-identity ci-prov > /tmp/revoke.log
+          grep -q '^status=revoked$' /tmp/revoke.log
+          grep -q '^state=disabled$' /tmp/revoke.log
+          if id ci-prov >/dev/null 2>&1; then
+            echo 'SSH user survived identity revocation.' >&2
+            exit 1
+          fi
+          sudo /opt/manager/manager --identity ci-prov > /tmp/revoked-identity.log
+          grep -q '^state=disabled$' /tmp/revoked-identity.log
+          grep -q '^ssh_user=$' /tmp/revoked-identity.log
+          if sudo /opt/manager/manager --product-assignment ci-prov; then
+            echo 'Product assignment survived revocation.' >&2
+            exit 1
+          fi
+          sudo test -f /var/log/manager/provision-events.log
+          sudo grep -q 'action=provision id=ci-prov .* result=ok' /var/log/manager/provision-events.log
+          sudo grep -q 'action=revoke id=ci-prov .* result=ok' /var/log/manager/provision-events.log
+          if sudo grep -q 'ssh_password' /var/log/manager/provision-events.log; then
+            echo 'Provision log leaked an SSH password field.' >&2
+            exit 1
+          fi
+
+      - name: Preserve revoked identity through normal uninstall
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/uninstall.sh
+          sudo test -f /etc/manager/connection/identities/ci-prov.conf
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo /opt/manager/manager --identity ci-prov | grep -q '^state=disabled$'
