@@ -72,7 +72,8 @@ jobs:
           set -euxo pipefail
           state=/var/lib/manager/identity-usage/identities/ci-usage.state
           sudo test -f "$state"
-          grep -q '^total_bytes=1150$' <(sudo cat "$state")
+          sudo grep -q '^download_bytes=800$' "$state"
+          sudo grep -q '^upload_bytes=350$' "$state"
 
           sudo /opt/manager/uninstall.sh
           sudo test -f "$state"
@@ -82,6 +83,8 @@ jobs:
           source_url="file://${GITHUB_WORKSPACE}"
           sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
           sudo /opt/manager/manager --usage ci-usage > /tmp/usage-restored.log
+          grep -q '^download_bytes=800$' /tmp/usage-restored.log
+          grep -q '^upload_bytes=350$' /tmp/usage-restored.log
           grep -q '^total_bytes=1150$' /tmp/usage-restored.log
 
       - name: Purge usage history
