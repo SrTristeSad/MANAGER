@@ -45,6 +45,26 @@ remove_protocol_pam_fallback() {
   rm -f "$tmp"
 }
 
+# Legacy v1 usa um listener SSH dedicado. Ele sempre sai antes do código para
+# que uninstall/rollback nunca deixem uma porta aberta apontando para comando ausente.
+if [[ -x /opt/manager/modules/automation_legacy.sh ]]; then
+  /opt/manager/modules/automation_legacy.sh --detach >/dev/null 2>&1 || true
+else
+  systemctl disable --now manager-automation-legacy.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-automation-legacy.service \
+    /etc/ssh/sshd_config.d/64-manager-automation-legacy.conf
+  if id manager-legacy >/dev/null 2>&1; then
+    passwd -l manager-legacy >/dev/null 2>&1 || true
+  fi
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  if command -v sshd >/dev/null 2>&1; then
+    install -d -m 0755 /run/sshd
+    if sshd -t; then
+      systemctl reload ssh >/dev/null 2>&1 || systemctl reload sshd >/dev/null 2>&1 || true
+    fi
+  fi
+fi
+
 # O histórico consolidado de uso é persistente. A unidade precisa sair antes
 # do código; os dados permanecem em /var/lib sem --purge.
 if [[ -x /opt/manager/modules/identity_usage.sh ]]; then
@@ -168,6 +188,12 @@ if $PURGE; then
     done
   fi
 
+  if id manager-legacy >/dev/null 2>&1; then
+    pkill -KILL -u manager-legacy >/dev/null 2>&1 || true
+    userdel -r manager-legacy >/dev/null 2>&1 || userdel manager-legacy >/dev/null 2>&1 || true
+  fi
+  rm -rf /var/lib/manager-legacy
+
   systemctl disable --now manager-test-users.timer >/dev/null 2>&1 || true
   rm -f /etc/systemd/system/manager-test-users.timer /etc/systemd/system/manager-test-users.service
 
@@ -214,6 +240,7 @@ if $PURGE; then
   rm -f /etc/ssh/sshd_config.d/99-manager.conf
   rm -f /etc/ssh/sshd_config.d/70-manager-banner.conf
   rm -f /etc/ssh/sshd_config.d/65-manager-identity-policy.conf
+  rm -f /etc/ssh/sshd_config.d/64-manager-automation-legacy.conf
   rm -f /etc/security/limits.d/99-manager-ssh.conf /etc/security/limits.d/98-manager-identity.conf
   rm -f /etc/sysctl.d/99-manager-wireguard.conf \
     /etc/sysctl.d/99-manager-openvpn.conf \
@@ -265,11 +292,12 @@ echo "[OK] Código do MANAGER removido."
 if ! $PURGE; then
   echo "As configurações em /etc/manager e serviços configurados foram preservados."
   echo "Produtos, vínculos, ACL e estado de franquia foram preservados no Connection Engine."
+  echo "A configuração do Automation Legacy foi preservada, mas seu listener foi fechado e a conta de integração ficou bloqueada."
   echo "O histórico consolidado de uso em /var/lib/manager/identity-usage foi preservado."
   echo "Leases runtime e regras runtime do IPv6 Guard foram descartadas; estado persistente permanece para reinstalação."
   echo "Hooks PAM/OpenVPN e o bridge de protocolos foram desanexados antes da remoção do código."
   echo "O enforcement de identidades foi desanexado junto com o código e volta a ser aplicado numa reinstalação."
   echo "Execute manager-uninstall --purge somente se quiser remover também as configurações e o histórico do MANAGER."
 else
-  echo "Configurações, produtos, ACL, franquias, histórico de uso e unidades próprias do MANAGER removidos. Forwarding IPv4/IPv6 anterior foi restaurado quando conhecido."
+  echo "Configurações, automação, produtos, ACL, franquias, histórico de uso e unidades próprias do MANAGER removidos. Forwarding IPv4/IPv6 anterior foi restaurado quando conhecido."
 fi
