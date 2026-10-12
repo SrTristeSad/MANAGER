@@ -26,29 +26,21 @@ jobs:
           s = p.read_text()
 
           replacements = [
-              ('[[ "$binding" == "$id" ]] && id "$binding" >/dev/null 2>&1 || {',
-               'id "$binding" >/dev/null 2>&1 || {'),
-              ('[[ "$binding" == "$id" && -f "$WG_CLIENT_DIR/$binding.conf" && -f "$WG_CLIENT_DIR/$binding.meta" ]] || {',
-               '[[ -f "$WG_CLIENT_DIR/$binding.conf" && -f "$WG_CLIENT_DIR/$binding.meta" ]] || {'),
-              ('[[ "$binding" == "$id" && -f "$OVPN_CLIENT_DIR/$binding.ovpn" && -f "$OVPN_META_DIR/$binding.meta" ]] || {',
-               '[[ -f "$OVPN_CLIENT_DIR/$binding.ovpn" && -f "$OVPN_META_DIR/$binding.meta" ]] || {'),
-              ('        created=1\n      fi\n      ;;\n    wireguard)',
-               '        created=1\n        binding="$id"\n      fi\n      ;;\n    wireguard)'),
-              ('        created=1\n      fi\n      ;;\n    openvpn)',
-               '        created=1\n        binding="$id"\n      fi\n      ;;\n    openvpn)'),
-              ('        created=1\n      fi\n      ;;\n  esac',
-               '        created=1\n        binding="$id"\n      fi\n      ;;\n  esac'),
-              ('"$WG_CLIENT_DIR/$id.meta")"', '"$WG_CLIENT_DIR/$binding.meta")"'),
-              ('ssh) printf \'ssh_user=%s\\n\' "$id";', 'ssh) printf \'ssh_user=%s\\n\' "$binding";'),
-              ('wireguard) printf \'wireguard_client=%s\\nwireguard_ip=%s\\nwireguard_ipv4=%s\\nwireguard_ipv6=%s\\nwireguard_profile=%s\\n\' "$id" "${PROV_WG_IP:-}" "${PROV_WG_IP:-}" "${PROV_WG_IP6:-}" "$WG_CLIENT_DIR/$id.conf"',
-               'wireguard) printf \'wireguard_client=%s\\nwireguard_ip=%s\\nwireguard_ipv4=%s\\nwireguard_ipv6=%s\\nwireguard_profile=%s\\n\' "$binding" "${PROV_WG_IP:-}" "${PROV_WG_IP:-}" "${PROV_WG_IP6:-}" "$WG_CLIENT_DIR/$binding.conf"'),
-              ('openvpn) printf \'openvpn_client=%s\\nopenvpn_profile=%s\\n\' "$id" "$OVPN_CLIENT_DIR/$id.ovpn"',
-               'openvpn) printf \'openvpn_client=%s\\nopenvpn_profile=%s\\n\' "$binding" "$OVPN_CLIENT_DIR/$binding.ovpn"'),
+              ('[[ "$binding" == "$id" ]] && id "$binding" >/dev/null 2>&1 || {', 'id "$binding" >/dev/null 2>&1 || {', 1),
+              ('[[ "$binding" == "$id" && -f "$WG_CLIENT_DIR/$binding.conf" && -f "$WG_CLIENT_DIR/$binding.meta" ]] || {', '[[ -f "$WG_CLIENT_DIR/$binding.conf" && -f "$WG_CLIENT_DIR/$binding.meta" ]] || {', 1),
+              ('[[ "$binding" == "$id" && -f "$OVPN_CLIENT_DIR/$binding.ovpn" && -f "$OVPN_META_DIR/$binding.meta" ]] || {', '[[ -f "$OVPN_CLIENT_DIR/$binding.ovpn" && -f "$OVPN_META_DIR/$binding.meta" ]] || {', 1),
+              ('        created=1\n      fi\n      ;;\n    wireguard)', '        created=1\n        binding="$id"\n      fi\n      ;;\n    wireguard)', 1),
+              ('        created=1\n      fi\n      ;;\n    openvpn)', '        created=1\n        binding="$id"\n      fi\n      ;;\n    openvpn)', 1),
+              ('        created=1\n      fi\n      ;;\n  esac', '        created=1\n        binding="$id"\n      fi\n      ;;\n  esac', 1),
+              ('"$WG_CLIENT_DIR/$id.meta")"', '"$WG_CLIENT_DIR/$binding.meta")"', 2),
+              ('ssh) printf \'ssh_user=%s\\n\' "$id";', 'ssh) printf \'ssh_user=%s\\n\' "$binding";', 1),
+              ('wireguard) printf \'wireguard_client=%s\\nwireguard_ip=%s\\nwireguard_ipv4=%s\\nwireguard_ipv6=%s\\nwireguard_profile=%s\\n\' "$id" "${PROV_WG_IP:-}" "${PROV_WG_IP:-}" "${PROV_WG_IP6:-}" "$WG_CLIENT_DIR/$id.conf"', 'wireguard) printf \'wireguard_client=%s\\nwireguard_ip=%s\\nwireguard_ipv4=%s\\nwireguard_ipv6=%s\\nwireguard_profile=%s\\n\' "$binding" "${PROV_WG_IP:-}" "${PROV_WG_IP:-}" "${PROV_WG_IP6:-}" "$WG_CLIENT_DIR/$binding.conf"', 1),
+              ('openvpn) printf \'openvpn_client=%s\\nopenvpn_profile=%s\\n\' "$id" "$OVPN_CLIENT_DIR/$id.ovpn"', 'openvpn) printf \'openvpn_client=%s\\nopenvpn_profile=%s\\n\' "$binding" "$OVPN_CLIENT_DIR/$binding.ovpn"', 1),
           ]
-          for old, new in replacements:
+          for old, new, expected in replacements:
               count = s.count(old)
-              if count != 1:
-                  raise SystemExit(f'provision compatibility anchor mismatch ({count}): {old[:80]}')
+              if count != expected:
+                  raise SystemExit(f'provision compatibility anchor mismatch ({count}!={expected}): {old[:100]}')
               s = s.replace(old, new)
           p.write_text(s)
 
