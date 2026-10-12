@@ -43,12 +43,12 @@ jobs:
               body=text.split("python3 - \"$@\" <<'PY'\n",1)[1].rsplit('\nPY\n',1)[0]
               compile(body,name,'exec')
           PY
-      - name: Commit completed authority
+      - name: Commit completed authority code
         shell: bash
         run: |
           set -euxo pipefail
           git config user.name github-actions
           git config user.email github-actions@github.com
-          git add manager modules/protocol_leases.sh modules/hive_leases.sh .github/workflows/hive-scheduler.yml
+          git add manager modules/protocol_leases.sh modules/hive_leases.sh
           git commit -m 'feat: complete global lease authority contracts'
           git push origin HEAD:${{ github.head_ref }}
