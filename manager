@@ -103,6 +103,11 @@ Uso:
   manager hive login create ID PROTO OUT [REGION] [POOL] [STICKY] [SCOPE] [TTL]
   manager hive login result ALLOCATION_ID OUT
                                   allocation/login global assinado da Colmeia (0.8.5)
+  manager hive accounting status|enable|disable|sync [ID]
+  manager hive accounting controller status|list|show ID
+  manager hive accounting quota set ID PRODUCT BYTES PERIOD ACTION
+  manager hive accounting quota show ID|list|unset ID|import-local ID|sync-local
+                                  accounting/franquia global da Colmeia (0.8.6)
   manager automation legacy status
   manager automation legacy enable [PORT]
   manager automation legacy disable
@@ -374,6 +379,34 @@ case "${1:-}" in
             ;;
           result) [[ -n "${4:-}" && -n "${5:-}" ]] || { err "Uso: manager hive login result ALLOCATION_ID OUT"; exit 64; }; exec "$MANAGER_HOME/modules/hive_allocations.sh" --controller-result "$4" "$5" ;;
           *) err "Uso: manager hive login {create|result} ..."; exit 64 ;;
+        esac
+        ;;
+      accounting)
+        case "${3:-status}" in
+          status) exec "$MANAGER_HOME/modules/hive_accounting.sh" --status ;;
+          enable) exec "$MANAGER_HOME/modules/hive_accounting.sh" --node-enable ;;
+          disable) exec "$MANAGER_HOME/modules/hive_accounting.sh" --node-disable ;;
+          sync) exec "$MANAGER_HOME/modules/hive_accounting.sh" --sync "${4:-}" ;;
+          controller)
+            case "${4:-status}" in
+              status) exec "$MANAGER_HOME/modules/hive_accounting.sh" --controller-status ;;
+              list) exec "$MANAGER_HOME/modules/hive_accounting.sh" --controller-list ;;
+              show) [[ -n "${5:-}" ]] || { err "Uso: manager hive accounting controller show ID"; exit 64; }; exec "$MANAGER_HOME/modules/hive_accounting.sh" --controller-show "$5" ;;
+              *) err "Uso: manager hive accounting controller {status|list|show ID}"; exit 64 ;;
+            esac
+            ;;
+          quota)
+            case "${4:-list}" in
+              set) [[ -n "${5:-}" && -n "${6:-}" && -n "${7:-}" && -n "${8:-}" && -n "${9:-}" ]] || { err "Uso: manager hive accounting quota set ID PRODUCT BYTES PERIOD ACTION"; exit 64; }; exec "$MANAGER_HOME/modules/hive_accounting.sh" --quota-set "$5" "$6" "$7" "$8" "$9" ;;
+              show) [[ -n "${5:-}" ]] || { err "Uso: manager hive accounting quota show ID"; exit 64; }; exec "$MANAGER_HOME/modules/hive_accounting.sh" --quota-show "$5" ;;
+              list) exec "$MANAGER_HOME/modules/hive_accounting.sh" --quota-list ;;
+              unset) [[ -n "${5:-}" ]] || { err "Uso: manager hive accounting quota unset ID"; exit 64; }; exec "$MANAGER_HOME/modules/hive_accounting.sh" --quota-unset "$5" ;;
+              import-local) [[ -n "${5:-}" ]] || { err "Uso: manager hive accounting quota import-local ID"; exit 64; }; exec "$MANAGER_HOME/modules/hive_accounting.sh" --quota-import-local "$5" ;;
+              sync-local) exec "$MANAGER_HOME/modules/hive_accounting.sh" --quota-sync-local ;;
+              *) err "Uso: manager hive accounting quota {set|show|list|unset|import-local|sync-local} ..."; exit 64 ;;
+            esac
+            ;;
+          *) err "Uso: manager hive accounting {status|enable|disable|sync [ID]|controller ...|quota ...}"; exit 64 ;;
         esac
         ;;
       node)

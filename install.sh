@@ -93,6 +93,7 @@ FILES=(
   "modules/hive_scheduler.sh"
   "modules/hive_leases.sh"
   "modules/hive_allocations.sh"
+  "modules/hive_accounting.sh"
   "modules/hive_lifecycle.sh"
   "modules/products.sh"
   "modules/provision.sh"
@@ -226,6 +227,9 @@ chmod 0644 "$ETC_DIR/installed-version"
 "$INSTALL_DIR/modules/hive_allocations.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O estado de allocation 0.8.5 não pôde ser inicializado. Use: manager hive allocation status" >&2
 }
+"$INSTALL_DIR/modules/hive_accounting.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] O accounting global 0.8.6 não pôde ser reanexado. Use: manager hive accounting status" >&2
+}
 "$INSTALL_DIR/modules/resellers.sh" --init >/dev/null
 "$INSTALL_DIR/modules/automation_principals.sh" --init >/dev/null
 "$INSTALL_DIR/modules/automation_credentials.sh" --init >/dev/null
@@ -281,6 +285,7 @@ echo "Rede Colmeia: manager hive network status"
 echo "Saúde Colmeia: manager hive health status"
 echo "Scheduler:   manager hive node status"
 echo "Leases globais: manager hive lease status"
+echo "Accounting global: manager hive accounting status"
 echo "Produtos:    manager --products"
 echo "Provisionar: manager --provision ID PLANO"
 echo "Sessões ID:  manager --identity-sessions"

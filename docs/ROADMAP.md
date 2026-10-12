@@ -245,14 +245,20 @@ Adicionado no fechamento da fase:
 - WireGuard/OpenVPN devolvem o perfil gerenciado em base64 dentro do contrato;
 - release 0.8.5 fechada após o gate público de login/provisionamento e a regressão completa concluírem com sucesso.
 
-### 0.8.6 — quotas e accounting globais
+### 0.8.6 — quotas e accounting globais 🚧
 
-- ingestão idempotente de deltas por nó;
-- deduplicação;
-- franquia global;
-- telemetria local 0.6.11 continua não autoritativa sozinha;
-- proteção contra double counting após failover/reconnect;
-- quota e `max_sessions` permanecem autoridades distintas.
+Implementado na fundação desta fase:
+
+- cada nó envia snapshot cumulativo de uso por identidade pelo mesmo canal Ed25519 + TLS 1.3 pinado da autoridade de leases;
+- o controlador deriva deltas por `(node_id, identity_id, source_epoch)`, tornando redelivery/reconnect idempotente;
+- contador menor na mesma geração é recusado em vez de ser reinterpretado e contado novamente;
+- mudança explícita de geração cria novo baseline sem somar o snapshot inicial, protegendo contra double counting após reset;
+- uso de múltiplos nós é agregado em estado global root-only por identidade;
+- franquia global possui política própria por identidade/produto, com `monthly`/`lifetime` e ação `warn`/`block`;
+- grant/acquire global recusam novas sessões quando a franquia global `block` está excedida e a cobertura de bytes é completa;
+- identidade com SSH continua marcada como cobertura parcial (`ssh_bytes_supported=0`), portanto não recebe bloqueio incorreto por bytes não medidos;
+- telemetria local 0.6.11 continua não autoritativa sozinha: somente o estado agregado aceito pelo controlador é global;
+- quota global e `max_sessions_global` permanecem autoridades e estados distintos.
 
 ### 0.8.7 — failover e resiliência operacional
 

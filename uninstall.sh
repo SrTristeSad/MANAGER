@@ -45,6 +45,27 @@ remove_protocol_pam_fallback() {
   rm -f "$tmp"
 }
 
+# Accounting global 0.8.6 usa timer apenas no nó. Estado agregado, snapshots e
+# políticas de franquia sobrevivem ao uninstall normal; --purge remove tudo.
+if [[ -x /opt/manager/modules/hive_accounting.sh ]]; then
+  if $PURGE; then
+    /opt/manager/modules/hive_accounting.sh --purge >/dev/null 2>&1 || true
+  else
+    /opt/manager/modules/hive_accounting.sh --detach >/dev/null 2>&1 || true
+  fi
+else
+  systemctl disable --now manager-hive-accounting-sync.timer >/dev/null 2>&1 || true
+  systemctl stop manager-hive-accounting-sync.service >/dev/null 2>&1 || true
+  for unit in /etc/systemd/system/manager-hive-accounting-sync.service /etc/systemd/system/manager-hive-accounting-sync.timer; do
+    if [[ -f "$unit" ]] && grep -Fqx '# MANAGER-HIVE-GLOBAL-ACCOUNTING v1' "$unit" 2>/dev/null; then rm -f "$unit"; fi
+  done
+  if $PURGE; then
+    rm -rf /etc/manager/hive/accounting /etc/manager/hive/controller/accounting /var/lib/manager/hive-accounting
+    rm -f /var/log/manager/hive-accounting-audit.jsonl
+  fi
+  systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
 # Allocation 0.8.5 não possui daemon. Tickets/epochs sobrevivem ao uninstall normal
 # e são removidos apenas no purge, junto da autoridade global que os sustenta.
 if [[ -x /opt/manager/modules/hive_allocations.sh ]]; then
