@@ -877,3 +877,50 @@ manager hive login result ALLOCATION_ID /root/maria-login.json
 
 O comando de resultado informa apenas estado/metadados no terminal. O segredo fica no arquivo de saída criado com `0600` e o comando recusa sobrescrever um caminho existente. Para SSH já existente, o contrato retorna `credential_state=existing` e não tenta recuperar uma senha antiga; para WireGuard/OpenVPN, o perfil gerenciado é transportado em `credentials.profile_b64` com `profile_encoding=base64`.
 
+## 21. Accounting global — fundação 0.8.6
+
+A 0.8.6 adiciona uma autoridade global de **uso medido**, separada da autoridade de sessões. O nó continua coletando WireGuard/OpenVPN localmente com `identity_usage.sh`, mas esse estado isolado não é billing global. Quando o accounting da Colmeia está habilitado, cada nó enrolled envia snapshots cumulativos assinados pelo mesmo canal Ed25519 + TLS 1.3 pinado usado pelas leases.
+
+```bash
+manager hive accounting enable
+manager hive accounting status
+manager hive accounting sync        # opcional; timer executa periodicamente
+```
+
+O controlador mantém uma origem por `(node_id, identity_id)`. Dentro da mesma `source_epoch`, somente a diferença positiva entre o snapshot novo e o anterior entra no agregado. Reenvio idêntico produz delta zero; amostra stale ou regressão de contador é recusada. Se a geração do medidor mudar, o primeiro snapshot vira baseline e não é somado novamente.
+
+Estado persistente:
+
+```text
+/etc/manager/hive/controller/accounting/quotas/     políticas globais de franquia
+/var/lib/manager/hive-accounting/controller/sources/ snapshots aceitos por nó/identidade
+/var/lib/manager/hive-accounting/controller/identities/ agregado global
+/var/log/manager/hive-accounting-audit.jsonl        ingest/dedup/quota deny
+```
+
+### Franquia global
+
+A política é intencionalmente separada de `max_sessions_global`:
+
+```bash
+manager hive accounting quota set maria PREMIUM 107374182400 monthly block
+manager hive accounting quota show maria
+manager hive accounting quota list
+```
+
+Também é possível importar a franquia do produto local do controlador:
+
+```bash
+manager hive accounting quota import-local maria
+manager hive accounting quota sync-local
+```
+
+Quando uma política `block` está excedida **e** `traffic_complete=1`, novos grants/acquires são recusados com `global-traffic-quota-exceeded`. Isso não altera `max_sessions_global`, não revoga automaticamente uma sessão existente e não reutiliza o contador de sessões como contador de bytes.
+
+### Limite conhecido de SSH
+
+A coleta 0.6.11 mede bytes de WireGuard e OpenVPN. SSH registra sessão/atividade, mas não bytes (`ssh_bytes_supported=0`). Por isso uma identidade que ainda possui binding SSH é marcada como cobertura parcial e a franquia global não é usada para bloquear por bytes incompletos. O total agregado continua visível, mas `quota_enforceable=0` evita um falso positivo de billing.
+
+### Lifecycle
+
+O timer `manager-hive-accounting-sync.timer` é apenas um produtor de telemetria do nó. Uninstall normal o destaca e preserva configuração, snapshots globais, baselines e audit. `manager-uninstall --purge` remove o estado persistente da 0.8.6. O controlador continua fora do caminho de dados VPN.

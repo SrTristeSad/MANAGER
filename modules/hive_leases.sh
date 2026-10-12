@@ -58,6 +58,13 @@ LOCK_FILE = os.path.join(DATA_DIR, ".lock")
 AUDIT_FILE = os.environ.get("MANAGER_HIVE_LEASE_AUDIT_FILE", "/var/log/manager/hive-lease-audit.jsonl")
 ALLOCATION_OUTBOX_DIR = os.environ.get("MANAGER_HIVE_ALLOCATION_OUTBOX_DIR", "/var/lib/manager/hive-allocations/controller/outbox")
 ALLOCATION_RESULT_DIR = os.environ.get("MANAGER_HIVE_ALLOCATION_RESULT_DIR", "/var/lib/manager/hive-allocations/controller/results")
+ACCOUNTING_ETC = os.path.join(CTRL_DIR, "accounting")
+ACCOUNTING_QUOTA_DIR = os.path.join(ACCOUNTING_ETC, "quotas")
+ACCOUNTING_DATA_DIR = os.environ.get("MANAGER_HIVE_ACCOUNTING_DATA_DIR", "/var/lib/manager/hive-accounting")
+ACCOUNTING_CTRL_DIR = os.path.join(ACCOUNTING_DATA_DIR, "controller")
+ACCOUNTING_IDENTITY_DIR = os.path.join(ACCOUNTING_CTRL_DIR, "identities")
+ACCOUNTING_SOURCE_DIR = os.path.join(ACCOUNTING_CTRL_DIR, "sources")
+ACCOUNTING_AUDIT_FILE = os.environ.get("MANAGER_HIVE_ACCOUNTING_AUDIT_FILE", "/var/log/manager/hive-accounting-audit.jsonl")
 SYSTEMD_DIR = os.environ.get("MANAGER_HIVE_LEASE_SYSTEMD_DIR", "/etc/systemd/system")
 CTRL_SERVICE = os.path.join(SYSTEMD_DIR, "manager-hive-lease-controller.service")
 UNIT_MARKER = "# MANAGER-HIVE-GLOBAL-LEASE v1"
@@ -78,6 +85,8 @@ SESSION_RE = re.compile(r"^[a-f0-9]{32}$")
 NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{32,96}$")
 RESOURCE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,63}$")
 DEVICE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,95}$")
+PRODUCT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$")
+SOURCE_EPOCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,95}$")
 HOST_RE = re.compile(r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)$")
 FP_RE = re.compile(r"^SHA256:[a-f0-9]{64}$")
 ALLOWED_PROTOCOLS = {"ssh", "wireguard", "openvpn"}
@@ -271,6 +280,12 @@ def init_dirs():
     ensure_dir(EPOCH_DIR)
     ensure_dir(REPLAY_DIR)
     ensure_dir(ALLOCATION_RESULT_DIR)
+    ensure_dir(ACCOUNTING_ETC)
+    ensure_dir(ACCOUNTING_QUOTA_DIR)
+    ensure_dir(ACCOUNTING_DATA_DIR)
+    ensure_dir(ACCOUNTING_CTRL_DIR)
+    ensure_dir(ACCOUNTING_IDENTITY_DIR)
+    ensure_dir(ACCOUNTING_SOURCE_DIR)
     Path(LOCK_FILE).touch(mode=0o600, exist_ok=True)
     os.chmod(LOCK_FILE, 0o600)
 
@@ -409,7 +424,7 @@ ProtectControlGroups=true
 PrivateDevices=true
 RestrictSUIDSGID=true
 ProtectSystem=full
-ReadWritePaths={LEASE_ETC}
+ReadWritePaths={LEASE_ETC} {ACCOUNTING_ETC}
 
 [Install]
 WantedBy=multi-user.target
@@ -666,6 +681,11 @@ def acquire_locked(node_id, node_epoch, params):
     exact_global_id = params.get("global_lease_id", "") if isinstance(params, dict) else ""
     if exact_global_id and not SESSION_RE.fullmatch(str(exact_global_id)):
         raise LeaseError(64, "invalid-global-lease-id")
+    if accounting_quota_blocked(identity_id):
+        metrics = accounting_quota_metrics(identity_id)
+        accounting_audit("quota-deny", identity_id=identity_id, node_id=node_id, node_epoch=node_epoch,
+                         quota_bytes=metrics["quota_bytes"], quota_used_bytes=metrics["used_bytes"], action=metrics["action"])
+        raise LeaseError(73, "global-traffic-quota-exceeded")
     maximum, policy = get_limit(identity_id)
     if maximum < 1:
         raise LeaseError(67, "no-global-policy")
@@ -770,6 +790,232 @@ def release_locked(node_id, params):
               local_session_id=local_session_id)
     return {"released": True, "identity_id": identity_id, "local_session_id": local_session_id}
 
+
+
+def accounting_audit(event, **fields):
+    ensure_dir(os.path.dirname(ACCOUNTING_AUDIT_FILE), 0o750)
+    record = {"epoch": int(time.time()), "event": event}
+    for key, value in fields.items():
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            record[key] = value
+    fd = os.open(ACCOUNTING_AUDIT_FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.write(fd, (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
+def accounting_identity_path(identity_id):
+    return os.path.join(ACCOUNTING_IDENTITY_DIR, identity_id + ".json")
+
+
+def accounting_source_path(node_id, identity_id):
+    return os.path.join(ACCOUNTING_SOURCE_DIR, node_id, identity_id + ".json")
+
+
+def accounting_quota_path(identity_id):
+    return os.path.join(ACCOUNTING_QUOTA_DIR, identity_id + ".conf")
+
+
+def accounting_int(value, name, maximum=(2**63 - 1)):
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        raise LeaseError(64, f"invalid-{name}")
+    if value < 0 or value > maximum:
+        raise LeaseError(64, f"invalid-{name}")
+    return value
+
+
+def accounting_state(identity_id):
+    state = read_json(accounting_identity_path(identity_id)) or {}
+    return {
+        "contract": "manager-hive-global-usage-state-v1",
+        "identity_id": identity_id,
+        "product_id": str(state.get("product_id", "")),
+        "download_bytes": accounting_int(state.get("download_bytes", 0), "stored-download"),
+        "upload_bytes": accounting_int(state.get("upload_bytes", 0), "stored-upload"),
+        "wireguard_download_bytes": accounting_int(state.get("wireguard_download_bytes", 0), "stored-wg-download"),
+        "wireguard_upload_bytes": accounting_int(state.get("wireguard_upload_bytes", 0), "stored-wg-upload"),
+        "openvpn_download_bytes": accounting_int(state.get("openvpn_download_bytes", 0), "stored-ovpn-download"),
+        "openvpn_upload_bytes": accounting_int(state.get("openvpn_upload_bytes", 0), "stored-ovpn-upload"),
+        "traffic_complete": 1 if state.get("traffic_complete", 1) in {1, True, "1"} else 0,
+        "source_nodes": accounting_int(state.get("source_nodes", 0), "stored-source-nodes"),
+        "updated_epoch": accounting_int(state.get("updated_epoch", 0), "stored-updated"),
+    }
+
+
+def accounting_total(identity_id):
+    state = accounting_state(identity_id)
+    return state["download_bytes"] + state["upload_bytes"]
+
+
+def accounting_cycle(period, created_epoch=0):
+    if period == "monthly":
+        return time.strftime("%Y-%m", time.gmtime())
+    if period == "lifetime":
+        return f"lifetime-{created_epoch}"
+    return "none"
+
+
+def accounting_write_quota(identity_id, conf, *, cycle=None, baseline=None):
+    created = accounting_int(conf.get("created_epoch", int(time.time())), "quota-created")
+    quota = accounting_int(conf.get("quota_bytes", 0), "quota-bytes")
+    product = str(conf.get("product_id", ""))
+    period = str(conf.get("quota_period", "none"))
+    action = str(conf.get("quota_action", "warn"))
+    if not PRODUCT_RE.fullmatch(product) or period not in {"none", "monthly", "lifetime"} or action not in {"warn", "block"}:
+        raise LeaseError(70, "invalid-global-quota-policy")
+    if quota > 0 and period == "none":
+        raise LeaseError(70, "invalid-global-quota-period")
+    if cycle is None:
+        cycle = str(conf.get("cycle", accounting_cycle(period, created)))
+    if baseline is None:
+        baseline = accounting_int(conf.get("baseline_total_bytes", 0), "quota-baseline")
+    text = (
+        "version=1\n"
+        f"identity_id={identity_id}\n"
+        f"product_id={product}\n"
+        f"quota_bytes={quota}\n"
+        f"quota_period={period}\n"
+        f"quota_action={action}\n"
+        f"cycle={cycle}\n"
+        f"baseline_total_bytes={baseline}\n"
+        f"created_epoch={created}\n"
+        f"updated_epoch={int(time.time())}\n"
+    )
+    atomic_write(accounting_quota_path(identity_id), text)
+    return read_conf(accounting_quota_path(identity_id))
+
+
+def accounting_refresh_quota_locked(identity_id, product_id=""):
+    conf = read_conf(accounting_quota_path(identity_id))
+    if not conf:
+        return None
+    expected = conf.get("product_id", "")
+    if product_id and expected and product_id != expected:
+        raise LeaseError(73, "global-quota-product-mismatch")
+    created = accounting_int(conf.get("created_epoch", 0), "quota-created")
+    period = conf.get("quota_period", "none")
+    wanted = accounting_cycle(period, created)
+    if conf.get("cycle", "") != wanted:
+        conf = accounting_write_quota(identity_id, conf, cycle=wanted, baseline=accounting_total(identity_id))
+        accounting_audit("quota-cycle", identity_id=identity_id, product_id=conf.get("product_id", ""), cycle=wanted,
+                         baseline_total_bytes=conf.get("baseline_total_bytes", "0"))
+    return conf
+
+
+def accounting_quota_metrics(identity_id, refresh=False):
+    conf = accounting_refresh_quota_locked(identity_id) if refresh else read_conf(accounting_quota_path(identity_id))
+    state = accounting_state(identity_id)
+    total = state["download_bytes"] + state["upload_bytes"]
+    if not conf:
+        return {"configured": 0, "quota_bytes": 0, "used_bytes": total, "remaining_bytes": 0,
+                "exceeded": 0, "enforceable": state["traffic_complete"], "action": "none", "cycle": "none"}
+    quota = accounting_int(conf.get("quota_bytes", 0), "quota-bytes")
+    baseline = accounting_int(conf.get("baseline_total_bytes", 0), "quota-baseline")
+    used = total - baseline if total >= baseline else total
+    exceeded = 1 if quota > 0 and used >= quota else 0
+    remaining = 0 if quota == 0 or used >= quota else quota - used
+    return {"configured": 1, "quota_bytes": quota, "used_bytes": used, "remaining_bytes": remaining,
+            "exceeded": exceeded, "enforceable": state["traffic_complete"],
+            "action": conf.get("quota_action", "warn"), "cycle": conf.get("cycle", "none")}
+
+
+def accounting_quota_blocked(identity_id):
+    metrics = accounting_quota_metrics(identity_id, refresh=True)
+    return bool(metrics["configured"] and metrics["action"] == "block" and metrics["exceeded"] and metrics["enforceable"])
+
+
+def accounting_complete_for_identity(identity_id):
+    found = 0
+    complete = 1
+    root = Path(ACCOUNTING_SOURCE_DIR)
+    if not root.is_dir():
+        return 1, 0
+    for node_dir in root.iterdir():
+        if not node_dir.is_dir():
+            continue
+        sample = read_json(str(node_dir / (identity_id + ".json")))
+        if not sample:
+            continue
+        found += 1
+        if sample.get("traffic_complete") not in {1, True, "1"}:
+            complete = 0
+    return complete, found
+
+
+def usage_ingest_locked(node_id, node_epoch, params):
+    allowed = {"identity_id", "product_id", "source_epoch", "download_bytes", "upload_bytes",
+               "wireguard_download_bytes", "wireguard_upload_bytes", "openvpn_download_bytes",
+               "openvpn_upload_bytes", "traffic_complete", "sample_epoch"}
+    if not isinstance(params, dict) or set(params) != allowed:
+        raise LeaseError(64, "invalid-usage-ingest-params")
+    identity_id = validate_identity(params.get("identity_id"))
+    product_id = str(params.get("product_id", ""))
+    source_epoch = str(params.get("source_epoch", ""))
+    if not PRODUCT_RE.fullmatch(product_id):
+        raise LeaseError(64, "invalid-product-id")
+    if not SOURCE_EPOCH_RE.fullmatch(source_epoch):
+        raise LeaseError(64, "invalid-source-epoch")
+    counters = {
+        "download_bytes": accounting_int(params.get("download_bytes"), "download-bytes"),
+        "upload_bytes": accounting_int(params.get("upload_bytes"), "upload-bytes"),
+        "wireguard_download_bytes": accounting_int(params.get("wireguard_download_bytes"), "wg-download-bytes"),
+        "wireguard_upload_bytes": accounting_int(params.get("wireguard_upload_bytes"), "wg-upload-bytes"),
+        "openvpn_download_bytes": accounting_int(params.get("openvpn_download_bytes"), "ovpn-download-bytes"),
+        "openvpn_upload_bytes": accounting_int(params.get("openvpn_upload_bytes"), "ovpn-upload-bytes"),
+    }
+    traffic_complete = accounting_int(params.get("traffic_complete"), "traffic-complete", 1)
+    sample_epoch = accounting_int(params.get("sample_epoch"), "sample-epoch")
+    accounting_refresh_quota_locked(identity_id, product_id)
+
+    source_path = accounting_source_path(node_id, identity_id)
+    previous = read_json(source_path)
+    deltas = {key: 0 for key in counters}
+    baseline = previous is None
+    reset = False
+    if previous:
+        previous_epoch = str(previous.get("source_epoch", ""))
+        previous_sample = accounting_int(previous.get("sample_epoch", 0), "previous-sample-epoch")
+        if previous_epoch == source_epoch:
+            if sample_epoch < previous_sample:
+                raise LeaseError(73, "stale-usage-sample")
+            for key, current in counters.items():
+                old = accounting_int(previous.get(key, 0), f"previous-{key}")
+                if current < old:
+                    raise LeaseError(73, "usage-counter-regression")
+                deltas[key] = current - old
+        else:
+            reset = True
+            baseline = True
+
+    sample = {"contract": "manager-hive-global-usage-source-v1", "node_id": node_id, "node_epoch": node_epoch,
+              "identity_id": identity_id, "product_id": product_id, "source_epoch": source_epoch,
+              "traffic_complete": traffic_complete, "sample_epoch": sample_epoch, "received_epoch": int(time.time()), **counters}
+    atomic_write(source_path, json.dumps(sample, sort_keys=True, separators=(",", ":")) + "\n")
+
+    state = accounting_state(identity_id)
+    state["product_id"] = product_id
+    for key, delta in deltas.items():
+        state[key] += delta
+    state["total_bytes"] = state["download_bytes"] + state["upload_bytes"]
+    state["traffic_complete"], state["source_nodes"] = accounting_complete_for_identity(identity_id)
+    state["updated_epoch"] = int(time.time())
+    atomic_write(accounting_identity_path(identity_id), json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n")
+    metrics = accounting_quota_metrics(identity_id)
+    delta_total = deltas["download_bytes"] + deltas["upload_bytes"]
+    accounting_audit("usage-ingest", identity_id=identity_id, product_id=product_id, node_id=node_id, node_epoch=node_epoch,
+                     source_epoch=source_epoch, delta_bytes=delta_total, global_total_bytes=state["total_bytes"],
+                     baseline=bool(baseline), source_reset=bool(reset), traffic_complete=state["traffic_complete"],
+                     quota_exceeded=metrics["exceeded"], quota_enforceable=metrics["enforceable"])
+    return {"ingested": True, "identity_id": identity_id, "product_id": product_id, "delta_bytes": delta_total,
+            "global_total_bytes": state["total_bytes"], "baseline": bool(baseline), "source_reset": bool(reset),
+            "traffic_complete": state["traffic_complete"], "source_nodes": state["source_nodes"],
+            "quota_configured": metrics["configured"], "quota_bytes": metrics["quota_bytes"],
+            "quota_used_bytes": metrics["used_bytes"], "quota_remaining_bytes": metrics["remaining_bytes"],
+            "quota_exceeded": metrics["exceeded"], "quota_enforceable": metrics["enforceable"],
+            "quota_action": metrics["action"], "quota_cycle": metrics["cycle"]}
 
 def allocation_pull_locked(node_id, node_epoch, params):
     if not isinstance(params, dict) or set(params) - {"limit"}:
@@ -957,6 +1203,7 @@ def handle_request(request):
             if action == "acquire": result = acquire_locked(node_id, node_epoch, params)
             elif action == "heartbeat": result = heartbeat_locked(node_id, node_epoch, params)
             elif action == "release": result = release_locked(node_id, params)
+            elif action == "usage_ingest": result = usage_ingest_locked(node_id, node_epoch, params)
             elif action == "allocation_pull": result = allocation_pull_locked(node_id, node_epoch, params)
             elif action == "allocation_ack": result = allocation_ack_locked(node_id, node_epoch, params)
             else: raise LeaseError(64, "invalid-action")
@@ -1080,6 +1327,33 @@ def node_release(identity_id, local_session_id):
     print("released=1")
 
 
+
+def node_usage_ingest(identity_id, product_id, source_epoch, download, upload, wg_download, wg_upload,
+                      ovpn_download, ovpn_upload, traffic_complete, sample_epoch):
+    identity_id = validate_identity(identity_id)
+    if not PRODUCT_RE.fullmatch(str(product_id)):
+        die("product_id de accounting inválido.", 64)
+    if not SOURCE_EPOCH_RE.fullmatch(str(source_epoch)):
+        die("source_epoch de accounting inválido.", 64)
+    params = {
+        "identity_id": identity_id, "product_id": str(product_id), "source_epoch": str(source_epoch),
+        "download_bytes": accounting_int(download, "download-bytes"),
+        "upload_bytes": accounting_int(upload, "upload-bytes"),
+        "wireguard_download_bytes": accounting_int(wg_download, "wg-download-bytes"),
+        "wireguard_upload_bytes": accounting_int(wg_upload, "wg-upload-bytes"),
+        "openvpn_download_bytes": accounting_int(ovpn_download, "ovpn-download-bytes"),
+        "openvpn_upload_bytes": accounting_int(ovpn_upload, "ovpn-upload-bytes"),
+        "traffic_complete": accounting_int(traffic_complete, "traffic-complete", 1),
+        "sample_epoch": accounting_int(sample_epoch, "sample-epoch"),
+    }
+    result = node_request("usage_ingest", params)
+    for key in ("identity_id", "product_id", "delta_bytes", "global_total_bytes", "baseline", "source_reset",
+                "traffic_complete", "source_nodes", "quota_configured", "quota_bytes", "quota_used_bytes",
+                "quota_remaining_bytes", "quota_exceeded", "quota_enforceable", "quota_action", "quota_cycle"):
+        value = result.get(key, "")
+        if isinstance(value, bool): value = 1 if value else 0
+        print(f"{key}={value}")
+
 def node_allocation_pull(limit=4):
     try: limit = int(limit)
     except (TypeError, ValueError): die("limit de allocation inválido.", 64)
@@ -1120,6 +1394,11 @@ def controller_list(identity_id=""):
 
 def controller_grant(identity_id, protocol, region="", pool="", sticky="", node_scope="*", device="grant", ttl=DEFAULT_TTL):
     init_dirs(); identity_id = validate_identity(identity_id)
+    if accounting_quota_blocked(identity_id):
+        metrics = accounting_quota_metrics(identity_id)
+        accounting_audit("quota-deny-grant", identity_id=identity_id, quota_bytes=metrics["quota_bytes"],
+                         quota_used_bytes=metrics["used_bytes"], action=metrics["action"])
+        die("Franquia global excedida para esta identidade.", 73)
     if protocol not in ALLOWED_PROTOCOLS: die("Protocolo inválido.", 64)
     if not isinstance(device, str) or not DEVICE_RE.fullmatch(device): die("device_id inválido.", 64)
     conf = read_conf(CTRL_LEASE_CONF)
@@ -1296,6 +1575,8 @@ def main(argv):
                      argv[7] if len(argv) == 8 else ""); return
     if cmd == "--heartbeat-node" and len(argv) in {3,4}: node_heartbeat(argv[1], argv[2], argv[3] if len(argv) == 4 else DEFAULT_TTL); return
     if cmd == "--release-node" and len(argv) == 3: node_release(argv[1], argv[2]); return
+    if cmd == "--usage-ingest-node" and len(argv) == 12:
+        node_usage_ingest(*argv[1:]); return
     if cmd == "--allocation-pull-node" and len(argv) in {1,2}: node_allocation_pull(argv[1] if len(argv) == 2 else 4); return
     if cmd == "--allocation-ack-node" and len(argv) in {2,3}: node_allocation_ack(argv[1], argv[2] if len(argv) == 3 else ""); return
     if cmd == "--serve-controller": serve_controller(); return

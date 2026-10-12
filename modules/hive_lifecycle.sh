@@ -59,6 +59,7 @@ MANAGER_HOME="${MANAGER_HOME:-/opt/manager}"
 HIVE_MODULE="$MANAGER_HOME/modules/hive_network.sh"
 HEALTH_MODULE="$MANAGER_HOME/modules/hive_health.sh"
 LEASE_MODULE="$MANAGER_HOME/modules/hive_leases.sh"
+ACCOUNTING_MODULE="$MANAGER_HOME/modules/hive_accounting.sh"
 DROPIN_FILE="/etc/systemd/system/manager-automation-v2.service.d/90-manager-hive-network.conf"
 SELF="/usr/local/libexec/manager-hive-lifecycle"
 WG_CONF="/etc/wireguard/mgh0.conf"
@@ -129,8 +130,17 @@ case "${1:-}" in
     if [[ -x "$LEASE_MODULE" ]]; then
       "$LEASE_MODULE" --install >/dev/null 2>&1 || true
     fi
+    if [[ -x "$ACCOUNTING_MODULE" ]]; then
+      "$ACCOUNTING_MODULE" --install >/dev/null 2>&1 || true
+    fi
     ;;
   stop)
+    if [[ -x "$ACCOUNTING_MODULE" ]]; then
+      "$ACCOUNTING_MODULE" --detach >/dev/null 2>&1 || true
+    else
+      systemctl disable --now manager-hive-accounting-sync.timer >/dev/null 2>&1 || true
+      systemctl stop manager-hive-accounting-sync.service >/dev/null 2>&1 || true
+    fi
     if [[ -x "$LEASE_MODULE" ]]; then
       "$LEASE_MODULE" --detach >/dev/null 2>&1 || fallback_lease_detach
     else
@@ -209,7 +219,7 @@ detach_lifecycle() {
 }
 
 status_lifecycle() {
-  local dropin="0" helper="0" health="0" leases="0"
+  local dropin="0" helper="0" health="0" leases="0" accounting="0"
   if [[ -f "$DROPIN_FILE" && ! -L "$DROPIN_FILE" && "$(first_line "$DROPIN_FILE")" == "$DROPIN_MARKER" ]]; then
     dropin="1"
   fi
@@ -222,7 +232,10 @@ status_lifecycle() {
   if [[ -x "$MANAGER_HOME/modules/hive_leases.sh" ]]; then
     leases="1"
   fi
-  printf 'contract=manager-hive-lifecycle-v1\ndropin=%s\nhelper=%s\nhealth_module=%s\nglobal_lease_module=%s\nautomation_service=manager-automation-v2.service\n' "$dropin" "$helper" "$health" "$leases"
+  if [[ -x "$MANAGER_HOME/modules/hive_accounting.sh" ]]; then
+    accounting="1"
+  fi
+  printf 'contract=manager-hive-lifecycle-v1\ndropin=%s\nhelper=%s\nhealth_module=%s\nglobal_lease_module=%s\nglobal_accounting_module=%s\nautomation_service=manager-automation-v2.service\n' "$dropin" "$helper" "$health" "$leases" "$accounting"
 }
 
 case "${1:-}" in

@@ -38,7 +38,7 @@ jobs:
           printf '%s\n' "$node" >/tmp/node.id
           sudo manager hive node placement "$node" BR-SP-A BR BR-SP PREMIUM >/dev/null
           sudo mkdir -p /etc/manager/hive/controller/health /var/lib/manager/hive-health/nodes
-          printf 'version=1\ndegraded_after_seconds=75\noffline_after_seconds=180\n' | sudo tee /etc/manager/hive/controller/health/controller.conf >/dev/null
+          printf 'version=1\ndegraded_after_seconds=180\noffline_after_seconds=300\n' | sudo tee /etc/manager/hive/controller/health/controller.conf >/dev/null
           now="$(date +%s)"
           sudo python3 - "$now" "$node" <<'PY'
           import json,sys

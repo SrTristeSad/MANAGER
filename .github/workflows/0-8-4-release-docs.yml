@@ -26,11 +26,11 @@ jobs:
           grep -q 'manager-hive-vpn-login-result-v1' docs/HIVE.md
           grep -q 'manager hive login create' docs/HIVE.md
           grep -q 'manager hive login result' docs/HIVE.md
-          grep -q 'global_accounting=0' docs/HIVE.md
 
-      - name: Keep 0.8.6 outside the 0.8.5 release gate
+      - name: Permit 0.8.6 development without releasing 0.8.6
         shell: bash
         run: |
           set -euxo pipefail
-          grep -q '^### 0\.8\.6 — quotas e accounting globais$' docs/ROADMAP.md
-          grep -q 'global_accounting=0' docs/HIVE.md
+          grep -Eq '^### 0\.8\.6 — quotas e accounting globais( 🚧)?$' docs/ROADMAP.md
+          ! grep -q '^## \[0.8.6\]' CHANGELOG.md
+          test "$(cat VERSION)" = "0.8.5"
