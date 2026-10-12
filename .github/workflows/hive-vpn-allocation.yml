@@ -21,7 +21,7 @@ jobs:
           source_url="file://${GITHUB_WORKSPACE}"
           sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
           sudo test -x /opt/manager/modules/hive_allocations.sh
-          test "$(sudo cat /opt/manager/VERSION)" = 0.8.5
+          test "$(sudo cat /opt/manager/VERSION)" = 0.8.6
           sudo manager hive allocation status | grep -q '^signed_allocation_bundle=1$'
 
       - name: Initialize controller, enroll node and enable global authority

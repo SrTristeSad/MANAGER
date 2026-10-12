@@ -245,9 +245,9 @@ Adicionado no fechamento da fase:
 - WireGuard/OpenVPN devolvem o perfil gerenciado em base64 dentro do contrato;
 - release 0.8.5 fechada após o gate público de login/provisionamento e a regressão completa concluírem com sucesso.
 
-### 0.8.6 — quotas e accounting globais 🚧
+### 0.8.6 — quotas e accounting globais ✅
 
-Implementado na fundação desta fase:
+Implementado:
 
 - cada nó envia snapshot cumulativo de uso por identidade pelo mesmo canal Ed25519 + TLS 1.3 pinado da autoridade de leases;
 - o controlador deriva deltas por `(node_id, identity_id, source_epoch)`, tornando redelivery/reconnect idempotente;

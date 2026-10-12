@@ -4,7 +4,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 > O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva capacidades úteis, substitui implementações inseguras/obsoletas e evolui para uma arquitetura própria de identidade, automação, VPN, revenda e operação multi-servidor.
 
-Versão atual: **0.8.5**.
+Versão atual: **0.8.6**.
 
 ## Princípios
 
@@ -235,7 +235,7 @@ Não existe shell/comando/caminho arbitrário.
 
 Documentação: [`docs/AUTOMATION_V2.md`](docs/AUTOMATION_V2.md).
 
-## Colmeia — 0.8.0 a 0.8.5
+## Colmeia — 0.8.0 a 0.8.6
 
 A Colmeia coordena múltiplas VPS sem transformar o controlador em relay do tráfego dos usuários:
 
@@ -245,6 +245,7 @@ A Colmeia coordena múltiplas VPS sem transformar o controlador em relay do trá
 - **0.8.3** — scheduler weighted least-loaded, placement, sticky, drain e failover de seleção;
 - **0.8.4** — autoridade global de leases, `max_sessions_global`, fencing e grace controlado.
 - **0.8.5** — VPN allocation / login global, entrega/provisionamento automático no nó selecionado e retorno seguro de credenciais/perfis.
+- **0.8.6** — accounting global idempotente por nó, deduplicação de deltas e franquia global separada de `max_sessions_global`.
 
 Cada VPS possui uma identidade Ed25519 de controle ligada ao `node_id` e uma chave WireGuard própria para a malha. A chave WireGuard privada nasce e permanece no próprio nó; o controlador recebe somente chave pública, endpoint e metadados de rede.
 
@@ -259,6 +260,8 @@ Cada VPS possui uma identidade Ed25519 de controle ligada ao `node_id` e uma cha
 /var/lib/manager/hive-health/                  observações/replay/runtime de saúde
 /var/lib/manager/hive-scheduler/sticky/        afinidade sticky
 /var/lib/manager/hive-leases/                  leases, epochs e anti-replay globais
+/var/lib/manager/hive-accounting/               snapshots/deltas e agregado global de uso
+/etc/manager/hive/controller/accounting/         políticas de franquia global
 /var/log/manager/hive-scheduler-audit.jsonl    decisões do scheduler
 /var/log/manager/hive-lease-audit.jsonl        decisões de lease global
 /etc/wireguard/mgh0.conf                       runtime WireGuard gerenciado

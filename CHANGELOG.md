@@ -4,6 +4,27 @@ Todas as mudanças relevantes do MANAGER são registradas aqui. O projeto usa ve
 
 > O histórico detalhado das revisões antigas continua disponível no histórico Git. A partir da série 0.7, este arquivo prioriza mudanças de arquitetura e segurança que afetam contratos públicos/operacionais.
 
+## [0.8.6] - 2026-10-12
+
+### Colmeia — quotas e accounting globais
+
+- Novo `modules/hive_accounting.sh` agrega uso de identidades entre múltiplos nós sem colocar o controlador no caminho de dados VPN.
+- Nós enviam snapshots cumulativos pelo mesmo control plane Ed25519 enrolled + freshness/nonce + `node_epoch` + TLS 1.3 com pin SHA-256 usado pelas leases globais.
+- O controlador deriva deltas por `(node_id, identity_id, source_epoch)`: retry/redelivery idêntico vira delta zero e regressão dentro da mesma geração é recusada.
+- Mudança explícita de `source_epoch` cria baseline novo sem somar novamente o snapshot inicial, protegendo contra double counting após reset/reconnect.
+- Uso de múltiplas VPS é consolidado em estado global root-only por identidade, com audit separado de ingestão e decisões de quota.
+- Franquia global suporta `monthly` e `lifetime`, com ações `warn` e `block`, mantendo política e estado separados de `max_sessions_global`.
+- Quota `block` impede novos grants/acquires somente quando o agregado ultrapassa a franquia e a cobertura de bytes é completa.
+- Como a telemetria atual mede bytes de WireGuard/OpenVPN mas não de SSH, identidades com SSH ficam `quota_enforceable=0` para evitar bloqueio incorreto por consumo parcial.
+- Timer de nó sincroniza accounting periodicamente; uninstall/detach preservam snapshots, baselines e políticas, enquanto purge remove apenas o estado da 0.8.6.
+- A sandbox `ProtectSystem=full` da autoridade de leases permanece ativa; somente o diretório de accounting foi incluído em `ReadWritePaths`.
+- Gate permanente `Hive Global Accounting and Quotas` valida dois nós, deduplicação, counter fencing, reset de geração, quota, independência de sessões, cobertura SSH parcial e lifecycle.
+- O HEAD funcional passou **28/28 workflows** antes do bump da release.
+
+### Próxima etapa
+
+- 0.8.7: failover e resiliência operacional da Colmeia.
+
 ## [0.8.5] - 2026-10-12
 
 ### Colmeia — VPN allocation / login global
