@@ -21,6 +21,13 @@ jobs:
           set -uo pipefail
           log=.tmp-remote-provisioning-error.txt
           rm -f "$log"
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('scripts/tmp_apply_remote_provisioning.py')
+          s=p.read_text()
+          s=s.replace("heading = '### Distribuição automática da allocation (0.8.5)'", "heading = '## 17. Audit global'")
+          p.write_text(s)
+          PY
           set +e
           python3 scripts/tmp_apply_remote_provisioning.py >"$log" 2>&1
           code=$?
