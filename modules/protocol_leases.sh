@@ -159,6 +159,14 @@ global_lease_acquire() {
   "$GLOBAL_LEASE_MODULE" --acquire-node "$identity" "$protocol" "$resource" "$device" "$session_id" "$LEASE_TTL" >/dev/null
 }
 
+global_lease_grace_seconds() {
+  local grace
+  grace="$(awk -F= '$1=="grace_seconds" {print $2; exit}' "$GLOBAL_LEASE_CONF" 2>/dev/null || true)"
+  [[ "$grace" =~ ^[0-9]+$ ]] || grace=30
+  (( grace <= 120 )) || grace=120
+  printf '%s\n' "$grace"
+}
+
 global_lease_heartbeat() {
   local identity="$1" session_id="$2"
   global_lease_enabled || return 0
@@ -186,6 +194,7 @@ write_map() {
     printf 'session_id=%s\n' "$session_id"
     printf 'session_epoch=%s\n' "$epoch"
     printf 'created_epoch=%s\n' "$now"
+    printf 'global_heartbeat_epoch=%s\n' "$now"
     printf 'source_pid=%s\n' "$source_pid"
     printf 'remote=%s\n' "$remote"
     printf 'tty=%s\n' "$tty"
@@ -261,17 +270,27 @@ acquire_managed() {
 }
 
 heartbeat_map() {
-  local file="$1" session_id epoch token new_epoch identity
+  local file="$1" session_id epoch token new_epoch identity rc=0 last_global=0 now grace=0
   session_id="$(map_read_file "$file" session_id)"
   epoch="$(map_read_file "$file" session_epoch)"
   identity="$(map_read_file "$file" identity_id)"
   [[ "$session_id" =~ ^[a-f0-9]{32}$ && "$epoch" =~ ^[1-9][0-9]*$ && -n "$identity" ]] || { rm -f "$file"; return 1; }
   if token="$("$SESSION_ENGINE" --heartbeat "$session_id" "$epoch" "$LEASE_TTL" 2>/dev/null)"; then
-    if ! global_lease_heartbeat "$identity" "$session_id"; then
+    global_lease_heartbeat "$identity" "$session_id" || rc=$?
+    if (( rc != 0 )); then
+      if (( rc == 69 )); then
+        last_global="$(map_read_file "$file" global_heartbeat_epoch)"
+        [[ "$last_global" =~ ^[0-9]+$ ]] || last_global=0
+        now="$(date +%s)"; grace="$(global_lease_grace_seconds)"
+        if (( grace > 0 && last_global > 0 && now - last_global <= grace )); then
+          return 0
+        fi
+      fi
       "$SESSION_ENGINE" --release "$session_id" "$epoch" >/dev/null 2>&1 || true
       rm -f "$file"
       return 1
     fi
+    sed -i "s/^global_heartbeat_epoch=.*/global_heartbeat_epoch=$(date +%s)/" "$file"
     new_epoch="$(token_value "$token" epoch)"
     if [[ "$new_epoch" =~ ^[1-9][0-9]*$ ]]; then
       sed -i "s/^session_epoch=.*/session_epoch=$new_epoch/" "$file"

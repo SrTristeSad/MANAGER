@@ -53,6 +53,7 @@ DATA_DIR = os.environ.get("MANAGER_HIVE_LEASE_DATA_DIR", "/var/lib/manager/hive-
 ACTIVE_DIR = os.path.join(DATA_DIR, "active")
 EPOCH_DIR = os.path.join(DATA_DIR, "epochs")
 REPLAY_DIR = os.path.join(DATA_DIR, "replay")
+NODE_AUTH_STATE = os.path.join(DATA_DIR, "node-authority.state")
 LOCK_FILE = os.path.join(DATA_DIR, ".lock")
 AUDIT_FILE = os.environ.get("MANAGER_HIVE_LEASE_AUDIT_FILE", "/var/log/manager/hive-lease-audit.jsonl")
 SYSTEMD_DIR = os.environ.get("MANAGER_HIVE_LEASE_SYSTEMD_DIR", "/etc/systemd/system")
@@ -336,7 +337,7 @@ def controller_init():
         now = int(time.time())
         atomic_write(CTRL_LEASE_CONF,
                      f"version=1\nenabled=0\ncontroller_id={ctrl.get('controller_id','')}\nbind=127.0.0.1\nport={DEFAULT_PORT}\n"
-                     f"tls_fingerprint={fp}\ndefault_ttl={DEFAULT_TTL}\nmax_ttl={DEFAULT_MAX_TTL}\ncreated_epoch={now}\nupdated_epoch={now}\n")
+                     f"tls_fingerprint={fp}\ndefault_ttl={DEFAULT_TTL}\nmax_ttl={DEFAULT_MAX_TTL}\nauthority_epoch=1\ncreated_epoch={now}\nupdated_epoch={now}\n")
     return read_conf(CTRL_LEASE_CONF)
 
 
@@ -347,12 +348,15 @@ def write_controller_conf(conf, **changes):
         "enabled": conf.get("enabled", "0"), "bind": conf.get("bind", "127.0.0.1"),
         "port": conf.get("port", str(DEFAULT_PORT)), "tls_fingerprint": conf.get("tls_fingerprint", ""),
         "default_ttl": conf.get("default_ttl", str(DEFAULT_TTL)), "max_ttl": conf.get("max_ttl", str(DEFAULT_MAX_TTL)),
+        "authority_epoch": conf.get("authority_epoch", "1"),
     }
     values.update({k: str(v) for k, v in changes.items()})
     atomic_write(CTRL_LEASE_CONF,
                  f"version=1\nenabled={values['enabled']}\ncontroller_id={ctrl.get('controller_id','')}\nbind={values['bind']}\n"
-                 f"port={values['port']}\ntls_fingerprint={values['tls_fingerprint']}\ndefault_ttl={values['default_ttl']}\n"
-                 f"max_ttl={values['max_ttl']}\ncreated_epoch={conf.get('created_epoch',str(now))}\nupdated_epoch={now}\n")
+                 f"port={values['port']}\n"
+                 f"tls_fingerprint={values['tls_fingerprint']}\ndefault_ttl={values['default_ttl']}\n"
+                 f"max_ttl={values['max_ttl']}\nauthority_epoch={values['authority_epoch']}\n"
+                 f"created_epoch={conf.get('created_epoch',str(now))}\nupdated_epoch={now}\n")
     return read_conf(CTRL_LEASE_CONF)
 
 
@@ -415,7 +419,9 @@ def controller_enable(bind, port):
     bind = validate_bind(bind)
     port = validate_port(port)
     fp = generate_tls()
-    write_controller_conf(conf, enabled=1, bind=bind, port=port, tls_fingerprint=fp)
+    try: authority_epoch = int(conf.get("authority_epoch", "1")) + 1
+    except ValueError: authority_epoch = 2
+    write_controller_conf(conf, enabled=1, bind=bind, port=port, tls_fingerprint=fp, authority_epoch=authority_epoch)
     write_unit()
     if systemctl("enable", "--now", "manager-hive-lease-controller.service") != 0:
         die("Não foi possível iniciar a autoridade global de leases.")
@@ -424,6 +430,7 @@ def controller_enable(bind, port):
     print(f"port={port}")
     print("tls=TLSv1.3")
     print(f"tls_fingerprint={fp}")
+    print(f"authority_epoch={authority_epoch}")
     print("controller_in_user_vpn_path=0")
     print("firewall_auto_open=0")
 
@@ -448,19 +455,24 @@ def controller_rotate_tls():
     print(f"tls_fingerprint={fp}")
 
 
-def node_configure(host, port, fingerprint):
+def node_configure(host, port, fingerprint, grace_seconds=30):
     enroll, node_id, node_epoch = node_enrollment()
     host = validate_host(host); port = validate_port(port); fingerprint = validate_fp(fingerprint)
+    try: grace_seconds = int(grace_seconds)
+    except (TypeError, ValueError): die("grace_seconds inválido.", 64)
+    if grace_seconds < 0 or grace_seconds > 120:
+        die("grace_seconds deve ficar entre 0 e 120.", 64)
     ensure_dir(NODE_LEASE_DIR)
     now = int(time.time())
     atomic_write(NODE_CONF,
                  f"version=1\nenabled=1\nnode_id={node_id}\nnode_epoch={node_epoch}\ncontroller_id={enroll.get('controller_id','')}\n"
-                 f"host={host}\nport={port}\ntls_fingerprint={fingerprint}\nupdated_epoch={now}\n")
+                 f"host={host}\nport={port}\ntls_fingerprint={fingerprint}\ngrace_seconds={grace_seconds}\nupdated_epoch={now}\n")
     print("global_lease_enforcement=1")
     print(f"host={host}")
     print(f"port={port}")
     print(f"tls_fingerprint={fingerprint}")
-    print("failure_mode=fail-closed")
+    print(f"grace_seconds={grace_seconds}")
+    print("new_grants_failure_mode=fail-closed")
 
 
 def node_disable():
@@ -470,7 +482,7 @@ def node_disable():
         atomic_write(NODE_CONF,
                      f"version=1\nenabled=0\nnode_id={conf.get('node_id','')}\nnode_epoch={conf.get('node_epoch','')}\n"
                      f"controller_id={conf.get('controller_id','')}\nhost={conf.get('host','')}\nport={conf.get('port','')}\n"
-                     f"tls_fingerprint={conf.get('tls_fingerprint','')}\nupdated_epoch={int(time.time())}\n")
+                     f"tls_fingerprint={conf.get('tls_fingerprint','')}\ngrace_seconds={conf.get('grace_seconds','30')}\nupdated_epoch={int(time.time())}\n")
     print("global_lease_enforcement=0")
 
 
@@ -479,7 +491,7 @@ def limit_path(identity_id):
     return os.path.join(LIMIT_DIR, identity_id + ".conf")
 
 
-def set_limit(identity_id, max_sessions, source="manual"):
+def set_limit(identity_id, max_sessions, source="manual", product_id=""):
     init_dirs(); validate_identity(identity_id)
     try: maximum = int(max_sessions)
     except (TypeError, ValueError): die("max_sessions_global inválido.", 64)
@@ -487,12 +499,15 @@ def set_limit(identity_id, max_sessions, source="manual"):
         die("max_sessions_global deve estar entre 1 e 10000.", 64)
     if source not in {"manual", "local-import"}:
         source = "manual"
+    if product_id and not IDENTITY_RE.fullmatch(product_id):
+        die("product_id inválido.", 64)
     now = int(time.time()); current = read_conf(limit_path(identity_id))
     atomic_write(limit_path(identity_id),
-                 f"version=1\nidentity_id={identity_id}\nmax_sessions_global={maximum}\nsource={source}\n"
+                 f"version=1\nidentity_id={identity_id}\nproduct_id={product_id}\nmax_sessions_global={maximum}\nsource={source}\n"
                  f"created_epoch={current.get('created_epoch',str(now))}\nupdated_epoch={now}\n")
     audit("limit-set", identity_id=identity_id, max_sessions_global=maximum, source=source)
     print(f"identity_id={identity_id}")
+    print(f"product_id={product_id}")
     print(f"max_sessions_global={maximum}")
     print(f"source={source}")
 
@@ -504,7 +519,8 @@ def import_local(identity_id):
     maximum = conf.get("max_sessions", "")
     if not maximum.isdigit() or int(maximum) < 1:
         die("Identidade local não existe ou possui max_sessions inválido.", 66)
-    set_limit(identity_id, maximum, "local-import")
+    assignment = read_conf(os.path.join(MANAGER_ETC, "connection", "products", "assignments", identity_id + ".conf"))
+    set_limit(identity_id, maximum, "local-import", assignment.get("product_id", ""))
 
 
 def sync_local():
@@ -516,7 +532,8 @@ def sync_local():
             if IDENTITY_RE.fullmatch(ident):
                 conf = read_conf(str(path)); maximum = conf.get("max_sessions", "")
                 if maximum.isdigit() and int(maximum) >= 1:
-                    set_limit(ident, maximum, "local-import"); count += 1
+                    assignment = read_conf(os.path.join(MANAGER_ETC, "connection", "products", "assignments", ident + ".conf"))
+                    set_limit(ident, maximum, "local-import", assignment.get("product_id", "")); count += 1
     print(f"limits_synced={count}")
 
 
@@ -530,17 +547,17 @@ def get_limit(identity_id):
 def show_limit(identity_id):
     maximum, conf = get_limit(identity_id)
     if maximum < 1: die("Política global não encontrada para a identidade.", 66)
-    for key in ("identity_id", "max_sessions_global", "source", "created_epoch", "updated_epoch"):
+    for key in ("identity_id", "product_id", "max_sessions_global", "source", "created_epoch", "updated_epoch"):
         print(f"{key}={conf.get(key,'')}")
 
 
 def list_limits():
     init_dirs()
-    print("identity_id|max_sessions_global|source|updated_epoch")
+    print("identity_id|product_id|max_sessions_global|source|updated_epoch")
     for path in sorted(Path(LIMIT_DIR).glob("*.conf")):
         conf = read_conf(str(path))
         if conf:
-            print("|".join([conf.get("identity_id", path.stem), conf.get("max_sessions_global", ""),
+            print("|".join([conf.get("identity_id", path.stem), conf.get("product_id", ""), conf.get("max_sessions_global", ""),
                             conf.get("source", ""), conf.get("updated_epoch", "")]))
 
 
@@ -642,7 +659,7 @@ def parse_params(params, require_full=True):
 
 def acquire_locked(node_id, node_epoch, params):
     identity_id, local_session_id, protocol, resource, device, ttl = parse_params(params, True)
-    maximum, _ = get_limit(identity_id)
+    maximum, policy = get_limit(identity_id)
     if maximum < 1:
         raise LeaseError(67, "no-global-policy")
     cleanup_locked()
@@ -659,6 +676,22 @@ def acquire_locked(node_id, node_epoch, params):
         audit("renew", identity_id=identity_id, node_id=node_id, global_lease_id=existing.get("global_lease_id"),
               local_session_id=local_session_id)
         return existing
+    # A grant reserved by this controller can be claimed only by its selected node/protocol/device.
+    for reserved_path in Path(ACTIVE_DIR).glob("*.json"):
+        reserved = read_json(str(reserved_path))
+        if not reserved or reserved.get("lease_state") != "reserved":
+            continue
+        if (reserved.get("identity_id") == identity_id and reserved.get("node_id") == node_id and
+                reserved.get("protocol") == protocol and reserved.get("device_id") == device):
+            reserved["lease_state"] = "active"
+            reserved["local_session_id"] = local_session_id
+            reserved["resource"] = resource
+            reserved["heartbeat_epoch"] = now
+            reserved["expires_epoch"] = now + ttl
+            atomic_write(str(reserved_path), json.dumps(reserved, sort_keys=True, separators=(",", ":")) + "\n")
+            audit("grant-claim", identity_id=identity_id, node_id=node_id, global_lease_id=reserved.get("global_lease_id"),
+                  local_session_id=local_session_id)
+            return reserved
     active = active_count_locked(identity_id)
     if active >= maximum:
         audit("deny", identity_id=identity_id, node_id=node_id, local_session_id=local_session_id,
@@ -670,7 +703,7 @@ def acquire_locked(node_id, node_epoch, params):
         "node_epoch": int(node_epoch), "local_session_id": local_session_id, "protocol": protocol,
         "resource": resource, "device_id": device, "global_epoch": current_epoch(identity_id),
         "created_epoch": now, "heartbeat_epoch": now, "expires_epoch": now + ttl,
-        "max_sessions_global": maximum,
+        "max_sessions_global": maximum, "product_id": policy.get("product_id", ""), "lease_state": "active",
     }
     atomic_write(lease_path(global_id), json.dumps(lease, sort_keys=True, separators=(",", ":")) + "\n")
     audit("acquire", identity_id=identity_id, node_id=node_id, global_lease_id=global_id,
@@ -753,8 +786,11 @@ def check_auth_locked(request):
 
 
 def response(ok, code, result=None, error=None):
-    return {"contract": RESP_CONTRACT, "version": VERSION, "ok": bool(ok), "code": int(code),
-            "result": result if isinstance(result, dict) else {}, "error": error or ""}
+    conf = read_conf(CTRL_LEASE_CONF)
+    try: authority_epoch = int(conf.get("authority_epoch", "1"))
+    except ValueError: authority_epoch = 1
+    return {"contract": RESP_CONTRACT, "version": VERSION, "authority_epoch": authority_epoch,
+            "ok": bool(ok), "code": int(code), "result": result if isinstance(result, dict) else {}, "error": error or ""}
 
 
 def handle_request(request):
@@ -845,6 +881,15 @@ def node_request(action, params):
     except Exception: die("Resposta JSON inválida da autoridade global.", 70)
     if answer.get("contract") != RESP_CONTRACT or answer.get("version") != VERSION:
         die("Contrato de resposta da autoridade global inválido.", 70)
+    try: authority_epoch = int(answer.get("authority_epoch", 0))
+    except (TypeError, ValueError): authority_epoch = 0
+    state = read_conf(NODE_AUTH_STATE)
+    try: seen_authority = int(state.get("authority_epoch", "0"))
+    except ValueError: seen_authority = 0
+    if authority_epoch < 1 or authority_epoch < seen_authority:
+        die("Autoridade global antiga/fenced tentou retornar.", 70)
+    if authority_epoch > seen_authority:
+        atomic_write(NODE_AUTH_STATE, f"authority_epoch={authority_epoch}\nupdated_epoch={int(time.time())}\n")
     if not answer.get("ok"):
         code = answer.get("code", 70)
         try: code = int(code)
@@ -890,6 +935,55 @@ def controller_list(identity_id=""):
         fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
+def controller_grant(identity_id, protocol, region="", pool="", sticky="", node_scope="*", device="grant", ttl=DEFAULT_TTL):
+    init_dirs(); identity_id = validate_identity(identity_id)
+    if protocol not in ALLOWED_PROTOCOLS: die("Protocolo inválido.", 64)
+    if not isinstance(device, str) or not DEVICE_RE.fullmatch(device): die("device_id inválido.", 64)
+    conf = read_conf(CTRL_LEASE_CONF)
+    try: max_ttl = int(conf.get("max_ttl", str(DEFAULT_MAX_TTL)))
+    except ValueError: max_ttl = DEFAULT_MAX_TTL
+    try: ttl = validate_ttl(ttl, max_ttl)
+    except ValueError as exc: die(str(exc), 64)
+    maximum, policy = get_limit(identity_id)
+    if maximum < 1: die("Política global não encontrada para a identidade.", 67)
+    scheduler = os.path.join(MANAGER_HOME, "modules", "hive_scheduler.sh")
+    proc = subprocess.run([scheduler, "--select", protocol, region or "*", pool or "*", sticky, node_scope],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15, check=False)
+    if proc.returncode != 0: die("Scheduler não encontrou nó elegível para o grant.", proc.returncode)
+    selected = {}
+    for line in proc.stdout.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1); selected[k] = v
+    node_id = selected.get("selected_node", "")
+    try: _, _, node_epoch = controller_node(node_id)
+    except PermissionError: die("Nó selecionado deixou de ser autoritativo.", 67)
+    now = int(time.time())
+    with open(LOCK_FILE, "r+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX); cleanup_locked()
+        active = active_count_locked(identity_id)
+        if active >= maximum:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            die("Limite global atingido antes da reserva.", 69)
+        global_id = secrets.token_hex(16)
+        lease = {"version":1,"global_lease_id":global_id,"identity_id":identity_id,"product_id":policy.get("product_id",""),
+                 "node_id":node_id,"node_epoch":node_epoch,"local_session_id":"","protocol":protocol,"resource":"",
+                 "device_id":device,"global_epoch":current_epoch(identity_id),"lease_state":"reserved",
+                 "created_epoch":now,"heartbeat_epoch":now,"expires_epoch":now+ttl,"max_sessions_global":maximum}
+        atomic_write(lease_path(global_id), json.dumps(lease, sort_keys=True, separators=(",", ":")) + "\n")
+        audit("grant", identity_id=identity_id, product_id=policy.get("product_id",""), node_id=node_id,
+              global_lease_id=global_id, max_sessions_global=maximum)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    print("contract=manager-hive-global-grant-v1")
+    print(f"global_lease_id={global_id}")
+    print(f"global_epoch={lease['global_epoch']}")
+    print(f"selected_node={node_id}")
+    print(f"selected_name={selected.get('selected_name','')}")
+    print(f"product_id={policy.get('product_id','')}")
+    print(f"max_sessions_global={maximum}")
+    print(f"expires_epoch={lease['expires_epoch']}")
+    print("lease_state=reserved")
+
+
 def controller_revoke(identity_id, reason="admin"):
     init_dirs(); validate_identity(identity_id)
     if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", reason): die("Motivo inválido.", 64)
@@ -930,6 +1024,9 @@ def status():
     print("failure_mode=fail-closed")
     print("authority_auth=ed25519-enrolled-node")
     print("transport=tls1.3-pinned")
+    print("global_grant_capability=1")
+    print("authority_epoch_fencing=1")
+    print("bounded_existing_session_grace=1")
     print("controller_in_user_vpn_path=0")
     print(f"active_global_leases={active}")
 
@@ -941,6 +1038,7 @@ def controller_status():
     print(f"bind={conf.get('bind','127.0.0.1')}")
     print(f"port={conf.get('port',str(DEFAULT_PORT))}")
     print(f"tls_fingerprint={conf.get('tls_fingerprint','')}")
+    print(f"authority_epoch={conf.get('authority_epoch','1')}")
     print("global_lease_authority=1")
     print("max_sessions_global=1")
     print("controller_in_user_vpn_path=0")
@@ -953,7 +1051,8 @@ def node_status():
     print(f"host={conf.get('host','')}")
     print(f"port={conf.get('port','')}")
     print(f"tls_fingerprint={conf.get('tls_fingerprint','')}")
-    print("failure_mode=fail-closed")
+    print(f"grace_seconds={conf.get('grace_seconds','30')}")
+    print("new_grants_failure_mode=fail-closed")
 
 
 def install():
@@ -981,7 +1080,7 @@ def purge():
 
 
 def usage():
-    print("Uso: hive_leases.sh {--status|--node-status|--node-configure HOST PORT FP|--node-disable|--controller-init|--controller-status|--controller-enable BIND [PORT]|--controller-disable|--controller-rotate-tls|--limit-set ID MAX|--limit-import-local ID|--limit-sync-local|--limit-show ID|--limit-list|--limit-unset ID|--controller-list [ID]|--controller-revoke ID [REASON]|--acquire-node ID PROTO RESOURCE DEVICE SESSION [TTL]|--heartbeat-node ID SESSION [TTL]|--release-node ID SESSION|--serve-controller|--install|--detach|--purge}", file=sys.stderr)
+    print("Uso: hive_leases.sh {--status|--node-status|--node-configure HOST PORT FP [GRACE]|--node-disable|--controller-init|--controller-status|--controller-enable BIND [PORT]|--controller-disable|--controller-rotate-tls|--controller-grant ID PROTO [REGION] [POOL] [STICKY] [SCOPE] [DEVICE] [TTL]|--limit-set ID MAX [PRODUCT]|--limit-import-local ID|--limit-sync-local|--limit-show ID|--limit-list|--limit-unset ID|--controller-list [ID]|--controller-revoke ID [REASON]|--acquire-node ID PROTO RESOURCE DEVICE SESSION [TTL]|--heartbeat-node ID SESSION [TTL]|--release-node ID SESSION|--serve-controller|--install|--detach|--purge}", file=sys.stderr)
     raise SystemExit(64)
 
 
@@ -989,14 +1088,18 @@ def main(argv):
     cmd = argv[0] if argv else "--status"
     if cmd == "--status": status(); return
     if cmd == "--node-status": node_status(); return
-    if cmd == "--node-configure" and len(argv) == 4: node_configure(argv[1], argv[2], argv[3]); return
+    if cmd == "--node-configure" and len(argv) in {4,5}: node_configure(argv[1], argv[2], argv[3], argv[4] if len(argv) == 5 else 30); return
     if cmd == "--node-disable": node_disable(); return
     if cmd == "--controller-init": controller_status(); return
     if cmd == "--controller-status": controller_status(); return
     if cmd == "--controller-enable" and len(argv) in {2,3}: controller_enable(argv[1], argv[2] if len(argv) == 3 else DEFAULT_PORT); return
     if cmd == "--controller-disable": controller_disable(); return
     if cmd == "--controller-rotate-tls": controller_rotate_tls(); return
-    if cmd == "--limit-set" and len(argv) == 3: set_limit(argv[1], argv[2]); return
+    if cmd == "--controller-grant" and 3 <= len(argv) <= 9:
+        controller_grant(argv[1], argv[2], argv[3] if len(argv)>3 else "", argv[4] if len(argv)>4 else "",
+                         argv[5] if len(argv)>5 else "", argv[6] if len(argv)>6 else "*",
+                         argv[7] if len(argv)>7 else "grant", argv[8] if len(argv)>8 else DEFAULT_TTL); return
+    if cmd == "--limit-set" and len(argv) in {3,4}: set_limit(argv[1], argv[2], "manual", argv[3] if len(argv)==4 else ""); return
     if cmd == "--limit-import-local" and len(argv) == 2: import_local(argv[1]); return
     if cmd == "--limit-sync-local": sync_local(); return
     if cmd == "--limit-show" and len(argv) == 2: show_limit(argv[1]); return
