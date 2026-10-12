@@ -45,6 +45,21 @@ remove_protocol_pam_fallback() {
   rm -f "$tmp"
 }
 
+# Scheduler da Colmeia não possui daemon próprio. No uninstall normal seu estado
+# de placement/sticky é preservado; --purge remove estado e auditoria explicitamente.
+if [[ -x /opt/manager/modules/hive_scheduler.sh ]]; then
+  if $PURGE; then
+    /opt/manager/modules/hive_scheduler.sh --purge >/dev/null 2>&1 || true
+  else
+    /opt/manager/modules/hive_scheduler.sh --detach >/dev/null 2>&1 || true
+  fi
+else
+  if $PURGE; then
+    rm -rf /etc/manager/hive/controller/scheduler /var/lib/manager/hive-scheduler
+    rm -f /var/log/manager/hive-scheduler-audit.jsonl
+  fi
+fi
+
 # Automation v2 possui o socket Unix local e pode possuir o gateway TLS remoto.
 # Ambos precisam sair antes de /opt/manager ser removido. Estado, credenciais
 # públicas, idempotência, anti-replay e configuração TLS permanecem no uninstall
@@ -285,6 +300,7 @@ if $PURGE; then
   rm -rf /var/log/manager
   rm -rf /var/lib/manager/identity-usage
   rm -rf /var/lib/manager/automation-v2
+  rm -rf /var/lib/manager/hive-scheduler
   rm -rf /run/manager-ipv6-guard /run/manager-automation-v2
   rmdir /var/lib/manager 2>/dev/null || true
   systemctl daemon-reload || true
@@ -316,6 +332,7 @@ echo "[OK] Código do MANAGER removido."
 if ! $PURGE; then
   echo "As configurações em /etc/manager e serviços configurados foram preservados."
   echo "Produtos, vínculos, ACL e estado de franquia foram preservados no Connection Engine."
+  echo "O estado de placement/sticky do scheduler da Colmeia foi preservado; não há daemon do scheduler para permanecer ativo."
   echo "A configuração do Automation Legacy foi preservada, mas seu listener foi fechado e a conta de integração ficou bloqueada."
   echo "O estado/idempotência/anti-replay da Automation v2 e sua configuração TLS foram preservados, mas daemon, socket e gateway remoto foram removidos."
   echo "O histórico consolidado de uso em /var/lib/manager/identity-usage foi preservado."
