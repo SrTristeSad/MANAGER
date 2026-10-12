@@ -219,7 +219,7 @@ max_sessions_global = 1
 
 `global_accounting=0` permanece intencional; billing global não faz parte desta etapa.
 
-### 0.8.5 — VPN allocation / login global 🚧
+### 0.8.5 — VPN allocation / login global ✅
 
 Implementado nesta fase:
 
@@ -243,7 +243,7 @@ Adicionado no fechamento da fase:
 - `manager hive login create ...` inicia a allocation e `manager hive login result ALLOCATION_ID OUT` consulta/exporta o resultado;
 - SSH distingue credencial recém-emitida de credencial já existente, sem tornar senhas antigas recuperáveis;
 - WireGuard/OpenVPN devolvem o perfil gerenciado em base64 dentro do contrato;
-- `VERSION` continua 0.8.4 até os gates finais desta PR passarem.
+- release 0.8.5 fechada após o gate público de login/provisionamento e a regressão completa concluírem com sucesso.
 
 ### 0.8.6 — quotas e accounting globais
 
