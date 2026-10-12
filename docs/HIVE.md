@@ -456,7 +456,7 @@ offline_after_seconds=180
 manager hive health controller thresholds 75 180
 ```
 
-O heartbeat não transforma `manager-node-usage-v1` em billing global autoritativo. Accounting global continua fora da 0.8.3.
+O heartbeat não transforma `manager-node-usage-v1` em billing global autoritativo. Accounting global continua fora da 0.8.4.
 
 ## 9. Scheduler — 0.8.3
 
@@ -706,7 +706,9 @@ manager hive lease controller revoke maria compromised
 
 ### Protocol Lease Bridge e grace
 
-SSH, WireGuard e OpenVPN continuam entrando pelo `modules/protocol_leases.sh`. Quando enforcement global está configurado, uma admissão só conclui depois do acquire global; negativa ou indisponibilidade em uma **nova** sessão falha fechado e a lease local é revertida.
+SSH e OpenVPN continuam entrando pelo `modules/protocol_leases.sh` com admissão síncrona: o PAM `open_session` e o `client-connect` do OpenVPN só concluem a nova sessão depois do acquire global. Negativa ou indisponibilidade da autoridade em uma nova sessão falha fechado e a lease local é revertida.
+
+WireGuard não possui um hook de login equivalente na 0.8.4. O bridge observa handshakes recentes e aplica a autoridade global no ciclo de reconciliação. Se o acquire global for recusado ou não puder ser obtido, a lease local é revertida e o tráfego do cliente é bloqueado por regra DROP gerenciada em `wg0`; se a regra não puder ser aplicada, o peer runtime é removido. Portanto, o enforcement WireGuard da 0.8.4 é fail-closed por reconciliação, não uma admissão pré-handshake. Grant/login antes da primeira sessão WireGuard pertence à 0.8.5.
 
 Sessões já aceitas podem receber um grace curto (`0..120 s`, default `30`) somente quando o transporte da autoridade fica indisponível. Uma resposta autoritativa de deny, revogação, epoch antigo ou lease ausente encerra o mapa no próximo heartbeat e **não** recebe grace.
 
