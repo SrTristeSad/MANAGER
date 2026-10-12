@@ -1,4 +1,4 @@
-name: Temporary Execute Remote Provisioning Wiring
+name: Temporary Compatibility Patch
 
 on:
   push:
@@ -10,64 +10,25 @@ permissions:
 
 jobs:
   apply:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
           ref: feature/0.8.5-remote-provisioning
-      - name: Apply compatibility fixes and commit
+      - name: Apply compatibility patch
+        run: python3 scripts/tmp_apply_remote_provisioning.py
+      - name: Validate shell
+        run: bash -n modules/provision.sh
+      - name: Commit product changes
         shell: bash
         run: |
-          set -euxo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          p = Path('modules/provision.sh')
-          s = p.read_text()
-
-          replacements = [
-              ('[[ "$binding" == "$id" ]] && id "$binding" >/dev/null 2>&1 || {', 'id "$binding" >/dev/null 2>&1 || {', 1),
-              ('[[ "$binding" == "$id" && -f "$WG_CLIENT_DIR/$binding.conf" && -f "$WG_CLIENT_DIR/$binding.meta" ]] || {', '[[ -f "$WG_CLIENT_DIR/$binding.conf" && -f "$WG_CLIENT_DIR/$binding.meta" ]] || {', 1),
-              ('[[ "$binding" == "$id" && -f "$OVPN_CLIENT_DIR/$binding.ovpn" && -f "$OVPN_META_DIR/$binding.meta" ]] || {', '[[ -f "$OVPN_CLIENT_DIR/$binding.ovpn" && -f "$OVPN_META_DIR/$binding.meta" ]] || {', 1),
-              ('        created=1\n      fi\n      ;;\n    wireguard)', '        created=1\n        binding="$id"\n      fi\n      ;;\n    wireguard)', 1),
-              ('        created=1\n      fi\n      ;;\n    openvpn)', '        created=1\n        binding="$id"\n      fi\n      ;;\n    openvpn)', 1),
-              ('        created=1\n      fi\n      ;;\n  esac', '        created=1\n        binding="$id"\n      fi\n      ;;\n  esac', 1),
-              ('"$WG_CLIENT_DIR/$id.meta")"', '"$WG_CLIENT_DIR/$binding.meta")"', 2),
-              ('ssh) printf \'ssh_user=%s\\n\' "$id";', 'ssh) printf \'ssh_user=%s\\n\' "$binding";', 1),
-              ('wireguard) printf \'wireguard_client=%s\\nwireguard_ip=%s\\nwireguard_ipv4=%s\\nwireguard_ipv6=%s\\nwireguard_profile=%s\\n\' "$id" "${PROV_WG_IP:-}" "${PROV_WG_IP:-}" "${PROV_WG_IP6:-}" "$WG_CLIENT_DIR/$id.conf"', 'wireguard) printf \'wireguard_client=%s\\nwireguard_ip=%s\\nwireguard_ipv4=%s\\nwireguard_ipv6=%s\\nwireguard_profile=%s\\n\' "$binding" "${PROV_WG_IP:-}" "${PROV_WG_IP:-}" "${PROV_WG_IP6:-}" "$WG_CLIENT_DIR/$binding.conf"', 1),
-              ('openvpn) printf \'openvpn_client=%s\\nopenvpn_profile=%s\\n\' "$id" "$OVPN_CLIENT_DIR/$id.ovpn"', 'openvpn) printf \'openvpn_client=%s\\nopenvpn_profile=%s\\n\' "$binding" "$OVPN_CLIENT_DIR/$binding.ovpn"', 1),
-          ]
-          for old, new, expected in replacements:
-              count = s.count(old)
-              if count != expected:
-                  raise SystemExit(f'provision compatibility anchor mismatch ({count}!={expected}): {old[:100]}')
-              s = s.replace(old, new)
-          p.write_text(s)
-
-          p = Path('.github/workflows/hive-vpn-allocation-distribution.yml')
-          s = p.read_text()
-          old = '''          id alloc-dist-ssh >/dev/null 2>&1 || sudo useradd -M -s /usr/sbin/nologin alloc-dist-ssh
-          sudo /opt/manager/modules/connection_engine.sh --create allocdist '' 0 10 ssh >/dev/null
-          sudo /opt/manager/modules/connection_engine.sh --bind allocdist ssh alloc-dist-ssh >/dev/null
-          sudo manager hive lease limit set allocdist 1 PREMIUM >/dev/null
-'''
-          new = '''          sudo /opt/manager/modules/products.sh --create PREMIUM 'CI Premium' 1 0 10 ssh 0 none warn '*' '*' '*'
-          id alloc-dist-ssh >/dev/null 2>&1 || sudo useradd -M -s /usr/sbin/nologin alloc-dist-ssh
-          sudo /opt/manager/modules/connection_engine.sh --create allocdist '' 0 10 ssh >/dev/null
-          sudo /opt/manager/modules/connection_engine.sh --bind allocdist ssh alloc-dist-ssh >/dev/null
-          sudo /opt/manager/modules/products.sh --assign allocdist PREMIUM >/dev/null
-          sudo manager hive lease limit set allocdist 1 PREMIUM >/dev/null
-'''
-          if s.count(old) != 1:
-              raise SystemExit('distribution compatibility fixture anchor mismatch')
-          s = s.replace(old, new)
-          p.write_text(s)
-          PY
-
-          bash -n modules/provision.sh
+          set -euo pipefail
           git config user.name 'SrTristeSad'
           git config user.email '48489740+SrTristeSad@users.noreply.github.com'
           git add modules/provision.sh .github/workflows/hive-vpn-allocation-distribution.yml
-          git diff --cached --quiet && exit 0
+          if git diff --cached --quiet; then
+            exit 0
+          fi
           git commit -m 'fix: preserve existing MANAGER protocol bindings'
           git push origin HEAD:feature/0.8.5-remote-provisioning
