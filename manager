@@ -108,6 +108,14 @@ Uso:
   manager hive accounting quota set ID PRODUCT BYTES PERIOD ACTION
   manager hive accounting quota show ID|list|unset ID|import-local ID|sync-local
                                   accounting/franquia global da Colmeia (0.8.6)
+  manager hive remote status
+  manager hive remote node enable ENDPOINT ACTIONS OUT
+  manager hive remote node disable OUT
+  manager hive remote controller status|list
+  manager hive remote controller show NODE_ID
+  manager hive remote controller accept ADVERTISEMENT
+  manager hive remote controller call NODE_ID ACTION [KEY=VALUE ...] [--request-id ID]
+                                  roteamento remoto tipado e assinado da Colmeia (0.8.8)
   manager automation legacy status
   manager automation legacy enable [PORT]
   manager automation legacy disable
@@ -428,6 +436,34 @@ case "${1:-}" in
           *) err "Uso: manager hive node {status|list|show|placement|drain|undrain|select} ..."; exit 64 ;;
         esac
         ;;
+      remote)
+        case "${3:-status}" in
+          status) exec "$MANAGER_HOME/modules/hive_remote.sh" --status ;;
+          node)
+            case "${4:-status}" in
+              status) exec "$MANAGER_HOME/modules/hive_remote.sh" --status ;;
+              enable) [[ -n "${5:-}" && -n "${6:-}" && -n "${7:-}" ]] || { err "Uso: manager hive remote node enable ENDPOINT ACTIONS OUT"; exit 64; }; exec "$MANAGER_HOME/modules/hive_remote.sh" --node-enable "$5" "$6" "$7" ;;
+              disable) [[ -n "${5:-}" ]] || { err "Uso: manager hive remote node disable OUT"; exit 64; }; exec "$MANAGER_HOME/modules/hive_remote.sh" --node-disable "$5" ;;
+              *) err "Uso: manager hive remote node {status|enable|disable} ..."; exit 64 ;;
+            esac
+            ;;
+          controller)
+            case "${4:-status}" in
+              status) exec "$MANAGER_HOME/modules/hive_remote.sh" --controller-status ;;
+              list) exec "$MANAGER_HOME/modules/hive_remote.sh" --controller-list ;;
+              show) [[ -n "${5:-}" ]] || { err "Uso: manager hive remote controller show NODE_ID"; exit 64; }; exec "$MANAGER_HOME/modules/hive_remote.sh" --controller-show "$5" ;;
+              accept) [[ -n "${5:-}" ]] || { err "Uso: manager hive remote controller accept ADVERTISEMENT"; exit 64; }; exec "$MANAGER_HOME/modules/hive_remote.sh" --controller-accept "$5" ;;
+              call)
+                [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager hive remote controller call NODE_ID ACTION [ARGS...]"; exit 64; }
+                remote_node="$5"; remote_action="$6"; shift 6
+                exec "$MANAGER_HOME/modules/hive_remote.sh" --controller-call "$remote_node" "$remote_action" "$@"
+                ;;
+              *) err "Uso: manager hive remote controller {status|list|show|accept|call} ..."; exit 64 ;;
+            esac
+            ;;
+          *) err "Uso: manager hive remote {status|node ...|controller ...}"; exit 64 ;;
+        esac
+        ;;
       controller)
         case "${3:-status}" in
           init) exec "$MANAGER_HOME/modules/hive_identity.sh" --controller-init ;;
@@ -441,7 +477,7 @@ case "${1:-}" in
           *) err "Ação de controlador da Colmeia inválida: ${3:-}"; exit 64 ;;
         esac
         ;;
-      *) err "Uso: manager hive {status|request|accept|network ...|health ...|node ...|lease ...|allocation ...|login ...|controller ...}"; exit 64 ;;
+      *) err "Uso: manager hive {status|request|accept|network ...|health ...|node ...|lease ...|allocation ...|login ...|remote ...|controller ...}"; exit 64 ;;
     esac
     ;;
   automation)

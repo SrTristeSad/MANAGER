@@ -126,6 +126,8 @@ remote_scoped_rbac=1
 remote_node_scope=1
 remote_pool_scope=1
 remote_action_scope=1
+hive_controller_remote_auth=1
+hive_controller_private_key_distribution=0
 ```
 
 `remote_transport=1` representa capacidade implementada. Use `manager automation v2 remote status` para saber se o listener está efetivamente habilitado.
@@ -191,6 +193,8 @@ manager automation v2 principal scope loja01 'node-a,node-b' 'BR-SP,BR-RJ' 'syst
 ```
 
 A validação acontece **antes da idempotência e antes do dispatcher**. Assim, um `request_id` anteriormente autorizado não pode servir resultado em cache depois que o principal perde acesso à ação, ao nó ou ao pool. `local-root` continua reservado ao socket Unix local e não recebe escopo remoto configurável.
+
+O roteamento da Colmeia pode usar o principal reservado `hive-controller`. Ele não possui uma chave privada própria da Automation: o controlador assina com a identidade Ed25519 da Colmeia já confiada pelo enrollment, e cada nó verifica contra `/etc/manager/hive/node/controller.pub`. A política é opt-in por nó, exige `action_scope` explícito e é cercada por `node_epoch`; a chave privada do controlador nunca é distribuída aos nós.
 
 ## Credenciais Ed25519
 

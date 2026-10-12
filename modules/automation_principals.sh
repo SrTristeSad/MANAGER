@@ -12,6 +12,7 @@ PRINCIPALS_DIR="$STATE_DIR/principals"
 RESELLERS_DIR="$MANAGER_ETC/access/resellers"
 IDENTITY_DIR="$MANAGER_ETC/connection/identities"
 LOCAL_ROOT_ID="local-root"
+HIVE_CONTROLLER_ID="hive-controller"
 
 valid_principal_id() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$ ]]; }
 valid_subject_id() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$ ]]; }
@@ -139,6 +140,7 @@ create_principal() {
   init_state
   valid_principal_id "$id" || { err "principal_id inválido"; return 64; }
   [[ "$id" != "$LOCAL_ROOT_ID" ]] || { err "$LOCAL_ROOT_ID é reservado"; return 65; }
+  [[ "$id" != "$HIVE_CONTROLLER_ID" ]] || { err "$HIVE_CONTROLLER_ID é reservado para a identidade da Colmeia"; return 65; }
   [[ ! -e "$(principal_file "$id")" ]] || { err "Principal já existe: $id"; return 65; }
 
   case "$role" in

@@ -948,3 +948,47 @@ Semântica operacional:
 - sticky affinity continua sendo usada enquanto o nó permanecer elegível.
 
 Eventos `node-authority-outage`, `node-authority-recovered` e `node-authority-fenced` entram no audit de leases sem persistir segredos.
+
+## 23. Roteamento remoto tipado — fundação 0.8.8
+
+O roteamento administrativo reutiliza a Automation v2 e a identidade criptográfica já enrolled da Colmeia; não cria shell remoto nem uma segunda autoridade.
+
+Fluxo explícito por nó:
+
+```text
+nó habilita o gateway Automation v2 TLS 1.3
+        ↓
+nó cria anúncio de rota assinado com endpoint IP literal, fingerprint TLS e action_scope
+        ↓
+controlador valida assinatura, node_epoch e route_epoch e persiste a rota por node_id
+        ↓
+manager hive remote controller call NODE ACTION ...
+        ↓
+controlador assina a requisição tipada com sua chave Ed25519 da Colmeia
+        ↓
+nó valida controller.pub + policy local + node_epoch + action_scope
+        ↓
+Automation v2 executa somente a ação allowlisted
+```
+
+```bash
+# no nó (gateway remoto já habilitado)
+manager hive remote node enable 203.0.113.20:9443 'system.describe,node.usage' /root/node.route.json
+
+# no controlador
+manager hive remote controller accept /root/node.route.json
+manager hive remote controller list
+manager hive remote controller call node-0123456789abcdef system.describe
+```
+
+Fronteiras de segurança:
+
+- o `call` recebe `node_id`, nunca host/porta arbitrários;
+- endpoint/fingerprint entram no controlador somente por anúncio assinado do nó enrolled;
+- `route_epoch` monotônico impede reativar anúncio antigo após disable/update;
+- `node_epoch` cerca rota após revoke/re-enrollment;
+- a ação precisa existir na allowlist da Automation v2 e no `action_scope` anunciado;
+- o nó revalida a mesma política antes do dispatcher e antes de replay idempotente;
+- TLS permanece 1.3 com fingerprint SHA-256 pinado;
+- a chave privada Ed25519 do controlador permanece apenas no controlador;
+- esta fundação roteia por `node_id`; seleção por pool continua pendente para fechar a 0.8.8.

@@ -114,6 +114,19 @@ else
   fi
 fi
 
+# Roteamento remoto 0.8.8 não possui daemon próprio. Rotas assinadas e política
+# do controlador sobrevivem ao uninstall normal e são removidas apenas no purge.
+if [[ -x /opt/manager/modules/hive_remote.sh ]]; then
+  if $PURGE; then
+    /opt/manager/modules/hive_remote.sh --purge >/dev/null 2>&1 || true
+  else
+    /opt/manager/modules/hive_remote.sh --detach >/dev/null 2>&1 || true
+  fi
+elif $PURGE; then
+  rm -rf /etc/manager/hive/controller/remote
+  rm -f /etc/manager/automation/v2/hive-controller.conf /var/log/manager/hive-remote-audit.jsonl
+fi
+
 # Automation v2 possui o socket Unix local e pode possuir o gateway TLS remoto.
 # Ambos precisam sair antes de /opt/manager ser removido. Estado, credenciais
 # públicas, idempotência, anti-replay e configuração TLS permanecem no uninstall

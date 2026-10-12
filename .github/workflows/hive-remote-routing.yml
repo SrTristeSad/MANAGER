@@ -1,0 +1,226 @@
+name: Hive Remote Typed Routing
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hive-remote-routing:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="file://${GITHUB_WORKSPACE}" bash install.sh
+          test "$(sudo cat /opt/manager/VERSION)" = 0.8.7
+          sudo test -x /opt/manager/modules/hive_remote.sh
+          sudo manager automation v2 status | grep -q '^hive_controller_remote_auth=1$'
+          sudo manager automation v2 status | grep -q '^hive_controller_private_key_distribution=0$'
+          sudo manager hive remote status | grep -q '^arbitrary_target=0$'
+
+      - name: Initialize controller and enroll the local node
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager hive controller init >/tmp/controller.init
+          controller_fp="$(sudo manager hive controller fingerprint)"
+          sudo manager hive request /tmp/node.request.json >/dev/null
+          sudo manager hive controller approve /tmp/node.request.json /tmp/node.bundle.json >/dev/null
+          sudo manager hive accept /tmp/node.bundle.json "$controller_fp" >/dev/null
+          sudo manager --node-set pool BR-SP >/dev/null
+          node="$(sudo manager hive status | awk -F= '$1=="node_id"{print $2}')"
+          test -n "$node"
+          printf '%s\n' "$node" >/tmp/node.id
+          sudo manager hive controller show "$node" | grep -q '^enabled=1$'
+
+          if sudo manager automation v2 principal create hive-controller admin >/tmp/reserved.out 2>/tmp/reserved.err; then
+            echo 'reserved hive-controller principal was created through normal RBAC CLI' >&2
+            exit 1
+          fi
+          grep -q 'reservado para a identidade da Colmeia' /tmp/reserved.err
+
+      - name: Enable TLS gateway and create signed route advertisement
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager automation v2 remote enable 127.0.0.1 19443 >/tmp/remote.enable
+          ready=0
+          for _ in $(seq 1 50); do
+            if sudo ss -ltnH | awk '$4 ~ /:19443$/ {found=1} END {exit(found ? 0 : 1)}'; then ready=1; break; fi
+            sleep 0.1
+          done
+          test "$ready" -eq 1
+
+          route="$(sudo manager hive remote node enable 127.0.0.1:19443 'system.describe,node.usage' /tmp/route.v1.json)"
+          grep -q '^route_epoch=1$' <<<"$route"
+          grep -q '^route_enabled=1$' <<<"$route"
+          grep -q '^action_scope=system.describe,node.usage$' <<<"$route"
+          sudo test -f /etc/manager/automation/v2/hive-controller.conf
+          test "$(sudo stat -c '%a' /etc/manager/automation/v2/hive-controller.conf)" = 600
+          test "$(stat -c '%a' /tmp/route.v1.json)" = 600
+
+      - name: Reject tampering and accept only the enrolled node route
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo cp /tmp/route.v1.json /tmp/route.tampered.json
+          sudo python3 - <<'PY'
+          import json
+          p='/tmp/route.tampered.json'
+          d=json.load(open(p))
+          d['endpoint']='127.0.0.1:19444'
+          json.dump(d,open(p,'w'),sort_keys=True,separators=(',',':'))
+          PY
+          sudo chmod 600 /tmp/route.tampered.json
+          if sudo manager hive remote controller accept /tmp/route.tampered.json >/tmp/tamper.out 2>/tmp/tamper.err; then
+            echo 'tampered signed route advertisement was accepted' >&2
+            exit 1
+          fi
+          grep -q 'Assinatura do anúncio remoto não confere' /tmp/tamper.err
+
+          accepted="$(sudo manager hive remote controller accept /tmp/route.v1.json)"
+          grep -q '^route_accepted=1$' <<<"$accepted"
+          grep -q '^idempotent=0$' <<<"$accepted"
+          same="$(sudo manager hive remote controller accept /tmp/route.v1.json)"
+          grep -q '^idempotent=1$' <<<"$same"
+          node="$(cat /tmp/node.id)"
+          sudo manager hive remote controller show "$node" | grep -q '^endpoint=127.0.0.1:19443$'
+          sudo manager hive remote controller show "$node" | grep -q '^action_scope=system.describe,node.usage$'
+          sudo manager hive remote controller list | grep -q "^${node}|1|"
+
+      - name: Route typed calls by node id with controller Ed25519 identity
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node="$(cat /tmp/node.id)"
+          sudo manager hive remote controller call "$node" system.describe --request-id hive-route-describe01 >/tmp/describe.json
+          sudo python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/describe.json'))
+          assert r['ok'] is True and r['code']==0
+          assert r['principal_id']=='hive-controller'
+          assert r['principal_role']=='admin'
+          assert r['cached'] is False
+          PY
+          sudo manager hive remote controller call "$node" node.usage --request-id hive-route-usage0001 >/tmp/usage.json
+          sudo python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/usage.json'))
+          assert r['ok'] is True and r['principal_id']=='hive-controller'
+          PY
+
+          if sudo manager hive remote controller call "$node" connection.create id=nope plan=nope --request-id hive-route-deny0001 >/tmp/scope.out 2>/tmp/scope.err; then
+            echo 'controller routed action outside signed route scope' >&2
+            exit 1
+          fi
+          grep -q 'Ação não está no escopo anunciado pelo nó' /tmp/scope.err
+
+          if sudo manager hive remote controller call 127.0.0.1:19443 system.describe >/tmp/arbitrary.out 2>/tmp/arbitrary.err; then
+            echo 'controller accepted arbitrary endpoint as routing target' >&2
+            exit 1
+          fi
+          grep -q 'node_id inválido' /tmp/arbitrary.err
+
+          sudo python3 - <<'PY'
+          import json
+          found=False
+          with open('/var/log/manager/automation-v2-audit.jsonl') as fh:
+              for line in fh:
+                  e=json.loads(line)
+                  if e.get('request_id')=='hive-route-describe01':
+                      assert e.get('principal_id')=='hive-controller'
+                      assert e.get('auth_scheme')=='ed25519-v2'
+                      assert e.get('transport')=='remote-tls-v1'
+                      assert e.get('rbac_decision')=='allow'
+                      found=True
+          assert found
+          PY
+          sudo grep -q '"event":"controller-route-call"' /var/log/manager/hive-remote-audit.jsonl
+
+      - name: Fence stale route generations across disable and re-enable
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node="$(cat /tmp/node.id)"
+          disabled="$(sudo manager hive remote node disable /tmp/route.v2.disable.json)"
+          grep -q '^route_epoch=2$' <<<"$disabled"
+          grep -q '^route_enabled=0$' <<<"$disabled"
+          sudo manager hive remote controller accept /tmp/route.v2.disable.json >/tmp/disable.accept
+          grep -q '^route_enabled=0$' /tmp/disable.accept
+          if sudo manager hive remote controller call "$node" system.describe >/tmp/disabled.out 2>/tmp/disabled.err; then
+            echo 'disabled route still accepted a remote call' >&2
+            exit 1
+          fi
+          grep -q 'Rota remota do nó não está habilitada' /tmp/disabled.err
+
+          if sudo manager hive remote controller accept /tmp/route.v1.json >/tmp/stale.out 2>/tmp/stale.err; then
+            echo 'stale route_epoch advertisement was accepted after disable' >&2
+            exit 1
+          fi
+          grep -q 'route_epoch' /tmp/stale.err
+
+          enabled="$(sudo manager hive remote node enable 127.0.0.1:19443 'system.describe,node.usage' /tmp/route.v3.json)"
+          grep -q '^route_epoch=3$' <<<"$enabled"
+          sudo manager hive remote controller accept /tmp/route.v3.json >/dev/null
+          sudo manager hive remote controller call "$node" system.describe --request-id hive-route-restored1 >/tmp/restored.json
+          sudo python3 - <<'PY'
+          import json
+          assert json.load(open('/tmp/restored.json'))['ok'] is True
+          PY
+
+      - name: Preserve route registry and node policy across normal uninstall
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node="$(cat /tmp/node.id)"
+          sudo test -f "/etc/manager/hive/controller/remote/${node}.conf"
+          sudo test -f /etc/manager/automation/v2/hive-controller.conf
+          sudo manager-uninstall >/tmp/uninstall.out
+          sudo test -f "/etc/manager/hive/controller/remote/${node}.conf"
+          sudo test -f /etc/manager/automation/v2/hive-controller.conf
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="file://${GITHUB_WORKSPACE}" bash install.sh >/tmp/reinstall.out
+          sudo test -x /opt/manager/modules/hive_remote.sh
+          sudo manager hive remote controller show "$node" | grep -q '^route_epoch=3$'
+          ready=0
+          for _ in $(seq 1 50); do
+            if sudo ss -ltnH | awk '$4 ~ /:19443$/ {found=1} END {exit(found ? 0 : 1)}'; then ready=1; break; fi
+            sleep 0.1
+          done
+          test "$ready" -eq 1
+          sudo manager hive remote controller call "$node" system.describe --request-id hive-route-reinstall1 >/tmp/reinstall-call.json
+          sudo python3 - <<'PY'
+          import json
+          assert json.load(open('/tmp/reinstall-call.json'))['ok'] is True
+          PY
+
+      - name: Fence revoked node before any network call
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node="$(cat /tmp/node.id)"
+          sudo manager hive controller revoke "$node" ci-remote-fence >/tmp/revoke.out
+          grep -q '^revoked=1$' /tmp/revoke.out
+          if sudo manager hive remote controller call "$node" system.describe >/tmp/revoked.out 2>/tmp/revoked.err; then
+            echo 'revoked node kept remote routing authority' >&2
+            exit 1
+          fi
+          grep -q 'revogado/desabilitado' /tmp/revoked.err
+
+      - name: Purge only the 0.8.8 remote routing state
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/hive_remote.sh --purge >/tmp/purge.out
+          grep -q '^remote_routing_purged=1$' /tmp/purge.out
+          sudo test ! -e /etc/manager/hive/controller/remote
+          sudo test ! -e /etc/manager/automation/v2/hive-controller.conf
+          sudo test ! -e /var/log/manager/hive-remote-audit.jsonl
+          sudo test -f /etc/manager/hive/controller/controller.conf
+          sudo test -f /etc/manager/hive/node/enrollment.conf

@@ -94,6 +94,7 @@ FILES=(
   "modules/hive_leases.sh"
   "modules/hive_allocations.sh"
   "modules/hive_accounting.sh"
+  "modules/hive_remote.sh"
   "modules/hive_lifecycle.sh"
   "modules/products.sh"
   "modules/provision.sh"
@@ -229,6 +230,9 @@ chmod 0644 "$ETC_DIR/installed-version"
 }
 "$INSTALL_DIR/modules/hive_accounting.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O accounting global 0.8.6 não pôde ser reanexado. Use: manager hive accounting status" >&2
+}
+"$INSTALL_DIR/modules/hive_remote.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] O registro de roteamento remoto da Colmeia não pôde ser inicializado. Use: manager hive remote controller status" >&2
 }
 "$INSTALL_DIR/modules/resellers.sh" --init >/dev/null
 "$INSTALL_DIR/modules/automation_principals.sh" --init >/dev/null
