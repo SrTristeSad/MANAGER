@@ -714,7 +714,40 @@ Sessões já aceitas podem receber um grace curto (`0..120 s`, default `30`) som
 
 O controlador continua fora do caminho de dados do usuário: ele autoriza/renova a sessão, mas os pacotes VPN não atravessam o listener de lease.
 
-## 16. Audit global
+## 16. Allocation / login global — fundação 0.8.5
+
+A 0.8.5 introduz um ticket de allocation assinado pelo controlador. Ele vincula `identity_id`, `product_id`, protocolo, região/pool, nó e `node_epoch`, `global_lease_id`, `global_epoch` e `session_epoch`. O nó só aceita tickets destinados ao enrollment atual.
+
+O modo é opt-in para preservar a compatibilidade da 0.8.4:
+
+```bash
+manager hive allocation enable
+```
+
+No controlador, uma allocation cria primeiro um grant global reservado e então emite o bundle Ed25519:
+
+```bash
+manager hive allocation controller create \
+  maria wireguard /root/maria.alloc.json BR-SP PREMIUM maria '*' 60
+```
+
+No nó selecionado:
+
+```bash
+manager hive allocation accept /root/maria.alloc.json
+```
+
+Quando o enforcement de allocation está ativo, o Protocol Lease Bridge exige um ticket local atual e reclama **exatamente** o `global_lease_id` vinculado. Não existe fallback para acquire global genérico apenas porque ainda há capacidade. SSH/OpenVPN continuam com admissão síncrona; WireGuard passa a poder receber autorização antes do primeiro uso quando a allocation é entregue ao nó.
+
+Revogação avança o `session_epoch` da allocation e também revoga grants/leases globais:
+
+```bash
+manager hive allocation controller revoke maria compromised
+```
+
+O controlador continua fora do caminho de dados VPN.
+
+## 17. Audit global
 
 ```text
 /var/log/manager/hive-lease-audit.jsonl
@@ -722,11 +755,11 @@ O controlador continua fora do caminho de dados do usuário: ele autoriza/renova
 
 O audit registra limite, acquire, heartbeat, release, grant/claim, deny, expiry, fencing e revogação, sem persistir chave privada ou segredo de VPN.
 
-## 17. Limites desta etapa
+## 18. Limites desta etapa
 
 A 0.8.4 **não** implementa accounting/billing global (`global_accounting=0`) e não transforma o login/provisionamento VPN em uma API global completa. Essas responsabilidades continuam nas próximas etapas.
 
-## 18. Lifecycle
+## 19. Lifecycle
 
 A rede/health continuam ligados a `modules/hive_lifecycle.sh` e ao lifecycle da `manager-automation-v2.service`.
 
@@ -750,7 +783,7 @@ O scheduler não possui daemon próprio. Seu lifecycle é de estado:
 
 A malha/health continuam destacando seus units/runtime antes da remoção do código.
 
-## 19. Backup
+## 20. Backup
 
 `/etc/manager/hive` entra no backup protegido do MANAGER. Pode conter:
 

@@ -92,6 +92,7 @@ FILES=(
   "modules/hive_health.sh"
   "modules/hive_scheduler.sh"
   "modules/hive_leases.sh"
+  "modules/hive_allocations.sh"
   "modules/hive_lifecycle.sh"
   "modules/products.sh"
   "modules/provision.sh"
@@ -221,6 +222,9 @@ chmod 0644 "$ETC_DIR/installed-version"
 }
 "$INSTALL_DIR/modules/hive_leases.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] A autoridade global de leases não pôde ser reanexada. Use: manager hive lease status" >&2
+}
+"$INSTALL_DIR/modules/hive_allocations.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] O estado de allocation 0.8.5 não pôde ser inicializado. Use: manager hive allocation status" >&2
 }
 "$INSTALL_DIR/modules/resellers.sh" --init >/dev/null
 "$INSTALL_DIR/modules/automation_principals.sh" --init >/dev/null

@@ -1,0 +1,178 @@
+name: Hive VPN Allocation Foundation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hive-vpn-allocation:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo test -x /opt/manager/modules/hive_allocations.sh
+          test "$(sudo cat /opt/manager/VERSION)" = 0.8.4
+          sudo manager hive allocation status | grep -q '^signed_allocation_bundle=1$'
+
+      - name: Initialize controller, enroll node and enable global authority
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager hive controller init >/tmp/controller.init
+          sudo manager hive lease controller init >/tmp/lease.init
+          sudo manager hive lease controller enable 127.0.0.1 19445 >/tmp/lease.enable
+          lease_fp="$(sudo manager hive lease controller status | awk -F= '$1=="tls_fingerprint"{print $2}')"
+          controller_fp="$(sudo manager hive controller fingerprint)"
+          sudo manager hive request /tmp/node.request.json >/dev/null
+          sudo manager hive controller approve /tmp/node.request.json /tmp/node.bundle.json >/dev/null
+          sudo manager hive accept /tmp/node.bundle.json "$controller_fp" >/dev/null
+          sudo manager hive lease node configure 127.0.0.1 19445 "$lease_fp" 30 >/dev/null
+          node="$(sudo manager hive status | awk -F= '$1=="node_id"{print $2}')"
+          test -n "$node"
+          printf '%s\n' "$node" >/tmp/node.id
+          sudo manager hive node placement "$node" BR-SP-A BR BR-SP PREMIUM >/dev/null
+          sudo mkdir -p /etc/manager/hive/controller/health /var/lib/manager/hive-health/nodes
+          cat <<'EOF' | sudo tee /etc/manager/hive/controller/health/controller.conf >/dev/null
+          version=1
+          degraded_after_seconds=75
+          offline_after_seconds=180
+          EOF
+          now="$(date +%s)"
+          sudo python3 - "$now" "$node" <<'PY'
+          import json, sys
+          now=int(sys.argv[1]); node=sys.argv[2]
+          conf={}
+          with open(f'/etc/manager/hive/controller/nodes/{node}.conf') as f:
+              for line in f:
+                  if '=' in line:
+                      k,v=line.rstrip().split('=',1); conf[k]=v
+          obs={'version':1,'node_id':node,'node_epoch':int(conf['node_epoch']),'issued_at':now,'received_at':now,
+               'source':'ci','base_state':'HEALTHY','base_reason':'ok',
+               'metrics':{'sessions':0,'max_sessions':100,'capacity':10,'weight':1,'previous_rtt_ms':10,
+                          'protocols':['ssh','wireguard','openvpn'],'service_ssh':'active',
+                          'service_wireguard':'active','service_openvpn':'active'}}
+          with open(f'/var/lib/manager/hive-health/nodes/{node}.json','w') as f:
+              json.dump(obs,f,sort_keys=True,separators=(',',':'))
+          PY
+          sudo chmod 600 /var/lib/manager/hive-health/nodes/*.json
+          sudo manager hive allocation enable >/tmp/allocation.enable
+          grep -q '^vpn_allocation_enforcement=1$' /tmp/allocation.enable
+          sudo manager hive allocation controller status | grep -q '^session_epoch_fencing=1$'
+
+      - name: Create signed allocation and reject tampering
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo useradd -M -s /usr/sbin/nologin alloc-ssh
+          sudo mkdir -p /etc/manager/openvpn/meta /etc/manager/wireguard/clients
+          printf 'client=ovpn-alloc-ci\n' | sudo tee /etc/manager/openvpn/meta/ovpn-alloc-ci.meta >/dev/null
+          printf 'client=wg-alloc-ci\n' | sudo tee /etc/manager/wireguard/clients/wg-alloc-ci.meta >/dev/null
+          printf '[Interface]\nPrivateKey=ci-placeholder\n' | sudo tee /etc/manager/wireguard/clients/wg-alloc-ci.conf >/dev/null
+
+          sudo /opt/manager/modules/connection_engine.sh --create allocci '' 0 10 ssh,wireguard,openvpn >/dev/null
+          sudo /opt/manager/modules/connection_engine.sh --bind allocci ssh alloc-ssh >/dev/null
+          sudo /opt/manager/modules/connection_engine.sh --bind allocci openvpn ovpn-alloc-ci >/dev/null
+          sudo /opt/manager/modules/connection_engine.sh --bind allocci wireguard wg-alloc-ci >/dev/null
+          sudo manager hive lease limit set allocci 2 PREMIUM >/dev/null
+
+          alloc="$(sudo manager hive allocation controller create allocci ssh /tmp/ssh.alloc.json BR-SP PREMIUM alloc-sticky '*' 120)"
+          grep -q '^contract=manager-hive-vpn-allocation-v1$' <<<"$alloc"
+          grep -q '^product_id=PREMIUM$' <<<"$alloc"
+          grep -q '^lease_state=reserved$' <<<"$alloc"
+          test "$(awk -F= '$1=="selected_node"{print $2}' <<<"$alloc")" = "$(cat /tmp/node.id)"
+
+          sudo cp /tmp/ssh.alloc.json /tmp/ssh.tampered.json
+          sudo python3 - <<'PY'
+          import json
+          p='/tmp/ssh.tampered.json'
+          d=json.load(open(p)); d['product_id']='EVIL'
+          json.dump(d,open(p,'w'),sort_keys=True,separators=(',',':'))
+          PY
+          if sudo manager hive allocation accept /tmp/ssh.tampered.json; then
+            echo 'tampered allocation was accepted' >&2
+            exit 1
+          fi
+          sudo manager hive allocation accept /tmp/ssh.alloc.json >/tmp/ssh.accept
+          grep -q '^allocation_accepted=1$' /tmp/ssh.accept
+
+      - name: Require exact allocation even with spare global capacity
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/protocol_leases.sh --observe-connect ssh alloc-ssh alloc-device-a 0 ci notty
+          test "$(sudo /opt/manager/modules/session_engine.sh --list allocci | grep -c '^allocci' || true)" = 1
+          global="$(sudo manager hive lease controller list allocci)"
+          test "$(grep -c '^allocci|' <<<"$global")" = 1
+          grep -q '|ssh|' <<<"$global"
+
+          # max_sessions_global=2 still has a spare slot, but there is no second allocation.
+          if sudo /opt/manager/modules/protocol_leases.sh --observe-connect ssh alloc-ssh alloc-device-b 0 ci notty; then
+            echo 'session bypassed required exact allocation' >&2
+            exit 1
+          fi
+          test "$(sudo /opt/manager/modules/session_engine.sh --list allocci | grep -c '^allocci' || true)" = 1
+          sudo /opt/manager/modules/protocol_leases.sh --observe-disconnect ssh alloc-device-a
+          test "$(sudo manager hive lease controller list allocci | grep -c '^allocci|' || true)" = 0
+
+      - name: Exercise OpenVPN and WireGuard exact grant claims
+        shell: bash
+        run: |
+          set -euxo pipefail
+          for protocol in openvpn wireguard; do
+            case "$protocol" in
+              openvpn) resource=ovpn-alloc-ci ;;
+              wireguard) resource=wg-alloc-ci ;;
+            esac
+            bundle="/tmp/${protocol}.alloc.json"
+            sudo manager hive allocation controller create allocci "$protocol" "$bundle" BR-SP PREMIUM "${protocol}-sticky" '*' 120 >/dev/null
+            sudo manager hive allocation accept "$bundle" >/dev/null
+            reservation="$(sudo /opt/manager/modules/hive_allocations.sh --reserve allocci "$protocol")"
+            allocation_id="$(awk -F= '$1=="allocation_id"{print $2}' <<<"$reservation")"
+            reservation_token="$(awk -F= '$1=="reservation_token"{print $2}' <<<"$reservation")"
+            global_id="$(awk -F= '$1=="global_lease_id"{print $2}' <<<"$reservation")"
+            grant_device="$(awk -F= '$1=="grant_device"{print $2}' <<<"$reservation")"
+            session_id="$(openssl rand -hex 16)"
+            test -n "$allocation_id"
+            test -n "$reservation_token"
+            test -n "$global_id"
+            sudo /opt/manager/modules/hive_leases.sh --acquire-node allocci "$protocol" "$resource" "$grant_device" "$session_id" 60 "$global_id" >/tmp/exact-claim
+            grep -q "^global_lease_id=$global_id$" /tmp/exact-claim
+            sudo /opt/manager/modules/hive_allocations.sh --commit "$allocation_id" "$reservation_token" "$session_id" >/dev/null
+            sudo /opt/manager/modules/hive_leases.sh --release-node allocci "$session_id" >/dev/null
+          done
+
+      - name: Fence old allocation generation on revoke
+        shell: bash
+        run: |
+          set -euxo pipefail
+          revoke="$(sudo manager hive allocation controller revoke allocci ci-fence)"
+          grep -q '^session_epoch=2$' <<<"$revoke"
+          grep -q '^global_epoch=' <<<"$revoke"
+          sudo manager hive allocation controller create allocci ssh /tmp/ssh.v2.alloc.json BR-SP PREMIUM v2-sticky '*' 120 >/tmp/v2.create
+          grep -q '^session_epoch=2$' /tmp/v2.create
+          sudo manager hive allocation accept /tmp/ssh.v2.alloc.json >/tmp/v2.accept
+          grep -q '^session_epoch=2$' /tmp/v2.accept
+          if sudo manager hive allocation accept /tmp/ssh.alloc.json; then
+            echo 'old signed allocation survived session_epoch fence' >&2
+            exit 1
+          fi
+
+      - name: Preserve 0.8.4 compatibility when allocation is disabled
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager hive allocation disable | grep -q '^vpn_allocation_enforcement=0$'
+          sudo manager hive lease controller revoke allocci compatibility-reset >/dev/null
+          sudo /opt/manager/modules/protocol_leases.sh --observe-connect ssh alloc-ssh legacy-device 0 ci notty
+          test "$(sudo /opt/manager/modules/session_engine.sh --list allocci | grep -c '^allocci' || true)" = 1
+          sudo /opt/manager/modules/protocol_leases.sh --observe-disconnect ssh legacy-device

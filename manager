@@ -94,6 +94,12 @@ Uso:
   manager hive lease controller revoke ID [REASON]
   manager hive lease limit set ID MAX [PRODUCT]|import-local ID|sync-local|show ID|list|unset ID
                                   autoridade global de sessões entre nós da Colmeia
+  manager hive allocation status|enable|disable
+  manager hive allocation accept BUNDLE
+  manager hive allocation controller status
+  manager hive allocation controller create ID PROTO OUT [REGION] [POOL] [STICKY] [SCOPE] [TTL]
+  manager hive allocation controller revoke ID [REASON]
+                                  allocation/login global assinado da Colmeia (0.8.5)
   manager automation legacy status
   manager automation legacy enable [PORT]
   manager automation legacy disable
@@ -335,6 +341,26 @@ case "${1:-}" in
           *) err "Uso: manager hive lease {status|node ...|controller ...|limit ...}"; exit 64 ;;
         esac
         ;;
+      allocation)
+        case "${3:-status}" in
+          status) exec "$MANAGER_HOME/modules/hive_allocations.sh" --status ;;
+          enable) exec "$MANAGER_HOME/modules/hive_allocations.sh" --node-enable ;;
+          disable) exec "$MANAGER_HOME/modules/hive_allocations.sh" --node-disable ;;
+          accept) [[ -n "${4:-}" ]] || { err "Uso: manager hive allocation accept BUNDLE"; exit 64; }; exec "$MANAGER_HOME/modules/hive_allocations.sh" --accept "$4" ;;
+          controller)
+            case "${4:-status}" in
+              status) exec "$MANAGER_HOME/modules/hive_allocations.sh" --controller-status ;;
+              create)
+                [[ -n "${5:-}" && -n "${6:-}" && -n "${7:-}" ]] || { err "Uso: manager hive allocation controller create ID PROTO OUT [REGION] [POOL] [STICKY] [SCOPE] [TTL]"; exit 64; }
+                exec "$MANAGER_HOME/modules/hive_allocations.sh" --controller-create "$5" "$6" "$7" "${8:-}" "${9:-}" "${10:-}" "${11:-*}" "${12:-60}"
+                ;;
+              revoke) [[ -n "${5:-}" ]] || { err "Uso: manager hive allocation controller revoke ID [REASON]"; exit 64; }; exec "$MANAGER_HOME/modules/hive_allocations.sh" --controller-revoke "$5" "${6:-admin}" ;;
+              *) err "Uso: manager hive allocation controller {status|create|revoke} ..."; exit 64 ;;
+            esac
+            ;;
+          *) err "Uso: manager hive allocation {status|enable|disable|accept|controller ...}"; exit 64 ;;
+        esac
+        ;;
       node)
         case "${3:-status}" in
           status) exec "$MANAGER_HOME/modules/hive_scheduler.sh" --status ;;
@@ -366,7 +392,7 @@ case "${1:-}" in
           *) err "Ação de controlador da Colmeia inválida: ${3:-}"; exit 64 ;;
         esac
         ;;
-      *) err "Uso: manager hive {status|request|accept|network ...|health ...|node ...|lease ...|controller ...}"; exit 64 ;;
+      *) err "Uso: manager hive {status|request|accept|network ...|health ...|node ...|lease ...|allocation ...|controller ...}"; exit 64 ;;
     esac
     ;;
   automation)
