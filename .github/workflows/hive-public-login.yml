@@ -89,7 +89,8 @@ jobs:
           set -euxo pipefail
           sudo /opt/manager/modules/products.sh --create PREMIUM 'CI Premium' 1 0 4 ssh 0 none warn '*' '*' '*'
           sudo manager hive allocation enable >/tmp/alloc-enable
-          grep -q '^public_login_claim=1$' /tmp/alloc-enable
+          sudo manager hive allocation status >/tmp/alloc-status
+          grep -q '^public_login_claim=1$' /tmp/alloc-status
           sudo systemctl stop manager-hive-allocation-sync.timer manager-hive-allocation-sync.service
           sudo manager hive lease limit set hive-login 4 PREMIUM >/dev/null
           created="$(sudo manager hive allocation controller login hive-login ssh /tmp/hive-login.json BR-SP PREMIUM hive-login '*' 180)"
