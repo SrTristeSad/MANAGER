@@ -1,0 +1,41 @@
+name: Temporary Apply 0.8.5 Public Login Result
+
+on:
+  push:
+    branches:
+      - feature/0.8.5-public-login-result
+    paths:
+      - scripts/tmp_patch_085_public_login.py
+      - .github/workflows/tmp-apply-085-public-login.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feature/0.8.5-public-login-result
+      - name: Apply guarded patch
+        run: python3 scripts/tmp_patch_085_public_login.py
+      - name: Validate syntax and temporary files
+        shell: bash
+        run: |
+          set -euxo pipefail
+          bash -n manager
+          bash -n modules/hive_leases.sh
+          bash -n modules/hive_allocations.sh
+          python3 -m py_compile scripts/tmp_patch_085_public_login.py
+          test -f .github/workflows/hive-vpn-public-login.yml
+      - name: Commit product changes and remove temporary patcher
+        shell: bash
+        run: |
+          set -euxo pipefail
+          rm -f scripts/tmp_patch_085_public_login.py .github/workflows/tmp-apply-085-public-login.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'feat: return secure Hive login provisioning results'
+          git push origin HEAD:feature/0.8.5-public-login-result
