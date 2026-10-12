@@ -455,7 +455,7 @@ ensure_protocol_impl() {
     ssh)
       binding="$(identity_read "$id" ssh_user)"
       if [[ -n "$binding" ]]; then
-        [[ "$binding" == "$id" ]] && id "$binding" >/dev/null 2>&1 || { (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; err "Binding SSH local inconsistente para $id"; return 67; }
+        id "$binding" >/dev/null 2>&1 || { (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; err "Binding SSH local inconsistente para $id"; return 67; }
       else
         if id "$id" >/dev/null 2>&1; then (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; err "Usuário SSH local existe sem binding MANAGER: $id"; return 65; fi
         if ! create_ssh_resource "$id" "$expires"; then (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; return 70; fi
@@ -467,35 +467,38 @@ ensure_protocol_impl() {
           return 70
         fi
         created=1
+        binding="$id"
       fi
       ;;
     wireguard)
       binding="$(identity_read "$id" wireguard_client)"
       if [[ -n "$binding" ]]; then
-        [[ "$binding" == "$id" && -f "$WG_CLIENT_DIR/$binding.conf" && -f "$WG_CLIENT_DIR/$binding.meta" ]] || { (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; err "Binding WireGuard local inconsistente para $id"; return 67; }
+        [[ -f "$WG_CLIENT_DIR/$binding.conf" && -f "$WG_CLIENT_DIR/$binding.meta" ]] || { (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; err "Binding WireGuard local inconsistente para $id"; return 67; }
       else
         if [[ -e "$WG_CLIENT_DIR/$id.conf" || -e "$WG_CLIENT_DIR/$id.meta" ]]; then (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; err "Recurso WireGuard local existe sem binding MANAGER: $id"; return 65; fi
         if ! create_wireguard_resource "$id"; then (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; return 70; fi
         if ! "$CONNECTION_MODULE" --bind "$id" wireguard "$id" >/dev/null; then remove_wireguard_resource "$id"; (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; return 70; fi
         created=1
+        binding="$id"
       fi
       ;;
     openvpn)
       binding="$(identity_read "$id" openvpn_client)"
       if [[ -n "$binding" ]]; then
-        [[ "$binding" == "$id" && -f "$OVPN_CLIENT_DIR/$binding.ovpn" && -f "$OVPN_META_DIR/$binding.meta" ]] || { (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; err "Binding OpenVPN local inconsistente para $id"; return 67; }
+        [[ -f "$OVPN_CLIENT_DIR/$binding.ovpn" && -f "$OVPN_META_DIR/$binding.meta" ]] || { (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; err "Binding OpenVPN local inconsistente para $id"; return 67; }
       else
         if [[ -e "$OVPN_CLIENT_DIR/$id.ovpn" || -e "$OVPN_META_DIR/$id.meta" ]]; then (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; err "Recurso OpenVPN local existe sem binding MANAGER: $id"; return 65; fi
         if ! create_openvpn_resource "$id"; then (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; return 70; fi
         if ! "$CONNECTION_MODULE" --bind "$id" openvpn "$id" >/dev/null; then revoke_openvpn_resource "$id" 1; (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; return 70; fi
         created=1
+        binding="$id"
       fi
       ;;
   esac
 
   if [[ "$protocol" == wireguard && "$created" == 0 ]]; then
-    PROV_WG_IP="$(awk -F= '$1=="ip4" || $1=="ip" {print $2; exit}' "$WG_CLIENT_DIR/$id.meta")"
-    PROV_WG_IP6="$(awk -F= '$1=="ip6" {print $2; exit}' "$WG_CLIENT_DIR/$id.meta")"
+    PROV_WG_IP="$(awk -F= '$1=="ip4" || $1=="ip" {print $2; exit}' "$WG_CLIENT_DIR/$binding.meta")"
+    PROV_WG_IP6="$(awk -F= '$1=="ip6" {print $2; exit}' "$WG_CLIENT_DIR/$binding.meta")"
   fi
   if ! reconcile_runtime; then
     if (( created == 1 )); then
@@ -512,9 +515,9 @@ ensure_protocol_impl() {
   printf 'status=ok\nidentity_id=%s\nproduct_id=%s\nprotocols=%s\nprovision_action=%s\nresource_created=%s\n' \
     "$id" "$product" "$protocol" "$([[ "$created" == 1 ]] && echo created || echo reused)" "$created"
   case "$protocol" in
-    ssh) printf 'ssh_user=%s\n' "$id"; (( created == 0 )) || printf 'ssh_password=%s\n' "$PROV_SSH_PASSWORD" ;;
-    wireguard) printf 'wireguard_client=%s\nwireguard_ip=%s\nwireguard_ipv4=%s\nwireguard_ipv6=%s\nwireguard_profile=%s\n' "$id" "${PROV_WG_IP:-}" "${PROV_WG_IP:-}" "${PROV_WG_IP6:-}" "$WG_CLIENT_DIR/$id.conf" ;;
-    openvpn) printf 'openvpn_client=%s\nopenvpn_profile=%s\n' "$id" "$OVPN_CLIENT_DIR/$id.ovpn" ;;
+    ssh) printf 'ssh_user=%s\n' "$binding"; (( created == 0 )) || printf 'ssh_password=%s\n' "$PROV_SSH_PASSWORD" ;;
+    wireguard) printf 'wireguard_client=%s\nwireguard_ip=%s\nwireguard_ipv4=%s\nwireguard_ipv6=%s\nwireguard_profile=%s\n' "$binding" "${PROV_WG_IP:-}" "${PROV_WG_IP:-}" "${PROV_WG_IP6:-}" "$WG_CLIENT_DIR/$binding.conf" ;;
+    openvpn) printf 'openvpn_client=%s\nopenvpn_profile=%s\n' "$binding" "$OVPN_CLIENT_DIR/$binding.ovpn" ;;
   esac
 }
 
