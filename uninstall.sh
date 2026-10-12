@@ -45,6 +45,26 @@ remove_protocol_pam_fallback() {
   rm -f "$tmp"
 }
 
+# A autoridade global de leases sai antes dos bridges de protocolo. Configuração,
+# limites e leases persistentes sobrevivem ao uninstall normal; --purge remove tudo.
+if [[ -x /opt/manager/modules/hive_leases.sh ]]; then
+  if $PURGE; then
+    /opt/manager/modules/hive_leases.sh --purge >/dev/null 2>&1 || true
+  else
+    /opt/manager/modules/hive_leases.sh --detach >/dev/null 2>&1 || true
+  fi
+else
+  systemctl disable --now manager-hive-lease-controller.service >/dev/null 2>&1 || true
+  if [[ -f /etc/systemd/system/manager-hive-lease-controller.service ]] && grep -Fqx '# MANAGER-HIVE-GLOBAL-LEASE v1' /etc/systemd/system/manager-hive-lease-controller.service 2>/dev/null; then
+    rm -f /etc/systemd/system/manager-hive-lease-controller.service
+  fi
+  if $PURGE; then
+    rm -rf /etc/manager/hive/controller/leases /etc/manager/hive/leases /var/lib/manager/hive-leases
+    rm -f /var/log/manager/hive-lease-audit.jsonl
+  fi
+  systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
 # Scheduler da Colmeia não possui daemon próprio. No uninstall normal seu estado
 # de placement/sticky é preservado; --purge remove estado e auditoria explicitamente.
 if [[ -x /opt/manager/modules/hive_scheduler.sh ]]; then

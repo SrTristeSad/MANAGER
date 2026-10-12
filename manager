@@ -86,6 +86,13 @@ Uso:
   manager hive node undrain NODE
   manager hive node select PROTOCOL [REGION] [POOL] [STICKY] [NODE_SCOPE]
                                   scheduler weighted least-loaded / drain / failover
+  manager hive lease status
+  manager hive lease node status|configure HOST PORT TLS_FP|disable
+  manager hive lease controller init|status|enable BIND_IP [PORT]|disable|rotate-tls
+  manager hive lease controller list [ID]
+  manager hive lease controller revoke ID [REASON]
+  manager hive lease limit set ID MAX|import-local ID|sync-local|show ID|list|unset ID
+                                  autoridade global de sessões entre nós da Colmeia
   manager automation legacy status
   manager automation legacy enable [PORT]
   manager automation legacy disable
@@ -289,6 +296,43 @@ case "${1:-}" in
           *) err "Uso: manager hive health {status|configure|disable|send|controller ...}"; exit 64 ;;
         esac
         ;;
+      lease)
+        case "${3:-status}" in
+          status) exec "$MANAGER_HOME/modules/hive_leases.sh" --status ;;
+          node)
+            case "${4:-status}" in
+              status) exec "$MANAGER_HOME/modules/hive_leases.sh" --node-status ;;
+              configure) [[ -n "${5:-}" && -n "${6:-}" && -n "${7:-}" ]] || { err "Uso: manager hive lease node configure HOST PORT TLS_FP"; exit 64; }; exec "$MANAGER_HOME/modules/hive_leases.sh" --node-configure "$5" "$6" "$7" ;;
+              disable) exec "$MANAGER_HOME/modules/hive_leases.sh" --node-disable ;;
+              *) err "Uso: manager hive lease node {status|configure|disable}"; exit 64 ;;
+            esac
+            ;;
+          controller)
+            case "${4:-status}" in
+              init) exec "$MANAGER_HOME/modules/hive_leases.sh" --controller-init ;;
+              status) exec "$MANAGER_HOME/modules/hive_leases.sh" --controller-status ;;
+              enable) [[ -n "${5:-}" ]] || { err "Uso: manager hive lease controller enable BIND_IP [PORT]"; exit 64; }; exec "$MANAGER_HOME/modules/hive_leases.sh" --controller-enable "$5" "${6:-9445}" ;;
+              disable) exec "$MANAGER_HOME/modules/hive_leases.sh" --controller-disable ;;
+              rotate-tls) exec "$MANAGER_HOME/modules/hive_leases.sh" --controller-rotate-tls ;;
+              list) exec "$MANAGER_HOME/modules/hive_leases.sh" --controller-list "${5:-}" ;;
+              revoke) [[ -n "${5:-}" ]] || { err "Uso: manager hive lease controller revoke ID [REASON]"; exit 64; }; exec "$MANAGER_HOME/modules/hive_leases.sh" --controller-revoke "$5" "${6:-admin}" ;;
+              *) err "Ação de lease global do controlador inválida: ${4:-}"; exit 64 ;;
+            esac
+            ;;
+          limit)
+            case "${4:-list}" in
+              set) [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager hive lease limit set ID MAX"; exit 64; }; exec "$MANAGER_HOME/modules/hive_leases.sh" --limit-set "$5" "$6" ;;
+              import-local) [[ -n "${5:-}" ]] || { err "Uso: manager hive lease limit import-local ID"; exit 64; }; exec "$MANAGER_HOME/modules/hive_leases.sh" --limit-import-local "$5" ;;
+              sync-local) exec "$MANAGER_HOME/modules/hive_leases.sh" --limit-sync-local ;;
+              show) [[ -n "${5:-}" ]] || { err "Uso: manager hive lease limit show ID"; exit 64; }; exec "$MANAGER_HOME/modules/hive_leases.sh" --limit-show "$5" ;;
+              list) exec "$MANAGER_HOME/modules/hive_leases.sh" --limit-list ;;
+              unset) [[ -n "${5:-}" ]] || { err "Uso: manager hive lease limit unset ID"; exit 64; }; exec "$MANAGER_HOME/modules/hive_leases.sh" --limit-unset "$5" ;;
+              *) err "Ação de limite global inválida: ${4:-}"; exit 64 ;;
+            esac
+            ;;
+          *) err "Uso: manager hive lease {status|node ...|controller ...|limit ...}"; exit 64 ;;
+        esac
+        ;;
       node)
         case "${3:-status}" in
           status) exec "$MANAGER_HOME/modules/hive_scheduler.sh" --status ;;
@@ -320,7 +364,7 @@ case "${1:-}" in
           *) err "Ação de controlador da Colmeia inválida: ${3:-}"; exit 64 ;;
         esac
         ;;
-      *) err "Uso: manager hive {status|request|accept|network ...|health ...|node ...|controller ...}"; exit 64 ;;
+      *) err "Uso: manager hive {status|request|accept|network ...|health ...|node ...|lease ...|controller ...}"; exit 64 ;;
     esac
     ;;
   automation)
@@ -421,6 +465,7 @@ while true; do
   say " ${C_CYAN}39${C_RESET}) Identidade criptográfica / enrollment do nó"
   say " ${C_CYAN}40${C_RESET}) Rede WireGuard privada / mesh"
   say " ${C_CYAN}41${C_RESET}) Heartbeat / saúde dos nós"
+  say " ${C_CYAN}42${C_RESET}) Leases globais / limite entre nós"
   say ""
   say " ${C_WHITE}MONITORAMENTO E MANUTENÇÃO${C_RESET}"
   say " ${C_CYAN}10${C_RESET}) Tráfego e conexões"
@@ -558,6 +603,20 @@ while true; do
       say " manager hive health configure HOST PORT SHA256:<tls-fingerprint> [INTERVAL]"
       say " manager hive health send"
       say " manager hive health controller list"
+      pause
+      ;;
+    42)
+      header
+      say "${C_WHITE}COLMEIA — LEASES GLOBAIS${C_RESET}\n"
+      "$MANAGER_HOME/modules/hive_leases.sh" --status || true
+      say ""
+      "$MANAGER_HOME/modules/hive_leases.sh" --controller-status 2>/dev/null || true
+      say ""
+      say "Fluxo via CLI:"
+      say " manager hive lease controller enable BIND_IP [PORT]"
+      say " manager hive lease limit set maria 1"
+      say " manager hive lease node configure HOST PORT SHA256:<tls-fingerprint>"
+      say " manager hive lease controller list [ID]"
       pause
       ;;
     90) self_update ;;

@@ -10,6 +10,8 @@ source "$MANAGER_HOME/lib/identity.sh"
 require_root
 
 SESSION_ENGINE="$MANAGER_HOME/modules/session_engine.sh"
+GLOBAL_LEASE_MODULE="$MANAGER_HOME/modules/hive_leases.sh"
+GLOBAL_LEASE_CONF="$MANAGER_ETC/hive/leases/node.conf"
 BRIDGE_RUNTIME="${MANAGER_PROTOCOL_LEASE_RUNTIME:-/run/manager-protocol-leases}"
 MAP_DIR="$BRIDGE_RUNTIME/maps"
 OVPN_REQ_DIR="$BRIDGE_RUNTIME/openvpn-requests"
@@ -145,6 +147,32 @@ token_value() {
   printf '%s\n' "$token" | tr '\t' '\n' | awk -F= -v k="$key" '$1==k {print $2; exit}'
 }
 
+global_lease_enabled() {
+  [[ -f "$GLOBAL_LEASE_CONF" ]] || return 1
+  [[ "$(awk -F= '$1=="enabled" {print $2; exit}' "$GLOBAL_LEASE_CONF" 2>/dev/null || true)" == 1 ]]
+}
+
+global_lease_acquire() {
+  local identity="$1" protocol="$2" resource="$3" device="$4" session_id="$5"
+  global_lease_enabled || return 0
+  [[ -x "$GLOBAL_LEASE_MODULE" ]] || { err "Enforcement global está habilitado, mas hive_leases.sh não existe."; return 69; }
+  "$GLOBAL_LEASE_MODULE" --acquire-node "$identity" "$protocol" "$resource" "$device" "$session_id" "$LEASE_TTL" >/dev/null
+}
+
+global_lease_heartbeat() {
+  local identity="$1" session_id="$2"
+  global_lease_enabled || return 0
+  [[ -x "$GLOBAL_LEASE_MODULE" ]] || return 69
+  "$GLOBAL_LEASE_MODULE" --heartbeat-node "$identity" "$session_id" "$LEASE_TTL" >/dev/null
+}
+
+global_lease_release() {
+  local identity="$1" session_id="$2"
+  global_lease_enabled || return 0
+  [[ -x "$GLOBAL_LEASE_MODULE" ]] || return 69
+  "$GLOBAL_LEASE_MODULE" --release-node "$identity" "$session_id" >/dev/null
+}
+
 write_map() {
   local protocol="$1" resource="$2" device="$3" identity="$4" session_id="$5" epoch="$6" source_pid="${7:-0}" remote="${8:--}" tty="${9:--}" file tmp now
   file="$(map_path "$protocol" "$device")"
@@ -178,11 +206,15 @@ has_map_for_resource() {
 }
 
 release_map_file() {
-  local file="$1" session_id epoch
+  local file="$1" session_id epoch identity
   [[ -f "$file" ]] || return 0
   session_id="$(map_read_file "$file" session_id)"
   epoch="$(map_read_file "$file" session_epoch)"
+  identity="$(map_read_file "$file" identity_id)"
   if [[ "$session_id" =~ ^[a-f0-9]{32}$ && "$epoch" =~ ^[1-9][0-9]*$ ]]; then
+    if [[ -n "$identity" ]]; then
+      global_lease_release "$identity" "$session_id" >/dev/null 2>&1 || true
+    fi
     "$SESSION_ENGINE" --release "$session_id" "$epoch" >/dev/null 2>&1 || true
   fi
   rm -f "$file"
@@ -210,7 +242,7 @@ release_matching() {
 }
 
 acquire_managed() {
-  local protocol="$1" resource="$2" device="$3" source_pid="${4:-0}" remote="${5:--}" tty="${6:--}" identity token session_id epoch
+  local protocol="$1" resource="$2" device="$3" source_pid="${4:-0}" remote="${5:--}" tty="${6:--}" identity token session_id epoch rc=0
   valid_protocol "$protocol" || return 64
   valid_resource "$resource" || return 64
   valid_device "$device" || return 64
@@ -220,21 +252,33 @@ acquire_managed() {
   session_id="$(token_value "$token" session_id)"
   epoch="$(token_value "$token" epoch)"
   [[ "$session_id" =~ ^[a-f0-9]{32}$ && "$epoch" =~ ^[1-9][0-9]*$ ]] || return 70
+  global_lease_acquire "$identity" "$protocol" "$resource" "$device" "$session_id" || rc=$?
+  if (( rc != 0 )); then
+    "$SESSION_ENGINE" --release "$session_id" "$epoch" >/dev/null 2>&1 || true
+    return "$rc"
+  fi
   write_map "$protocol" "$resource" "$device" "$identity" "$session_id" "$epoch" "$source_pid" "$remote" "$tty"
 }
 
 heartbeat_map() {
-  local file="$1" session_id epoch token new_epoch
+  local file="$1" session_id epoch token new_epoch identity
   session_id="$(map_read_file "$file" session_id)"
   epoch="$(map_read_file "$file" session_epoch)"
-  [[ "$session_id" =~ ^[a-f0-9]{32}$ && "$epoch" =~ ^[1-9][0-9]*$ ]] || { rm -f "$file"; return 1; }
+  identity="$(map_read_file "$file" identity_id)"
+  [[ "$session_id" =~ ^[a-f0-9]{32}$ && "$epoch" =~ ^[1-9][0-9]*$ && -n "$identity" ]] || { rm -f "$file"; return 1; }
   if token="$("$SESSION_ENGINE" --heartbeat "$session_id" "$epoch" "$LEASE_TTL" 2>/dev/null)"; then
+    if ! global_lease_heartbeat "$identity" "$session_id"; then
+      "$SESSION_ENGINE" --release "$session_id" "$epoch" >/dev/null 2>&1 || true
+      rm -f "$file"
+      return 1
+    fi
     new_epoch="$(token_value "$token" epoch)"
     if [[ "$new_epoch" =~ ^[1-9][0-9]*$ ]]; then
       sed -i "s/^session_epoch=.*/session_epoch=$new_epoch/" "$file"
     fi
     return 0
   fi
+  global_lease_release "$identity" "$session_id" >/dev/null 2>&1 || true
   rm -f "$file"
   return 1
 }
