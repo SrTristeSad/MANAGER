@@ -1,16 +1,17 @@
-# MANAGER Colmeia — confiança, rede privada e saúde dos nós
+# MANAGER Colmeia — confiança, rede privada, saúde e scheduler
 
 A série 0.8 transforma o MANAGER de uma autoridade local por VPS em uma arquitetura coordenada entre múltiplos nós, mantendo o controlador fora do caminho de dados VPN dos usuários.
 
-A evolução atual é:
+Evolução atual:
 
 ```text
 0.8.0  identidade Ed25519 + enrollment + node_epoch
 0.8.1  rede privada WireGuard mgh0 + config_epoch
 0.8.2  heartbeat assinado + saúde verificável dos nós
+0.8.3  scheduler weighted least-loaded + placement + sticky + drain + failover de seleção
 ```
 
-A 0.8.2 **não** implementa scheduler, drain runtime, failover, leases globais ou accounting global. `DRAINING` já existe como estado de saúde, mas ainda não representa uma decisão de scheduler.
+A 0.8.3 **não** implementa autoridade global de leases, `max_sessions` global ou accounting global. O scheduler escolhe um nó elegível para nova alocação; a autoridade distribuída de sessão começa na 0.8.4.
 
 ## Arquitetura atual
 
@@ -19,20 +20,21 @@ Cada nó possui duas identidades criptográficas com funções diferentes:
 1. **Ed25519 de controle** — enrollment, network requests e heartbeat;
 2. **WireGuard da malha** — tráfego privado VPS↔VPS na interface `mgh0`.
 
-O controlador possui sua própria identidade Ed25519 e um certificado TLS separado para o listener de heartbeat. O certificado TLS é pinado por SHA-256 no nó; a autoridade lógica continua sendo a identidade Ed25519 já enrolled.
+O controlador possui sua própria identidade Ed25519 e um certificado TLS separado para o listener de heartbeat. O certificado TLS é pinado por SHA-256 no nó; a autoridade lógica continua sendo a identidade Ed25519 already enrolled.
 
 ```text
-                         CONTROLADOR
-        enrollment / topologia / health authority
-                  │          ▲
-                  │          │ heartbeat assinado
-                  │          │ TLS 1.3 + pin SHA-256
-        ┌─────────┼──────────┼─────────┐
-        │         │          │         │
-       nó A      nó B       nó C      ...
-       mgh0 ───── mgh0 ───── mgh0
-        └──────── mesh direto ─────────┘
+                           CONTROLADOR
+      enrollment / topologia / health / scheduler
+                    │             ▲
+                    │             │ heartbeat assinado
+                    │             │ TLS 1.3 + pin SHA-256
+          ┌─────────┼─────────────┼─────────┐
+          │         │             │         │
+         nó A      nó B          nó C      ...
+         mgh0 ───── mgh0 ──────── mgh0
+          └────────── mesh direto ──────────┘
 
+scheduler decide onde uma NOVA alocação pode entrar
 tráfego VPN do usuário NÃO atravessa o controlador
 ```
 
@@ -93,11 +95,26 @@ Controlador:
 │   ├── network.conf
 │   └── nodes/
 │       └── node-....conf
-└── health/
-    ├── controller.conf
-    └── tls/
-        ├── server.key
-        └── server.crt
+├── health/
+│   ├── controller.conf
+│   └── tls/
+│       ├── server.key
+│       └── server.crt
+└── scheduler/
+    └── nodes/
+        └── node-....conf
+```
+
+Sticky state do scheduler:
+
+```text
+/var/lib/manager/hive-scheduler/sticky/
+```
+
+Auditoria do scheduler:
+
+```text
+/var/log/manager/hive-scheduler-audit.jsonl
 ```
 
 Runtime WireGuard:
@@ -144,7 +161,15 @@ manager-hive-health-node-v1
 manager-hive-health-controller-v1
 ```
 
-As assinaturas de controle usam Ed25519 via OpenSSL. A malha usa WireGuard. O heartbeat usa TLS 1.3 como transporte e Ed25519 como autenticação/autorização lógica. O MANAGER não inventa primitivas criptográficas.
+Scheduler 0.8.3:
+
+```text
+manager-hive-scheduler-v1
+manager-hive-scheduler-node-v1
+manager-hive-scheduler-selection-v1
+```
+
+As assinaturas de controle usam Ed25519 via OpenSSL. A malha usa WireGuard. O heartbeat usa TLS 1.3 como transporte e Ed25519 como autenticação/autorização lógica. O scheduler consome estado já autenticado/registrado; ele não cria uma nova primitiva criptográfica nem uma segunda autoridade de identidade.
 
 ## 1. Enrollment do nó
 
@@ -331,20 +356,11 @@ Replay usa criação exclusiva de arquivo. O nome persistido é `SHA256(nonce)`,
 
 O listener do controlador é **opt-in** e usa TLS 1.3 somente.
 
-Inicialização/status:
-
 ```bash
 manager hive health controller init
 manager hive health controller status
-```
-
-Habilitação:
-
-```bash
 manager hive health controller enable 203.0.113.10 9444
 ```
-
-O status fornece o fingerprint do certificado TLS. Esse fingerprint deve ser transportado por um canal confiável para o nó.
 
 No nó:
 
@@ -356,13 +372,7 @@ manager hive health configure \
   30
 ```
 
-O nó valida o certificado DER pelo pin SHA-256 **antes de enviar o heartbeat**. Fingerprint incorreto falha fechado.
-
-A chave/certificado TLS do listener ficam em:
-
-```text
-/etc/manager/hive/controller/health/tls/
-```
+O nó valida o certificado DER pelo pin SHA-256 **antes de enviar o heartbeat**. Fingerprint incorreto falha fechado. O MANAGER não abre automaticamente a porta 9444 ou outra porta escolhida no firewall.
 
 Rotação:
 
@@ -372,9 +382,7 @@ manager hive health controller rotate-tls
 
 Após a rotação, os nós precisam receber o novo fingerprint de forma confiável.
 
-O MANAGER não abre automaticamente a porta 9444 ou outra porta escolhida no firewall.
-
-## 8. Métricas
+## 8. Métricas e saúde
 
 Cada heartbeat reporta:
 
@@ -391,10 +399,6 @@ Cada heartbeat reporta:
 - configuração/estado/peer count de `mgh0`;
 - RTT observado na troca anterior com o controlador.
 
-O heartbeat não transforma `manager-node-usage-v1` em billing global autoritativo. Accounting global continua fora da 0.8.2.
-
-## 9. Estados de saúde
-
 Estados:
 
 ```text
@@ -404,109 +408,201 @@ DRAINING
 OFFLINE
 ```
 
-### HEALTHY
+`HEALTHY` é o único estado aceito pelo scheduler 0.8.3 para novas alocações. `DEGRADED` e `OFFLINE` são automaticamente inelegíveis. O drain runtime do scheduler é uma decisão administrativa separada do sinal local `enabled=0` que também pode derivar `DRAINING` na telemetria.
 
-Heartbeat atual e nenhum problema operacional coberto pelas regras locais.
-
-### DEGRADED
-
-Pode ocorrer por:
-
-- heartbeat atrasado;
-- protocolo declarado disponível com serviço inativo;
-- `mgh0` configurada porém inativa;
-- CPU >= 95%;
-- RAM usada >= 95%;
-- sessões alcançando `max_sessions` local.
-
-### DRAINING
-
-Na 0.8.2, `DRAINING` é derivado quando o nó reporta `enabled=0` no Node Metadata.
-
-Isso **não** significa que o scheduler/drain runtime já exista. O próximo milestone usará esse sinal para impedir novas alocações mantendo sessões existentes.
-
-### OFFLINE
-
-Pode ocorrer por:
-
-- nenhum heartbeat recebido;
-- timeout de heartbeat;
-- autoridade do nó desabilitada/revogada;
-- `node_epoch` incompatível.
-
-Defaults:
+Defaults de health:
 
 ```text
 degraded_after_seconds=75
 offline_after_seconds=180
 ```
 
-Configuração:
-
 ```bash
 manager hive health controller thresholds 75 180
 ```
 
-O threshold de offline deve ser pelo menos 30 segundos maior que o degraded.
+O heartbeat não transforma `manager-node-usage-v1` em billing global autoritativo. Accounting global continua fora da 0.8.3.
 
-## 10. Operação do heartbeat
+## 9. Scheduler — 0.8.3
 
-Status do nó:
+O scheduler opera no controlador e escolhe o destino de **novas alocações**. Ele não encaminha o tráfego VPN e não representa uma lease global.
 
-```bash
-manager hive health status
-```
-
-Envio manual:
+Status:
 
 ```bash
-manager hive health send
+manager hive node status
 ```
 
-Desabilitar envio periódico:
-
-```bash
-manager hive health disable
-```
-
-Visão do controlador:
-
-```bash
-manager hive health controller status
-manager hive health controller list
-manager hive health controller show NODE_ID
-```
-
-O envio periódico usa:
+Saída de contrato inclui:
 
 ```text
-manager-hive-heartbeat.timer
-manager-hive-heartbeat.service
+contract=manager-hive-scheduler-v1
+scheduler=weighted-least-loaded
+sticky_session=1
+drain_runtime=1
+selection_failover=1
+placement_authority=controller-admin
+global_lease_authority=0
+global_max_sessions=0
+controller_in_user_vpn_path=0
 ```
 
-O listener usa:
+## 10. Placement controller-authoritative
+
+Cada nó enrolled pode receber um alias e localização operacional controlados pelo administrador do controlador:
+
+```bash
+manager hive node placement \
+  node-1111111111111111 \
+  BR-SP-01 \
+  BR \
+  BR-SP \
+  PREMIUM
+```
+
+Campos:
 
 ```text
-manager-hive-health-controller.service
+node_id
+name
+country
+region
+pool
+draining
+drain_reason
 ```
 
-O ACK devolvido pelo controlador é assinado pela identidade Ed25519 do controlador e validado pelo `controller.pub` já enrolled do nó.
+O alias precisa ser único entre os placements do controlador.
 
-## 11. Audit e rate limit
+Listagem/inspeção:
 
-Aceites e recusas relevantes entram em:
+```bash
+manager hive node list
+manager hive node show BR-SP-01
+manager hive node show node-1111111111111111
+```
+
+## 11. Elegibilidade e weighted least-loaded
+
+Um nó só entra no conjunto candidato quando:
+
+- está enrolled neste controlador;
+- autoridade está habilitada e não revogada;
+- `node_epoch` do heartbeat coincide;
+- heartbeat existe e ainda é elegível;
+- estado derivado é `HEALTHY`;
+- não está em drain;
+- satisfaz região/pool/node scope solicitados;
+- anuncia o protocolo solicitado;
+- o serviço correspondente está ativo;
+- não atingiu `max_sessions` local.
+
+Protocolos aceitos:
+
+```text
+ssh
+wireguard
+openvpn
+```
+
+A pontuação principal usa carga ponderada:
+
+```text
+load_score = (sessions + 1) / (effective_capacity * weight)
+```
+
+RTT entra apenas como componente secundário pequeno. Empates terminam por ordenação determinística de RTT/`node_id`, evitando seleção aleatória não auditável.
+
+Exemplo:
+
+```bash
+manager hive node select wireguard BR-SP PREMIUM maria '*'
+```
+
+Também é possível limitar explicitamente os nós elegíveis:
+
+```bash
+manager hive node select \
+  wireguard \
+  BR-SP \
+  PREMIUM \
+  maria \
+  node-1111111111111111,node-2222222222222222
+```
+
+## 12. Sticky affinity e failover
+
+Quando uma `STICKY` é informada, o scheduler guarda apenas o `node_id` correspondente em estado root-only. A chave sticky é transformada em SHA-256 para formar o nome do arquivo.
+
+Se o nó anterior continuar elegível:
+
+```text
+selection_reason=sticky-eligible
+sticky_hit=1
+```
+
+Se ele deixar de ser elegível por drain, health, protocolo, capacidade ou filtros:
+
+```text
+selection_reason=sticky-failover
+sticky_hit=0
+```
+
+O failover escolhe um novo nó pelo mesmo algoritmo weighted least-loaded e atualiza a afinidade. Isso é **failover de seleção** para nova alocação; não migra uma sessão VPN já estabelecida.
+
+## 13. Drain
+
+Ativar:
+
+```bash
+manager hive node drain BR-SP-02 maintenance
+```
+
+Semântica:
+
+```text
+draining=1
+new_allocations_allowed=0
+existing_sessions_terminated=0
+```
+
+O drain não derruba sessões existentes. Elas terminam normalmente; novas seleções deixam de usar o nó.
+
+Remover drain:
+
+```bash
+manager hive node undrain BR-SP-02
+```
+
+O motivo de drain é auditado com o `node_id` e o `node_epoch` conhecido.
+
+## 14. Audit
+
+Decisões do scheduler entram em:
+
+```text
+/var/log/manager/hive-scheduler-audit.jsonl
+```
+
+Eventos atuais incluem:
+
+- `placement`;
+- `select`;
+- `select-denied`;
+- `drain`;
+- `undrain`.
+
+O audit registra metadados operacionais e a razão da seleção. Não persiste chaves privadas ou credenciais.
+
+Health mantém audit separado em:
 
 ```text
 /var/log/manager/hive-health-audit.jsonl
 ```
 
-O audit registra metadados operacionais como evento, nó, epoch, estado/motivo e origem. Não registra chaves privadas.
+## 15. Lifecycle
 
-O listener mantém proteção de burst por IP de origem antes da validação criptográfica completa.
-
-## 12. Lifecycle
-
-A Colmeia usa `modules/hive_lifecycle.sh` ligado ao lifecycle da `manager-automation-v2.service`.
+A rede/health continuam ligados a `modules/hive_lifecycle.sh` e ao lifecycle da `manager-automation-v2.service`.
 
 Drop-in:
 
@@ -520,37 +616,29 @@ Helper:
 /usr/local/libexec/manager-hive-lifecycle
 ```
 
-Start:
+O scheduler não possui daemon próprio. Seu lifecycle é de estado:
 
-1. reconcilia a rede privada quando aplicável;
-2. reanexa heartbeat/listener se estiverem configurados/habilitados.
+- uninstall normal chama `--detach`, que preserva placement/sticky/audit;
+- reinstalação pode reutilizar o estado durável;
+- `manager-uninstall --purge` chama `--purge` e remove scheduler config/runtime/audit.
 
-Stop em uninstall/rollback:
+A malha/health continuam destacando seus units/runtime antes da remoção do código.
 
-1. destaca heartbeat timer/listener;
-2. destaca a rede `mgh0`;
-3. remove somente hooks/runtime MANAGER-owned quando necessário.
-
-Configuração durável permanece para reinstalação. O fallback só remove units com marker explícito:
-
-```text
-# MANAGER-HIVE-HEALTH v1
-```
-
-## 13. Backup
+## 16. Backup
 
 `/etc/manager/hive` entra no backup protegido do MANAGER. Pode conter:
 
 - chave privada Ed25519 do nó;
 - chave privada Ed25519 do controlador;
 - chave privada WireGuard da malha;
-- chave privada do certificado TLS de health.
+- chave privada do certificado TLS de health;
+- placement do scheduler.
 
 Portanto, o backup deve ser tratado como segredo operacional.
 
 Uninstall normal preserva estado durável. `manager-uninstall --purge` é a operação destinada a remover o estado server-side persistente.
 
-## Estado da 0.8.2
+## Estado da 0.8.3
 
 ```text
 cryptographic_node_identity=1
@@ -571,35 +659,36 @@ anti_replay=1
 tls_transport=TLS1.3
 tls_server_pinning=sha256
 health_audit=1
+scheduler=weighted-least-loaded
+scheduler_audit=1
+sticky_session=1
+drain_runtime=1
+selection_failover=1
 controller_in_user_vpn_path=0
 firewall_auto_open=0
-scheduler=0
-drain_runtime=0
-failover=0
 global_lease_authority=0
 global_max_sessions=0
 global_accounting=0
 ```
 
-A Colmeia agora possui confiança, canal privado e estado de saúde verificável, mas ainda não escolhe automaticamente servidor nem concede autoridade global de sessão.
+A Colmeia agora possui confiança, canal privado, saúde verificável e seleção de nó com drain/failover. Ela **ainda não concede autoridade global de sessão**.
 
-## Próxima etapa — 0.8.3
+## Próxima etapa — 0.8.4
 
-A 0.8.3 deve implementar **scheduler, drain e seleção de nó** usando os sinais já disponíveis:
+A 0.8.4 implementará a autoridade de sessões/leases globais:
 
-- `HEALTHY/DEGRADED/DRAINING/OFFLINE`;
-- capacidade/peso;
-- sessões/capacidade;
-- protocolo disponível;
-- região/pool/ACL;
-- latência;
-- sticky session;
-- decisões auditáveis.
+- lease global por identidade/plano;
+- `max_sessions` global atômico;
+- seleção de nó + aquisição de lease na mesma autoridade;
+- fencing distribuído;
+- `session_epoch` contra retorno de autoridade antiga;
+- troca de servidor sem sessão fantasma;
+- grace controlado quando a autoridade estiver temporariamente indisponível.
 
-O comando planejado continua:
+Exemplo obrigatório:
 
-```bash
-manager hive node drain BR-SP-02
+```text
+Maria possui acesso a 10 países/nós
+max_sessions global = 1
+→ pode estar conectada em apenas um deles por vez
 ```
-
-Drain deverá impedir novas alocações sem expulsar sessões existentes. Failover e autoridade global de leases continuam separados conforme o roadmap.
