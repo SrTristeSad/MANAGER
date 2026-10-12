@@ -122,13 +122,15 @@ jobs:
           test_path="/tmp/manager-fakebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
           sudo env PATH="$test_path" /opt/manager/modules/protocol_leases.sh --reconcile || true
           sudo test -f /tmp/manager-fake-iptables.state
-          test -z "$(sudo grep -l '^protocol=wireguard$' /run/manager-protocol-leases/maps/*.map 2>/dev/null || true)"
+          wg_maps="$(sudo find /run/manager-protocol-leases/maps -maxdepth 1 -type f -name '*.map' -exec grep -l '^protocol=wireguard$' {} + 2>/dev/null || true)"
+          test -z "$wg_maps"
           test "$(sudo /opt/manager/modules/session_engine.sh --list wgglobal | grep -c '^wgglobal' || true)" = 0
           test "$(sudo manager hive lease controller list wgglobal | grep -c '^wgglobal|' || true)" = 1
 
           sudo /opt/manager/modules/hive_leases.sh --release-node wgglobal "$blocker" >/dev/null
           sudo env PATH="$test_path" /opt/manager/modules/protocol_leases.sh --reconcile
           sudo test ! -e /tmp/manager-fake-iptables.state
-          test -n "$(sudo grep -l '^protocol=wireguard$' /run/manager-protocol-leases/maps/*.map 2>/dev/null || true)"
+          wg_maps="$(sudo find /run/manager-protocol-leases/maps -maxdepth 1 -type f -name '*.map' -exec grep -l '^protocol=wireguard$' {} + 2>/dev/null || true)"
+          test -n "$wg_maps"
           test "$(sudo /opt/manager/modules/session_engine.sh --list wgglobal | grep -c '^wgglobal' || true)" = 1
           test "$(sudo manager hive lease controller list wgglobal | grep -c '^wgglobal|' || true)" = 1
