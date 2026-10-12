@@ -1,0 +1,42 @@
+name: Temporary Apply 0.8.6 Global Accounting
+
+on:
+  push:
+    branches: [feature/0.8.6-global-accounting]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feature/0.8.6-global-accounting
+      - name: Apply product integration patch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 scripts/tmp_apply_086.py
+          bash -n manager install.sh uninstall.sh modules/hive_leases.sh modules/hive_accounting.sh modules/hive_lifecycle.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          text=Path('modules/hive_leases.sh').read_text()
+          start=text.index("python3 - \"$@\" <<'PY'\n")+len("python3 - \"$@\" <<'PY'\n")
+          end=text.rindex("\nPY\n")
+          compile(text[start:end], 'hive_leases_embedded.py', 'exec')
+          PY
+          git diff --check
+      - name: Commit applied changes
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add manager install.sh uninstall.sh modules/hive_leases.sh modules/hive_lifecycle.sh docs/ROADMAP.md docs/HIVE.md
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'feat: integrate Hive global accounting authority'
+          git push origin HEAD:feature/0.8.6-global-accounting
