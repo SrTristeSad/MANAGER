@@ -87,7 +87,7 @@ Uso:
   manager hive node select PROTOCOL [REGION] [POOL] [STICKY] [NODE_SCOPE]
                                   scheduler weighted least-loaded / drain / failover
   manager hive lease status
-  manager hive lease node status|configure HOST PORT TLS_FP [GRACE]|disable
+  manager hive lease node status|probe|configure HOST PORT TLS_FP [GRACE]|disable
   manager hive lease controller init|status|enable BIND_IP [PORT]|disable|rotate-tls
   manager hive lease controller grant ID PROTO [REGION] [POOL] [STICKY] [SCOPE] [DEVICE] [TTL]
   manager hive lease controller list [ID]
@@ -317,9 +317,10 @@ case "${1:-}" in
           node)
             case "${4:-status}" in
               status) exec "$MANAGER_HOME/modules/hive_leases.sh" --node-status ;;
+              probe) exec "$MANAGER_HOME/modules/hive_leases.sh" --node-probe ;;
               configure) [[ -n "${5:-}" && -n "${6:-}" && -n "${7:-}" ]] || { err "Uso: manager hive lease node configure HOST PORT TLS_FP [GRACE]"; exit 64; }; exec "$MANAGER_HOME/modules/hive_leases.sh" --node-configure "$5" "$6" "$7" "${8:-30}" ;;
               disable) exec "$MANAGER_HOME/modules/hive_leases.sh" --node-disable ;;
-              *) err "Uso: manager hive lease node {status|configure|disable}"; exit 64 ;;
+              *) err "Uso: manager hive lease node {status|probe|configure|disable}"; exit 64 ;;
             esac
             ;;
           controller)

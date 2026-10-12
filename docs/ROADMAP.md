@@ -262,6 +262,17 @@ Implementado:
 
 ### 0.8.7 — failover e resiliência operacional
 
+Fundação implementada nesta fase:
+
+- estado operacional persistente da autoridade no nó (`healthy`, `outage`, `fenced`) sem transformar o controlador em caminho de dados;
+- `last_success_epoch`, início da outage, última falha de transporte e contadores de recovery preservados em estado root-only;
+- `manager hive lease node probe` reutiliza o mesmo envelope Ed25519 + TLS 1.3 pinado para testar autoridade e fechar recovery;
+- falha de transporte marca outage e mantém novos grants fail-closed; resposta autoritativa válida fecha a outage e registra recovery;
+- retorno de `authority_epoch` menor que o maior já observado marca o nó como `fenced` e continua fail-closed;
+- estado de recovery é diagnóstico/controle e não carrega tráfego VPN de usuário.
+
+Critérios da fase:
+
 - controlador fora do caminho de dados VPN;
 - sessões existentes sobrevivem a outage sob regras de grace;
 - novos grants podem falhar fechado quando autoridade global não puder ser garantida;
