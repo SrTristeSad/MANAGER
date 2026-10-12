@@ -74,8 +74,6 @@ jobs:
           sudo systemctl is-active --quiet manager-hive-allocation-sync.timer
           sudo manager hive allocation status | grep -q '^delivery_transport=lease-control-pull$'
           sudo manager hive allocation controller status | grep -q '^automatic_distribution=1$'
-          # Make the explicit-pull assertions deterministic: a timer can already have
-          # spawned its oneshot service by the time the timer itself is stopped.
           sudo systemctl stop manager-hive-allocation-sync.timer manager-hive-allocation-sync.service
           if sudo systemctl is-active --quiet manager-hive-allocation-sync.service; then
             echo 'allocation sync service still active after deterministic stop' >&2
@@ -95,12 +93,12 @@ jobs:
           grep -q '^delivery_transport=lease-control-pull$' <<<"$created"
           allocation_id="$(awk -F= '$1=="allocation_id"{print $2}' <<<"$created")"
           node="$(cat /tmp/node.id)"
-          test -f "/var/lib/manager/hive-allocations/controller/outbox/$node/$allocation_id.json"
+          sudo test -f "/var/lib/manager/hive-allocations/controller/outbox/$node/$allocation_id.json"
           sync="$(sudo manager hive allocation sync)"
           grep -q '^allocations_pulled=1$' <<<"$sync"
           grep -q '^allocations_accepted=1$' <<<"$sync"
           grep -q '^allocations_acked=1$' <<<"$sync"
-          test ! -e "/var/lib/manager/hive-allocations/controller/outbox/$node/$allocation_id.json"
+          sudo test ! -e "/var/lib/manager/hive-allocations/controller/outbox/$node/$allocation_id.json"
           sudo test -f "/var/lib/manager/hive-allocations/node/active/$allocation_id.json"
           sudo manager hive allocation sync | grep -q '^allocations_pulled=0$'
 
@@ -128,7 +126,7 @@ jobs:
           sudo cp /tmp/tamper.valid.json "$outbox"
           sudo chmod 600 "$outbox"
           sudo manager hive allocation sync | grep -q '^allocations_acked=1$'
-          test ! -e "$outbox"
+          sudo test ! -e "$outbox"
 
       - name: Deliver automatically through the timer
         shell: bash
@@ -143,10 +141,12 @@ jobs:
           sudo test -f "$outbox"
           sudo systemctl start manager-hive-allocation-sync.timer
           for _ in $(seq 1 20); do
-            [[ ! -e "$outbox" ]] && break
+            if ! sudo test -e "$outbox"; then
+              break
+            fi
             sleep 1
           done
-          test ! -e "$outbox"
+          sudo test ! -e "$outbox"
           sudo test -f "/var/lib/manager/hive-allocations/node/active/$allocation_id.json"
           sudo systemctl is-active --quiet manager-hive-allocation-sync.timer
 
@@ -168,7 +168,7 @@ jobs:
           sudo test -f "$outbox"
           revoke="$(sudo manager hive allocation controller revoke allocdist distribution-revoke)"
           grep -q '^queued_allocations_revoked=1$' <<<"$revoke"
-          test ! -e "$outbox"
+          sudo test ! -e "$outbox"
           sudo /opt/manager/modules/hive_allocations.sh --detach
           sudo test -f /etc/manager/hive/allocations/node.conf
           test ! -e /etc/systemd/system/manager-hive-allocation-sync.timer
