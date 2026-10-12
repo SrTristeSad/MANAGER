@@ -1,0 +1,47 @@
+name: Temporary 0.8.5 Allocation Distribution Wiring
+
+on:
+  push:
+    branches:
+      - feature/0.8.5-allocation-distribution
+    paths:
+      - scripts/tmp_patch_085_distribution.py
+      - .github/workflows/tmp-0-8-5-distribution-wire.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feature/0.8.5-allocation-distribution
+          fetch-depth: 0
+
+      - name: Apply distribution patch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 scripts/tmp_patch_085_distribution.py
+          bash -n modules/hive_leases.sh
+          bash -n modules/hive_allocations.sh
+          bash -n manager
+          python3 - <<'PY'
+          from pathlib import Path
+          for p in ('.github/workflows/hive-vpn-allocation-distribution.yml','docs/HIVE.md','docs/ROADMAP.md'):
+              if not Path(p).is_file() or not Path(p).read_text().strip():
+                  raise SystemExit(f'missing or empty: {p}')
+          PY
+
+      - name: Commit patched product files
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git config user.name 'SrTristeSad'
+          git config user.email '48489740+SrTristeSad@users.noreply.github.com'
+          git add modules/hive_leases.sh modules/hive_allocations.sh manager docs/HIVE.md docs/ROADMAP.md .github/workflows/hive-vpn-allocation-distribution.yml
+          git diff --cached --check
+          git commit -m 'feat: distribute signed VPN allocations to selected nodes'
+          git push origin HEAD:feature/0.8.5-allocation-distribution
