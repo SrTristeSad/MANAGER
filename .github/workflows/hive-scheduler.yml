@@ -96,7 +96,7 @@ jobs:
                    'base_state':'HEALTHY','base_reason':'ok','metrics':metrics}
               with open(os.path.join(root,node+'.json'),'w') as f: json.dump(obs,f,sort_keys=True,separators=(',',':'))
           PY
-          sudo chmod 600 /tmp/hive-scheduler-health/nodes/*.json
+          sudo find /tmp/hive-scheduler-health/nodes -maxdepth 1 -type f -name '*.json' -exec chmod 600 {} +
 
       - name: Configure controller-authoritative placement
         shell: bash
