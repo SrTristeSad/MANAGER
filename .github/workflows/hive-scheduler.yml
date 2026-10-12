@@ -137,12 +137,12 @@ jobs:
         run: |
           set -euxo pipefail
           sched='sudo env MANAGER_ETC=/tmp/hive-scheduler-etc MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-scheduler-health MANAGER_HIVE_SCHEDULER_DATA_DIR=/tmp/hive-scheduler-runtime MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-scheduler-audit.jsonl /opt/manager/modules/hive_scheduler.sh'
-          before="$(python3 -c "import json; print(json.load(open('/tmp/hive-scheduler-health/nodes/node-2222222222222222.json'))['metrics']['sessions'])")"
+          before="$(sudo python3 -c "import json; print(json.load(open('/tmp/hive-scheduler-health/nodes/node-2222222222222222.json'))['metrics']['sessions'])")"
           drained="$(eval "$sched --drain BR-SP-02 maintenance")"
           grep -q '^draining=1$' <<<"$drained"
           grep -q '^existing_sessions_terminated=0$' <<<"$drained"
           grep -q '^new_allocations_allowed=0$' <<<"$drained"
-          after="$(python3 -c "import json; print(json.load(open('/tmp/hive-scheduler-health/nodes/node-2222222222222222.json'))['metrics']['sessions'])")"
+          after="$(sudo python3 -c "import json; print(json.load(open('/tmp/hive-scheduler-health/nodes/node-2222222222222222.json'))['metrics']['sessions'])")"
           test "$before" = "$after"
 
           failover="$(eval "$sched --select wireguard BR-SP PREMIUM customer-A '*'")"
