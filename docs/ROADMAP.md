@@ -219,7 +219,7 @@ max_sessions_global = 1
 
 `global_accounting=0` permanece intencional; billing global não faz parte desta etapa.
 
-### 0.8.5 — VPN allocation / login global — PRÓXIMO
+### 0.8.5 — VPN allocation / login global 🚧
 
 - login/provisionamento capaz de escolher um nó elegível;
 - vínculo entre produto, região/pool, protocolo e lease global;
