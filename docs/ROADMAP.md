@@ -181,8 +181,8 @@ scheduler=weighted-least-loaded
 sticky_session=1
 drain_runtime=1
 selection_failover=1
-global_lease_authority=1
-global_max_sessions=1
+global_lease_authority=0
+global_max_sessions=0
 global_accounting=0
 ```
 
