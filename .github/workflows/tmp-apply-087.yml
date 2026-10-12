@@ -19,6 +19,11 @@ jobs:
         run: |
           set -euxo pipefail
           python3 scripts/tmp_apply_087.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('docs/HIVE.md')
+          p.write_text(p.read_text().rstrip() + '\n')
+          PY
           bash -n manager
           bash -n modules/hive_leases.sh
           python3 - <<'PY'
