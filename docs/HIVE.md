@@ -758,6 +758,12 @@ manager hive allocation controller revoke maria compromised
 
 O controlador continua fora do caminho de dados VPN.
 
+#### Provisionamento remoto no nó selecionado (0.8.5)
+
+Após validar e persistir uma allocation recebida por pull, o nó executa `provision.sh --ensure` para a identidade, produto e protocolo assinados no ticket. A operação é tipada e idempotente: cria o recurso somente quando necessário, reutiliza binding compatível e recusa conflito de identidade/produto/recurso local. O ACK ao controlador só acontece depois do provisionamento e da gravação de um receipt `0600` em `/var/lib/manager/hive-allocations/node/provisioned`.
+
+Se o provisionamento falhar (produto ausente/desativado, protocolo não permitido, serviço VPN não configurado ou conflito local), a allocation **não recebe ACK**. Em redelivery, o mesmo ticket é aceito idempotentemente e o provisionamento é tentado novamente. Segredos não entram no audit JSONL; quando uma credencial nasce nesta etapa, o material necessário fica somente no receipt root-only até o fluxo público seguro de entrega ser fechado. O controlador continua fora do caminho de dados VPN.
+
 ## 17. Audit global
 
 ```text

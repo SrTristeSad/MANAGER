@@ -410,6 +410,115 @@ provision_impl() {
   fi
 }
 
+rewrite_identity_protocols_local() {
+  local id="$1" protocols="$2" owner enabled expires max_sessions created ssh_user wg ovpn
+  owner="$(identity_read "$id" owner)"
+  enabled="$(identity_read "$id" enabled)"
+  expires="$(identity_read "$id" expires_epoch)"
+  max_sessions="$(identity_read "$id" max_sessions)"
+  created="$(identity_read "$id" created_epoch)"
+  ssh_user="$(identity_read "$id" ssh_user)"
+  wg="$(identity_read "$id" wireguard_client)"
+  ovpn="$(identity_read "$id" openvpn_client)"
+  identity_write "$id" "$owner" "$enabled" "$expires" "$max_sessions" "$protocols" "$created" "$(date +%s)" "$ssh_user" "$wg" "$ovpn"
+}
+
+ensure_protocol_impl() {
+  local id="$1" product="$2" protocol="$3" assigned state previous_protocols next_protocols binding created=0 expanded=0 expires
+  identity_valid_id "$id" || { err "ID de identidade inválido"; return 64; }
+  [[ "$protocol" == ssh || "$protocol" == wireguard || "$protocol" == openvpn ]] || { err "Protocolo inválido"; return 64; }
+  product_exists "$product" || { err "Produto não encontrado no nó: $product"; return 66; }
+  [[ "$(product_read "$product" enabled)" == 1 ]] || { err "Produto está desativado no nó: $product"; return 68; }
+  select_protocols "$product" "$protocol" >/dev/null || { err "Produto $product não autoriza $protocol neste nó"; return 67; }
+
+  if ! identity_exists "$id"; then
+    provision_impl "$id" "$product" "" "$protocol" || return $?
+    printf 'provision_action=created\nresource_created=1\n'
+    return 0
+  fi
+
+  assigned="$(product_for_identity "$id" 2>/dev/null || true)"
+  [[ "$assigned" == "$product" ]] || { err "Identidade local $id pertence a produto diferente ou sem produto"; return 67; }
+  state="$(identity_effective_state "$id")"
+  [[ "$state" == active ]] || { err "Identidade local $id não está ativa: $state"; return 67; }
+  preflight_protocols "$protocol" || return $?
+
+  previous_protocols="$(identity_read "$id" protocols)"
+  if ! protocol_list_has "$previous_protocols" "$protocol"; then
+    next_protocols="$(normalize_protocols "$previous_protocols,$protocol")" || return 64
+    rewrite_identity_protocols_local "$id" "$next_protocols" || return 70
+    expanded=1
+  fi
+  expires="$(identity_read "$id" expires_epoch)"
+
+  case "$protocol" in
+    ssh)
+      binding="$(identity_read "$id" ssh_user)"
+      if [[ -n "$binding" ]]; then
+        [[ "$binding" == "$id" ]] && id "$binding" >/dev/null 2>&1 || { (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; err "Binding SSH local inconsistente para $id"; return 67; }
+      else
+        if id "$id" >/dev/null 2>&1; then (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; err "Usuário SSH local existe sem binding MANAGER: $id"; return 65; fi
+        if ! create_ssh_resource "$id" "$expires"; then (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; return 70; fi
+        if ! "$CONNECTION_MODULE" --bind "$id" ssh "$id" >/dev/null; then remove_ssh_resource "$id"; (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; return 70; fi
+        if ! unlock_ssh_resource "$id"; then
+          rewrite_identity_binding "$id" ssh "" >/dev/null 2>&1 || true
+          remove_ssh_resource "$id"
+          (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"
+          return 70
+        fi
+        created=1
+      fi
+      ;;
+    wireguard)
+      binding="$(identity_read "$id" wireguard_client)"
+      if [[ -n "$binding" ]]; then
+        [[ "$binding" == "$id" && -f "$WG_CLIENT_DIR/$binding.conf" && -f "$WG_CLIENT_DIR/$binding.meta" ]] || { (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; err "Binding WireGuard local inconsistente para $id"; return 67; }
+      else
+        if [[ -e "$WG_CLIENT_DIR/$id.conf" || -e "$WG_CLIENT_DIR/$id.meta" ]]; then (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; err "Recurso WireGuard local existe sem binding MANAGER: $id"; return 65; fi
+        if ! create_wireguard_resource "$id"; then (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; return 70; fi
+        if ! "$CONNECTION_MODULE" --bind "$id" wireguard "$id" >/dev/null; then remove_wireguard_resource "$id"; (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; return 70; fi
+        created=1
+      fi
+      ;;
+    openvpn)
+      binding="$(identity_read "$id" openvpn_client)"
+      if [[ -n "$binding" ]]; then
+        [[ "$binding" == "$id" && -f "$OVPN_CLIENT_DIR/$binding.ovpn" && -f "$OVPN_META_DIR/$binding.meta" ]] || { (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; err "Binding OpenVPN local inconsistente para $id"; return 67; }
+      else
+        if [[ -e "$OVPN_CLIENT_DIR/$id.ovpn" || -e "$OVPN_META_DIR/$id.meta" ]]; then (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; err "Recurso OpenVPN local existe sem binding MANAGER: $id"; return 65; fi
+        if ! create_openvpn_resource "$id"; then (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; return 70; fi
+        if ! "$CONNECTION_MODULE" --bind "$id" openvpn "$id" >/dev/null; then revoke_openvpn_resource "$id" 1; (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"; return 70; fi
+        created=1
+      fi
+      ;;
+  esac
+
+  if [[ "$protocol" == wireguard && "$created" == 0 ]]; then
+    PROV_WG_IP="$(awk -F= '$1=="ip4" || $1=="ip" {print $2; exit}' "$WG_CLIENT_DIR/$id.meta")"
+    PROV_WG_IP6="$(awk -F= '$1=="ip6" {print $2; exit}' "$WG_CLIENT_DIR/$id.meta")"
+  fi
+  if ! reconcile_runtime; then
+    if (( created == 1 )); then
+      case "$protocol" in
+        ssh) rewrite_identity_binding "$id" ssh "" >/dev/null 2>&1 || true; remove_ssh_resource "$id" ;;
+        wireguard) rewrite_identity_binding "$id" wireguard "" >/dev/null 2>&1 || true; remove_wireguard_resource "$id" ;;
+        openvpn) rewrite_identity_binding "$id" openvpn "" >/dev/null 2>&1 || true; revoke_openvpn_resource "$id" 1 ;;
+      esac
+    fi
+    (( expanded == 0 )) || rewrite_identity_protocols_local "$id" "$previous_protocols"
+    err "Falha ao reconciliar política após ensure de $protocol/$id"
+    return 70
+  fi
+  printf 'status=ok\nidentity_id=%s\nproduct_id=%s\nprotocols=%s\nprovision_action=%s\nresource_created=%s\n' \
+    "$id" "$product" "$protocol" "$([[ "$created" == 1 ]] && echo created || echo reused)" "$created"
+  case "$protocol" in
+    ssh) printf 'ssh_user=%s\n' "$id"; (( created == 0 )) || printf 'ssh_password=%s\n' "$PROV_SSH_PASSWORD" ;;
+    wireguard) printf 'wireguard_client=%s\nwireguard_ip=%s\nwireguard_ipv4=%s\nwireguard_ipv6=%s\nwireguard_profile=%s\n' "$id" "${PROV_WG_IP:-}" "${PROV_WG_IP:-}" "${PROV_WG_IP6:-}" "$WG_CLIENT_DIR/$id.conf" ;;
+    openvpn) printf 'openvpn_client=%s\nopenvpn_profile=%s\n' "$id" "$OVPN_CLIENT_DIR/$id.ovpn" ;;
+  esac
+}
+
+
 clear_identity_bindings() {
   local id="$1" owner enabled expires max_sessions protocols created
   owner="$(identity_read "$id" owner)"; enabled="$(identity_read "$id" enabled)"; expires="$(identity_read "$id" expires_epoch)"; max_sessions="$(identity_read "$id" max_sessions)"; protocols="$(identity_read "$id" protocols)"; created="$(identity_read "$id" created_epoch)"
@@ -491,6 +600,8 @@ case "${1:-}" in
   --preflight) show_preflight "${2:-}" "${3:-}" "${4:-}" "${5:-}"; exit $? ;;
   --create) shift; flock -x "$PROVISION_LOCK" "$0" --create-unlocked "${1:-}" "${2:-}" "${3:-}" "${4:-}"; exit $? ;;
   --create-unlocked) provision_impl "${2:-}" "${3:-}" "${4:-}" "${5:-}"; exit $? ;;
+  --ensure) shift; flock -x "$PROVISION_LOCK" "$0" --ensure-unlocked "${1:-}" "${2:-}" "${3:-}"; exit $? ;;
+  --ensure-unlocked) ensure_protocol_impl "${2:-}" "${3:-}" "${4:-}"; exit $? ;;
   --revoke) shift; flock -x "$PROVISION_LOCK" "$0" --revoke-unlocked "${1:-}"; exit $? ;;
   --revoke-unlocked) revoke_impl "${2:-}"; exit $? ;;
   "") ;;
