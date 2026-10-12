@@ -27,6 +27,19 @@ jobs:
           grep -q '^drain_runtime=1$' <<<"$out"
           grep -q '^global_lease_authority=0$' <<<"$out"
 
+      - name: Public manager hive node surface
+        shell: bash
+        run: |
+          set -euxo pipefail
+          out="$(sudo manager hive node status)"
+          grep -q '^contract=manager-hive-scheduler-v1$' <<<"$out"
+          grep -q '^scheduler=weighted-least-loaded$' <<<"$out"
+          grep -q '^global_lease_authority=0$' <<<"$out"
+          if sudo manager hive node select invalid-protocol; then
+            echo 'public scheduler CLI accepted invalid protocol' >&2
+            exit 1
+          fi
+
       - name: Build isolated controller observations
         shell: bash
         run: |
@@ -185,3 +198,28 @@ jobs:
           grep -q '^drain_runtime=1$' <<<"$status"
           grep -q '^selection_failover=1$' <<<"$status"
           grep -q '^controller_in_user_vpn_path=0$' <<<"$status"
+
+      - name: Public CLI placement drain selection and lifecycle
+        shell: bash
+        run: |
+          set -euxo pipefail
+          pub='sudo env MANAGER_ETC=/tmp/hive-scheduler-etc MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-scheduler-health MANAGER_HIVE_SCHEDULER_DATA_DIR=/tmp/hive-scheduler-runtime MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-scheduler-audit.jsonl manager hive node'
+          listed="$(eval "$pub list")"
+          grep -q 'node-1111111111111111|BR-SP-01' <<<"$listed"
+          shown="$(eval "$pub show BR-SP-01")"
+          grep -q '^node_id=node-1111111111111111$' <<<"$shown"
+          selected="$(eval "$pub select wireguard BR-SP PREMIUM public-sticky '*'")"
+          grep -q '^selected_node=node-1111111111111111$' <<<"$selected"
+          drained="$(eval "$pub drain BR-SP-01 public-maintenance")"
+          grep -q '^existing_sessions_terminated=0$' <<<"$drained"
+          eval "$pub undrain BR-SP-01" | grep -q '^draining=0$'
+
+          # Normal detach is state-preserving. Purge removes scheduler state and audit.
+          sudo env MANAGER_ETC=/tmp/hive-scheduler-etc MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-scheduler-health MANAGER_HIVE_SCHEDULER_DATA_DIR=/tmp/hive-scheduler-runtime MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-scheduler-audit.jsonl /opt/manager/modules/hive_scheduler.sh --detach
+          sudo test -d /tmp/hive-scheduler-etc/hive/controller/scheduler
+          sudo test -d /tmp/hive-scheduler-runtime
+          sudo test -f /tmp/hive-scheduler-audit.jsonl
+          sudo env MANAGER_ETC=/tmp/hive-scheduler-etc MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-scheduler-health MANAGER_HIVE_SCHEDULER_DATA_DIR=/tmp/hive-scheduler-runtime MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-scheduler-audit.jsonl /opt/manager/modules/hive_scheduler.sh --purge
+          sudo test ! -e /tmp/hive-scheduler-etc/hive/controller/scheduler
+          sudo test ! -e /tmp/hive-scheduler-runtime
+          sudo test ! -e /tmp/hive-scheduler-audit.jsonl
