@@ -236,10 +236,14 @@ Implementado nesta fase:
 - redelivery após perda de ACK reutiliza o recurso já criado e um receipt root-only vinculado à allocation;
 - falha de produto/protocolo/preflight no nó impede ACK e mantém o fluxo fail-closed.
 
-Ainda pendente para fechar a 0.8.5:
+Adicionado no fechamento da fase:
 
-- devolver ao fluxo público o resultado/credencial criada no nó sem expor segredo em logs ou no audit;
-- fechar o endpoint/contrato público de login/provisionamento de ponta a ponta e seus gates finais antes de alterar `VERSION`.
+- ACK autenticado do nó carrega um `manager-hive-vpn-login-result-v1` sanitizado, sem segredo em argv, log ou audit;
+- controlador persiste resultados sensíveis em `0600` e a CLI pública exporta para arquivo novo `0600`, nunca para stdout;
+- `manager hive login create ...` inicia a allocation e `manager hive login result ALLOCATION_ID OUT` consulta/exporta o resultado;
+- SSH distingue credencial recém-emitida de credencial já existente, sem tornar senhas antigas recuperáveis;
+- WireGuard/OpenVPN devolvem o perfil gerenciado em base64 dentro do contrato;
+- `VERSION` continua 0.8.4 até os gates finais desta PR passarem.
 
 ### 0.8.6 — quotas e accounting globais
 

@@ -42,6 +42,7 @@ LIMIT_DIR = os.path.join(CTRL_DIR, "leases", "limits")
 DATA_DIR = os.environ.get("MANAGER_HIVE_ALLOCATION_DATA_DIR", "/var/lib/manager/hive-allocations")
 CTRL_EPOCH_DIR = os.path.join(DATA_DIR, "controller", "epochs")
 CTRL_OUTBOX_DIR = os.path.join(DATA_DIR, "controller", "outbox")
+CTRL_RESULT_DIR = os.path.join(DATA_DIR, "controller", "results")
 NODE_ACTIVE_DIR = os.path.join(DATA_DIR, "node", "active")
 NODE_STATE_DIR = os.path.join(DATA_DIR, "node", "state")
 NODE_EPOCH_DIR = os.path.join(DATA_DIR, "node", "epochs")
@@ -84,6 +85,7 @@ def init_dirs():
     ensure_dir(DATA_DIR)
     ensure_dir(CTRL_EPOCH_DIR)
     ensure_dir(CTRL_OUTBOX_DIR)
+    ensure_dir(CTRL_RESULT_DIR)
     ensure_dir(NODE_ACTIVE_DIR)
     ensure_dir(NODE_STATE_DIR)
     ensure_dir(NODE_EPOCH_DIR)
@@ -619,6 +621,61 @@ def provision_bundle(bundle):
     return receipt,False
 
 
+def safe_profile_b64(path, expected_root, expected_name):
+    if not path: die("Provisionamento não retornou o perfil VPN.",70)
+    target=Path(path); root=Path(expected_root)
+    try:
+        resolved=target.resolve(strict=True); root_resolved=root.resolve(strict=True)
+    except (OSError,RuntimeError): die("Perfil VPN provisionado não pôde ser resolvido.",70)
+    if resolved.parent != root_resolved or resolved.name != expected_name:
+        die("Perfil VPN provisionado saiu do diretório gerenciado esperado.",67)
+    st=resolved.stat()
+    if not stat.S_ISREG(st.st_mode) or st.st_size < 1 or st.st_size > 49152:
+        die("Perfil VPN provisionado tem tipo/tamanho inválido.",70)
+    return base64.b64encode(resolved.read_bytes()).decode("ascii")
+
+
+def public_result(bundle,receipt):
+    protocol=bundle["protocol"]; state="issued" if receipt.get("resource_created")=="1" else "existing"; creds={}
+    if protocol=="ssh":
+        username=receipt.get("ssh_user") or bundle["identity_id"]
+        creds["username"]=username
+        if receipt.get("ssh_password"):
+            creds["password"]=receipt["ssh_password"]; state="issued"
+    elif protocol=="wireguard":
+        client=receipt.get("wireguard_client") or bundle["identity_id"]
+        creds={"client":client,"ipv4":receipt.get("wireguard_ipv4") or receipt.get("wireguard_ip", ""),
+               "ipv6":receipt.get("wireguard_ipv6", ""),"profile_encoding":"base64",
+               "profile_b64":safe_profile_b64(receipt.get("wireguard_profile", ""),
+                                               "/etc/manager/wireguard/clients", client+".conf")}
+    elif protocol=="openvpn":
+        client=receipt.get("openvpn_client") or bundle["identity_id"]
+        creds={"client":client,"ipv6":receipt.get("openvpn_ipv6", ""),"profile_encoding":"base64",
+               "profile_b64":safe_profile_b64(receipt.get("openvpn_profile", ""),
+                                               "/etc/manager/openvpn/clients", client+".ovpn")}
+    else: die("Protocolo inesperado no resultado público.",70)
+    return {"contract":"manager-hive-vpn-login-result-v1","version":1,"allocation_id":bundle["allocation_id"],
+            "identity_id":bundle["identity_id"],"product_id":bundle["product_id"],"protocol":protocol,
+            "selected_node":bundle["selected_node"],"selected_name":bundle.get("selected_name", ""),
+            "node_epoch":bundle["node_epoch"],"expires_epoch":bundle["expires_epoch"],
+            "credential_state":state,"credentials":creds}
+
+
+def controller_result(allocation_id,out_path):
+    init_dirs(); controller_identity()
+    if not ID_RE.fullmatch(str(allocation_id)): die("allocation_id inválido.",64)
+    result_path=os.path.join(CTRL_RESULT_DIR,allocation_id+".json")
+    result=read_json(result_path)
+    if not result:
+        print("login_result_status=pending"); print(f"allocation_id={allocation_id}"); return
+    if result.get("contract")!="manager-hive-vpn-login-result-v1" or result.get("allocation_id")!=allocation_id:
+        die("Resultado armazenado da allocation é inválido.",70)
+    payload=json.dumps(result,sort_keys=True,separators=(",",":"))+"\n"
+    write_external_new(out_path,payload)
+    print("login_result_status=ready"); print(f"allocation_id={allocation_id}"); print(f"result_file={out_path}")
+    print(f"protocol={result.get('protocol','')}"); print(f"selected_node={result.get('selected_node','')}")
+    print(f"credential_state={result.get('credential_state','')}")
+
 
 def sync_node(limit=8):
     init_dirs()
@@ -638,11 +695,18 @@ def sync_node(limit=8):
         bundle,was_idempotent=accept_bundle_object(raw)
         if was_idempotent: idempotent_count+=1
         else: accepted+=1
-        _,was_provisioned=provision_bundle(bundle)
+        receipt,was_provisioned=provision_bundle(bundle)
         if was_provisioned: provision_idempotent+=1
         else: provisioned+=1
-        ack=subprocess.run([LEASE_MODULE,"--allocation-ack-node",bundle["allocation_id"]],stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE,text=True,timeout=20,check=False)
+        result=public_result(bundle,receipt)
+        fd,result_path=tempfile.mkstemp(prefix=".login-result-",dir=NODE_PROVISION_DIR); os.close(fd)
+        try:
+            atomic_write(result_path,json.dumps(result,sort_keys=True,separators=(",",":"))+"\n")
+            ack=subprocess.run([LEASE_MODULE,"--allocation-ack-node",bundle["allocation_id"],result_path],stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE,text=True,timeout=20,check=False)
+        finally:
+            try: os.unlink(result_path)
+            except FileNotFoundError: pass
         if ack.returncode!=0:
             audit("sync-ack-failed",identity_id=bundle.get("identity_id"),allocation_id=bundle.get("allocation_id"))
             die(ack.stderr.strip() or "Allocation foi persistida localmente, mas o ACK ao controlador falhou.",ack.returncode)
@@ -789,7 +853,7 @@ def purge():
 
 def usage():
     print("Uso: hive_allocations.sh {--status|--node-enable|--node-disable|--accept BUNDLE|--sync [LIMIT]|--controller-status|"
-          "--controller-create ID PROTO OUT [REGION] [POOL] [STICKY] [SCOPE] [TTL]|--controller-revoke ID [REASON]|"
+          "--controller-create ID PROTO OUT [REGION] [POOL] [STICKY] [SCOPE] [TTL]|--controller-result ALLOCATION_ID OUT|--controller-revoke ID [REASON]|"
           "--reserve ID PROTO|--commit ALLOCATION_ID TOKEN SESSION|--abort ALLOCATION_ID TOKEN|--install|--detach|--purge}",
           file=sys.stderr)
     raise SystemExit(64)
@@ -807,6 +871,7 @@ def main(argv):
         controller_create(argv[1],argv[2],argv[3],argv[4] if len(argv)>4 else "",argv[5] if len(argv)>5 else "",
                           argv[6] if len(argv)>6 else "",argv[7] if len(argv)>7 else "*",
                           argv[8] if len(argv)>8 else DEFAULT_TTL); return
+    if cmd=="--controller-result" and len(argv)==3: controller_result(argv[1],argv[2]); return
     if cmd=="--controller-revoke" and len(argv) in {2,3}:
         controller_revoke(argv[1],argv[2] if len(argv)==3 else "admin"); return
     if cmd=="--reserve" and len(argv)==3: reserve(argv[1],argv[2]); return
