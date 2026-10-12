@@ -20,7 +20,7 @@ jobs:
           set -euxo pipefail
           source_url="file://${GITHUB_WORKSPACE}"
           sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
-          test "$(sudo cat /opt/manager/VERSION)" = 0.8.5
+          test "$(sudo cat /opt/manager/VERSION)" = 0.8.6
           sudo test -x /opt/manager/modules/provision.sh
           sudo test -x /opt/manager/modules/hive_allocations.sh
 
