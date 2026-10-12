@@ -1,4 +1,4 @@
-name: Validate MANAGER 0.8.6 Release Metadata
+name: Validate MANAGER 0.8.7 Release Metadata
 
 on:
   push:
@@ -14,24 +14,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Verify 0.8.6 version and release documentation
+      - name: Verify 0.8.7 version and release documentation
         shell: bash
         run: |
           set -euxo pipefail
-          test "$(cat VERSION)" = "0.8.6"
-          grep -q 'Versão atual: \*\*0.8.6\*\*' README.md
-          grep -q '0.8.6.*accounting global' README.md
-          grep -q '^## \[0.8.6\] - 2026-10-12$' CHANGELOG.md
-          grep -q '^### 0\.8\.6 — quotas e accounting globais ✅$' docs/ROADMAP.md
-          grep -q '^## 21\. Accounting global — fundação 0\.8\.6$' docs/HIVE.md
-          grep -q 'manager hive accounting quota set' docs/HIVE.md
-          grep -q 'usage-counter-regression' modules/hive_leases.sh
-          grep -q 'global-traffic-quota-exceeded' modules/hive_leases.sh
+          test "$(cat VERSION)" = "0.8.7"
+          grep -q 'Versão atual: \*\*0.8.7\*\*' README.md
+          grep -q '0.8.7.*resiliência operacional' README.md
+          grep -q '^## \[0.8.7\] - 2026-10-12$' CHANGELOG.md
+          grep -q '^### 0\.8\.7 — failover e resiliência operacional ✅$' docs/ROADMAP.md
+          grep -q '^## 22\. Resiliência operacional — fundação 0\.8\.7$' docs/HIVE.md
+          grep -q 'manager hive lease node probe' docs/HIVE.md
+          grep -q 'node-authority-recovered' modules/hive_leases.sh
+          grep -q 'node-authority-fenced' modules/hive_leases.sh
 
-      - name: Keep 0.8.7 outside the 0.8.6 release
+      - name: Keep 0.8.8 outside the 0.8.7 release
         shell: bash
         run: |
           set -euxo pipefail
-          grep -q '^### 0\.8\.7 — failover e resiliência operacional$' docs/ROADMAP.md
-          ! grep -q '^## \[0.8.7\]' CHANGELOG.md
-          test "$(cat VERSION)" = "0.8.6"
+          grep -q '^### 0\.8\.8 — comandos remotos controlados$' docs/ROADMAP.md
+          ! grep -q '^## \[0.8.8\]' CHANGELOG.md
+          test "$(cat VERSION)" = "0.8.7"
