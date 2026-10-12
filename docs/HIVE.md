@@ -862,3 +862,18 @@ A 0.8.5 leva o grant global para o fluxo de login/provisionamento VPN:
 - sessão só nasce no nó autorizado pelo grant;
 - fencing impede nó stale de aceitar retorno antigo;
 - SSH, WireGuard e OpenVPN seguem as capacidades do nó.
+
+### Resultado público de login/provisionamento — fechamento 0.8.5
+
+O nó selecionado envia o resultado do provisionamento somente dentro do ACK de allocation autenticado por Ed25519 e protegido pelo mesmo TLS 1.3 com fingerprint pinado da autoridade de leases. O controlador armazena o contrato `manager-hive-vpn-login-result-v1` em arquivo `0600`; senha SSH e perfis VPN não entram no audit e não são impressos no stdout.
+
+Fluxo operacional:
+
+```bash
+manager hive login create maria wireguard /root/maria.alloc.json BR-SP PREMIUM maria '*' 120
+# após o nó selecionado executar o sync/provisionamento
+manager hive login result ALLOCATION_ID /root/maria-login.json
+```
+
+O comando de resultado informa apenas estado/metadados no terminal. O segredo fica no arquivo de saída criado com `0600` e o comando recusa sobrescrever um caminho existente. Para SSH já existente, o contrato retorna `credential_state=existing` e não tenta recuperar uma senha antiga; para WireGuard/OpenVPN, o perfil gerenciado é transportado em `credentials.profile_b64` com `profile_encoding=base64`.
+

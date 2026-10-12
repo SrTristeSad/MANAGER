@@ -57,6 +57,7 @@ NODE_AUTH_STATE = os.path.join(DATA_DIR, "node-authority.state")
 LOCK_FILE = os.path.join(DATA_DIR, ".lock")
 AUDIT_FILE = os.environ.get("MANAGER_HIVE_LEASE_AUDIT_FILE", "/var/log/manager/hive-lease-audit.jsonl")
 ALLOCATION_OUTBOX_DIR = os.environ.get("MANAGER_HIVE_ALLOCATION_OUTBOX_DIR", "/var/lib/manager/hive-allocations/controller/outbox")
+ALLOCATION_RESULT_DIR = os.environ.get("MANAGER_HIVE_ALLOCATION_RESULT_DIR", "/var/lib/manager/hive-allocations/controller/results")
 SYSTEMD_DIR = os.environ.get("MANAGER_HIVE_LEASE_SYSTEMD_DIR", "/etc/systemd/system")
 CTRL_SERVICE = os.path.join(SYSTEMD_DIR, "manager-hive-lease-controller.service")
 UNIT_MARKER = "# MANAGER-HIVE-GLOBAL-LEASE v1"
@@ -269,6 +270,7 @@ def init_dirs():
     ensure_dir(ACTIVE_DIR)
     ensure_dir(EPOCH_DIR)
     ensure_dir(REPLAY_DIR)
+    ensure_dir(ALLOCATION_RESULT_DIR)
     Path(LOCK_FILE).touch(mode=0o600, exist_ok=True)
     os.chmod(LOCK_FILE, 0o600)
 
@@ -810,15 +812,64 @@ def allocation_pull_locked(node_id, node_epoch, params):
     return {"count": len(bundles), "bundles": bundles}
 
 
+def validate_allocation_result(result, bundle, node_id, node_epoch):
+    if not isinstance(result, dict):
+        raise LeaseError(64, "invalid-allocation-result")
+    expected = {"contract","version","allocation_id","identity_id","product_id","protocol","selected_node","selected_name",
+                "node_epoch","expires_epoch","credential_state","credentials"}
+    if set(result) != expected or result.get("contract") != "manager-hive-vpn-login-result-v1" or result.get("version") != 1:
+        raise LeaseError(64, "invalid-allocation-result-contract")
+    if (result.get("allocation_id") != bundle.get("allocation_id") or result.get("identity_id") != bundle.get("identity_id") or
+            result.get("product_id") != bundle.get("product_id") or result.get("protocol") != bundle.get("protocol") or
+            result.get("selected_node") != node_id or result.get("node_epoch") != int(node_epoch) or
+            result.get("expires_epoch") != bundle.get("expires_epoch")):
+        raise LeaseError(67, "allocation-result-bundle-mismatch")
+    if result.get("credential_state") not in {"issued", "existing"}:
+        raise LeaseError(64, "invalid-allocation-credential-state")
+    creds = result.get("credentials")
+    if not isinstance(creds, dict):
+        raise LeaseError(64, "invalid-allocation-credentials")
+    protocol = result.get("protocol")
+    allowed = {"ssh": {"username","password"},
+               "wireguard": {"client","ipv4","ipv6","profile_b64","profile_encoding"},
+               "openvpn": {"client","ipv6","profile_b64","profile_encoding"}}.get(protocol)
+    if allowed is None or set(creds) - allowed:
+        raise LeaseError(64, "invalid-allocation-credential-fields")
+    if protocol == "ssh":
+        if not creds.get("username") or len(str(creds.get("username"))) > 64:
+            raise LeaseError(64, "invalid-ssh-login-result")
+        if result.get("credential_state") == "issued" and not creds.get("password"):
+            raise LeaseError(64, "missing-issued-ssh-password")
+        if "password" in creds and len(str(creds.get("password"))) > 512:
+            raise LeaseError(64, "invalid-ssh-password-result")
+    else:
+        if creds.get("profile_encoding") != "base64" or not creds.get("profile_b64"):
+            raise LeaseError(64, "missing-vpn-profile-result")
+        try: decoded = base64.b64decode(str(creds.get("profile_b64")).encode("ascii"), validate=True)
+        except Exception: raise LeaseError(64, "invalid-vpn-profile-base64")
+        if not decoded or len(decoded) > 49152:
+            raise LeaseError(64, "invalid-vpn-profile-size")
+    encoded = json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    if len(encoded) > 60000:
+        raise LeaseError(64, "allocation-result-too-large")
+    return result, encoded
+
+
 def allocation_ack_locked(node_id, node_epoch, params):
-    if not isinstance(params, dict) or set(params) != {"allocation_id"}:
+    if not isinstance(params, dict) or set(params) not in ({"allocation_id"}, {"allocation_id", "result"}):
         raise LeaseError(64, "invalid-allocation-ack-params")
     allocation_id = str(params.get("allocation_id", ""))
     if not SESSION_RE.fullmatch(allocation_id):
         raise LeaseError(64, "invalid-allocation-id")
     path = Path(ALLOCATION_OUTBOX_DIR) / node_id / f"{allocation_id}.json"
+    result_path = Path(ALLOCATION_RESULT_DIR) / f"{allocation_id}.json"
     if not path.exists():
-        return {"acked": True, "idempotent": True, "allocation_id": allocation_id}
+        if "result" in params and result_path.exists():
+            current = read_json(str(result_path))
+            incoming = params.get("result")
+            if current != incoming:
+                raise LeaseError(65, "allocation-result-idempotency-conflict")
+        return {"acked": True, "idempotent": True, "allocation_id": allocation_id, "result_stored": result_path.exists()}
     bundle = read_json(str(path))
     if not bundle:
         raise LeaseError(70, "invalid-outbox-bundle")
@@ -826,11 +877,20 @@ def allocation_ack_locked(node_id, node_epoch, params):
     except (TypeError, ValueError): bundle_node_epoch = 0
     if bundle.get("selected_node") != node_id or bundle_node_epoch != int(node_epoch):
         raise LeaseError(67, "allocation-ack-node-mismatch")
+    if "result" not in params:
+        raise LeaseError(64, "allocation-ack-result-required")
+    result, encoded = validate_allocation_result(params.get("result"), bundle, node_id, node_epoch)
+    if result_path.exists():
+        current = read_json(str(result_path))
+        if current != result:
+            raise LeaseError(65, "allocation-result-idempotency-conflict")
+    else:
+        atomic_write(str(result_path), encoded + b"\n", 0o600)
     try: path.unlink()
     except FileNotFoundError: pass
     audit("allocation-ack", node_id=node_id, allocation_id=allocation_id,
-          identity_id=bundle.get("identity_id"), global_lease_id=bundle.get("global_lease_id"))
-    return {"acked": True, "idempotent": False, "allocation_id": allocation_id}
+          identity_id=bundle.get("identity_id"), global_lease_id=bundle.get("global_lease_id"), result_stored=1)
+    return {"acked": True, "idempotent": False, "allocation_id": allocation_id, "result_stored": True}
 
 
 class LeaseError(Exception):
@@ -1030,11 +1090,17 @@ def node_allocation_pull(limit=4):
     print(json.dumps({"count": len(bundles), "bundles": bundles}, sort_keys=True, separators=(",", ":")))
 
 
-def node_allocation_ack(allocation_id):
+def node_allocation_ack(allocation_id, result_file=""):
     if not SESSION_RE.fullmatch(str(allocation_id)): die("allocation_id inválido.", 64)
-    result = node_request("allocation_ack", {"allocation_id": allocation_id})
-    print(f"allocation_acked={1 if result.get('acked') else 0}")
-    print(f"idempotent={1 if result.get('idempotent') else 0}")
+    params = {"allocation_id": allocation_id}
+    if result_file:
+        result = read_json(result_file)
+        if not result: die("Arquivo de resultado da allocation é inválido.", 64)
+        params["result"] = result
+    answer = node_request("allocation_ack", params)
+    print(f"allocation_acked={1 if answer.get('acked') else 0}")
+    print(f"idempotent={1 if answer.get('idempotent') else 0}")
+    print(f"result_stored={1 if answer.get('result_stored') else 0}")
     print(f"allocation_id={allocation_id}")
 
 
@@ -1197,7 +1263,7 @@ def purge():
 
 
 def usage():
-    print("Uso: hive_leases.sh {--status|--node-status|--node-configure HOST PORT FP [GRACE]|--node-disable|--controller-init|--controller-status|--controller-enable BIND [PORT]|--controller-disable|--controller-rotate-tls|--controller-grant ID PROTO [REGION] [POOL] [STICKY] [SCOPE] [DEVICE] [TTL]|--limit-set ID MAX [PRODUCT]|--limit-import-local ID|--limit-sync-local|--limit-show ID|--limit-list|--limit-unset ID|--controller-list [ID]|--controller-revoke ID [REASON]|--acquire-node ID PROTO RESOURCE DEVICE SESSION [TTL] [GLOBAL_LEASE_ID]|--heartbeat-node ID SESSION [TTL]|--release-node ID SESSION|--allocation-pull-node [LIMIT]|--allocation-ack-node ALLOCATION_ID|--serve-controller|--install|--detach|--purge}", file=sys.stderr)
+    print("Uso: hive_leases.sh {--status|--node-status|--node-configure HOST PORT FP [GRACE]|--node-disable|--controller-init|--controller-status|--controller-enable BIND [PORT]|--controller-disable|--controller-rotate-tls|--controller-grant ID PROTO [REGION] [POOL] [STICKY] [SCOPE] [DEVICE] [TTL]|--limit-set ID MAX [PRODUCT]|--limit-import-local ID|--limit-sync-local|--limit-show ID|--limit-list|--limit-unset ID|--controller-list [ID]|--controller-revoke ID [REASON]|--acquire-node ID PROTO RESOURCE DEVICE SESSION [TTL] [GLOBAL_LEASE_ID]|--heartbeat-node ID SESSION [TTL]|--release-node ID SESSION|--allocation-pull-node [LIMIT]|--allocation-ack-node ALLOCATION_ID [RESULT_JSON]|--serve-controller|--install|--detach|--purge}", file=sys.stderr)
     raise SystemExit(64)
 
 
@@ -1231,7 +1297,7 @@ def main(argv):
     if cmd == "--heartbeat-node" and len(argv) in {3,4}: node_heartbeat(argv[1], argv[2], argv[3] if len(argv) == 4 else DEFAULT_TTL); return
     if cmd == "--release-node" and len(argv) == 3: node_release(argv[1], argv[2]); return
     if cmd == "--allocation-pull-node" and len(argv) in {1,2}: node_allocation_pull(argv[1] if len(argv) == 2 else 4); return
-    if cmd == "--allocation-ack-node" and len(argv) == 2: node_allocation_ack(argv[1]); return
+    if cmd == "--allocation-ack-node" and len(argv) in {2,3}: node_allocation_ack(argv[1], argv[2] if len(argv) == 3 else ""); return
     if cmd == "--serve-controller": serve_controller(); return
     if cmd == "--install": install(); return
     if cmd == "--detach": detach(); return

@@ -98,7 +98,10 @@ Uso:
   manager hive allocation accept BUNDLE
   manager hive allocation controller status
   manager hive allocation controller create ID PROTO OUT [REGION] [POOL] [STICKY] [SCOPE] [TTL]
+  manager hive allocation controller result ALLOCATION_ID OUT
   manager hive allocation controller revoke ID [REASON]
+  manager hive login create ID PROTO OUT [REGION] [POOL] [STICKY] [SCOPE] [TTL]
+  manager hive login result ALLOCATION_ID OUT
                                   allocation/login global assinado da Colmeia (0.8.5)
   manager automation legacy status
   manager automation legacy enable [PORT]
@@ -355,11 +358,22 @@ case "${1:-}" in
                 [[ -n "${5:-}" && -n "${6:-}" && -n "${7:-}" ]] || { err "Uso: manager hive allocation controller create ID PROTO OUT [REGION] [POOL] [STICKY] [SCOPE] [TTL]"; exit 64; }
                 exec "$MANAGER_HOME/modules/hive_allocations.sh" --controller-create "$5" "$6" "$7" "${8:-}" "${9:-}" "${10:-}" "${11:-*}" "${12:-60}"
                 ;;
+              result) [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager hive allocation controller result ALLOCATION_ID OUT"; exit 64; }; exec "$MANAGER_HOME/modules/hive_allocations.sh" --controller-result "$5" "$6" ;;
               revoke) [[ -n "${5:-}" ]] || { err "Uso: manager hive allocation controller revoke ID [REASON]"; exit 64; }; exec "$MANAGER_HOME/modules/hive_allocations.sh" --controller-revoke "$5" "${6:-admin}" ;;
-              *) err "Uso: manager hive allocation controller {status|create|revoke} ..."; exit 64 ;;
+              *) err "Uso: manager hive allocation controller {status|create|result|revoke} ..."; exit 64 ;;
             esac
             ;;
           *) err "Uso: manager hive allocation {status|enable|disable|accept|sync [LIMIT]|controller ...}"; exit 64 ;;
+        esac
+        ;;
+      login)
+        case "${3:-}" in
+          create)
+            [[ -n "${4:-}" && -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager hive login create ID PROTO OUT [REGION] [POOL] [STICKY] [SCOPE] [TTL]"; exit 64; }
+            exec "$MANAGER_HOME/modules/hive_allocations.sh" --controller-create "$4" "$5" "$6" "${7:-}" "${8:-}" "${9:-}" "${10:-*}" "${11:-60}"
+            ;;
+          result) [[ -n "${4:-}" && -n "${5:-}" ]] || { err "Uso: manager hive login result ALLOCATION_ID OUT"; exit 64; }; exec "$MANAGER_HOME/modules/hive_allocations.sh" --controller-result "$4" "$5" ;;
+          *) err "Uso: manager hive login {create|result} ..."; exit 64 ;;
         esac
         ;;
       node)
@@ -393,7 +407,7 @@ case "${1:-}" in
           *) err "Ação de controlador da Colmeia inválida: ${3:-}"; exit 64 ;;
         esac
         ;;
-      *) err "Uso: manager hive {status|request|accept|network ...|health ...|node ...|lease ...|allocation ...|controller ...}"; exit 64 ;;
+      *) err "Uso: manager hive {status|request|accept|network ...|health ...|node ...|lease ...|allocation ...|login ...|controller ...}"; exit 64 ;;
     esac
     ;;
   automation)
