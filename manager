@@ -79,6 +79,13 @@ Uso:
   manager hive health controller thresholds DEGRADED OFFLINE
   manager hive health controller rotate-tls
                                   heartbeat assinado e saúde distribuída dos nós
+  manager hive node status|list
+  manager hive node show NODE
+  manager hive node placement NODE NAME COUNTRY REGION POOL
+  manager hive node drain NODE [REASON]
+  manager hive node undrain NODE
+  manager hive node select PROTOCOL [REGION] [POOL] [STICKY] [NODE_SCOPE]
+                                  scheduler weighted least-loaded / drain / failover
   manager automation legacy status
   manager automation legacy enable [PORT]
   manager automation legacy disable
@@ -282,6 +289,24 @@ case "${1:-}" in
           *) err "Uso: manager hive health {status|configure|disable|send|controller ...}"; exit 64 ;;
         esac
         ;;
+      node)
+        case "${3:-status}" in
+          status) exec "$MANAGER_HOME/modules/hive_scheduler.sh" --status ;;
+          list) exec "$MANAGER_HOME/modules/hive_scheduler.sh" --list ;;
+          show) [[ -n "${4:-}" ]] || { err "Uso: manager hive node show NODE"; exit 64; }; exec "$MANAGER_HOME/modules/hive_scheduler.sh" --show "$4" ;;
+          placement)
+            [[ -n "${4:-}" && -n "${5:-}" && -n "${6:-}" && -n "${7:-}" && -n "${8:-}" ]] || { err "Uso: manager hive node placement NODE NAME COUNTRY REGION POOL"; exit 64; }
+            exec "$MANAGER_HOME/modules/hive_scheduler.sh" --placement "$4" "$5" "$6" "$7" "$8"
+            ;;
+          drain) [[ -n "${4:-}" ]] || { err "Uso: manager hive node drain NODE [REASON]"; exit 64; }; exec "$MANAGER_HOME/modules/hive_scheduler.sh" --drain "$4" "${5:-admin-drain}" ;;
+          undrain) [[ -n "${4:-}" ]] || { err "Uso: manager hive node undrain NODE"; exit 64; }; exec "$MANAGER_HOME/modules/hive_scheduler.sh" --undrain "$4" ;;
+          select)
+            [[ -n "${4:-}" ]] || { err "Uso: manager hive node select PROTOCOL [REGION] [POOL] [STICKY] [NODE_SCOPE]"; exit 64; }
+            exec "$MANAGER_HOME/modules/hive_scheduler.sh" --select "$4" "${5:-}" "${6:-}" "${7:-}" "${8:-*}"
+            ;;
+          *) err "Uso: manager hive node {status|list|show|placement|drain|undrain|select} ..."; exit 64 ;;
+        esac
+        ;;
       controller)
         case "${3:-status}" in
           init) exec "$MANAGER_HOME/modules/hive_identity.sh" --controller-init ;;
@@ -295,7 +320,7 @@ case "${1:-}" in
           *) err "Ação de controlador da Colmeia inválida: ${3:-}"; exit 64 ;;
         esac
         ;;
-      *) err "Uso: manager hive {status|request|accept|network ...|health ...|controller ...}"; exit 64 ;;
+      *) err "Uso: manager hive {status|request|accept|network ...|health ...|node ...|controller ...}"; exit 64 ;;
     esac
     ;;
   automation)
