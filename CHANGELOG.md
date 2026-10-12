@@ -4,6 +4,27 @@ Todas as mudanças relevantes do MANAGER são registradas aqui. O projeto usa ve
 
 > O histórico detalhado das revisões antigas continua disponível no histórico Git. A partir da série 0.7, este arquivo prioriza mudanças de arquitetura e segurança que afetam contratos públicos/operacionais.
 
+## [0.8.7] - 2026-10-12
+
+### Colmeia — failover e resiliência operacional
+
+- O nó agora persiste o estado operacional da autoridade global como `healthy`, `outage` ou `fenced`, sem criar uma segunda autoridade e sem colocar o controlador no caminho de dados VPN.
+- Estado root-only registra maior `authority_epoch` aceito, último sucesso, início da outage, última falha de transporte, último recovery, `recovery_count`, último fencing e a geração retornada.
+- Novo `manager hive lease node probe` reutiliza o mesmo canal das leases globais: identidade Ed25519 enrolled, `node_epoch`, freshness/nonce, TLS 1.3 e pin SHA-256.
+- Falha de transporte marca `outage` e novas admissões continuam fail-closed.
+- Sessões globais já válidas preservam apenas o grace curto/configurado existente; deny autoritativo, revoke e fencing continuam sem grace.
+- Uma resposta válida após outage fecha o estado de falha, registra recovery e volta a revalidar a autoridade normalmente.
+- Retorno com `authority_epoch` inferior ao maior já observado marca `fenced`, preserva o maior epoch aceito e recusa a autoridade antiga.
+- Drain continua bloqueando novas seleções sem revogar lease/sessão saudável já existente; sticky affinity permanece enquanto o nó continuar elegível.
+- Eventos `node-authority-outage`, `node-authority-recovered` e `node-authority-fenced` entram no audit de leases sem persistir segredos.
+- Estado de recovery é preservado por detach/uninstall normal e reinstalação.
+- Novo gate permanente `Hive Operational Resilience` cobre outage, fail-closed, recovery, stale-authority fencing, retorno válido, drain e persistência.
+- O HEAD funcional da 0.8.7 passou **29/29 workflows** antes do bump da release.
+
+### Próxima etapa
+
+- 0.8.8: comandos remotos controlados sobre contratos tipados, sem shell arbitrário.
+
 ## [0.8.6] - 2026-10-12
 
 ### Colmeia — quotas e accounting globais

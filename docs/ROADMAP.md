@@ -260,9 +260,9 @@ Implementado:
 - telemetria local 0.6.11 continua não autoritativa sozinha: somente o estado agregado aceito pelo controlador é global;
 - quota global e `max_sessions_global` permanecem autoridades e estados distintos.
 
-### 0.8.7 — failover e resiliência operacional
+### 0.8.7 — failover e resiliência operacional ✅
 
-Fundação implementada nesta fase:
+Implementado:
 
 - estado operacional persistente da autoridade no nó (`healthy`, `outage`, `fenced`) sem transformar o controlador em caminho de dados;
 - `last_success_epoch`, início da outage, última falha de transporte e contadores de recovery preservados em estado root-only;

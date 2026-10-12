@@ -4,7 +4,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 > O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva capacidades úteis, substitui implementações inseguras/obsoletas e evolui para uma arquitetura própria de identidade, automação, VPN, revenda e operação multi-servidor.
 
-Versão atual: **0.8.6**.
+Versão atual: **0.8.7**.
 
 ## Princípios
 
@@ -235,7 +235,7 @@ Não existe shell/comando/caminho arbitrário.
 
 Documentação: [`docs/AUTOMATION_V2.md`](docs/AUTOMATION_V2.md).
 
-## Colmeia — 0.8.0 a 0.8.6
+## Colmeia — 0.8.0 a 0.8.7
 
 A Colmeia coordena múltiplas VPS sem transformar o controlador em relay do tráfego dos usuários:
 
@@ -246,6 +246,7 @@ A Colmeia coordena múltiplas VPS sem transformar o controlador em relay do trá
 - **0.8.4** — autoridade global de leases, `max_sessions_global`, fencing e grace controlado.
 - **0.8.5** — VPN allocation / login global, entrega/provisionamento automático no nó selecionado e retorno seguro de credenciais/perfis.
 - **0.8.6** — accounting global idempotente por nó, deduplicação de deltas e franquia global separada de `max_sessions_global`.
+- **0.8.7** — resiliência operacional: estado de outage/recovery da autoridade, probe autenticado, fencing de geração e drain sem expulsão desnecessária.
 
 Cada VPS possui uma identidade Ed25519 de controle ligada ao `node_id` e uma chave WireGuard própria para a malha. A chave WireGuard privada nasce e permanece no próprio nó; o controlador recebe somente chave pública, endpoint e metadados de rede.
 
@@ -432,6 +433,8 @@ O canal de lease usa TLS 1.3 com pin SHA-256 e a identidade Ed25519 enrolled do 
 O controlador continua fora do caminho de dados VPN. A 0.8.4 também **não** transforma o accounting local em billing global: `global_accounting=0` permanece intencional até a etapa própria.
 
 O estado durável da Colmeia entra no backup protegido do MANAGER e pode conter chaves privadas de nó/controlador; trate o backup como segredo operacional. Uninstall normal preserva confiança, topologia, configuração de saúde, placement/sticky e política/estado global de lease; runtime e listeners MANAGER-owned são destacados. `--purge` remove também scheduler/lease state e audits server-side.
+
+Na 0.8.7, o nó persiste o estado operacional da autoridade (`healthy`, `outage` ou `fenced`) e expõe `manager hive lease node probe` pelo mesmo canal Ed25519 + TLS 1.3 pinado. Outage de transporte mantém novas admissões fail-closed; sessões já válidas continuam limitadas ao grace existente. Uma autoridade que retorna com `authority_epoch` antigo é cercada, enquanto recovery válido é registrado sem colocar o controlador no caminho de dados VPN.
 
 Documentação: [`docs/HIVE.md`](docs/HIVE.md).
 
