@@ -74,7 +74,13 @@ jobs:
           sudo systemctl is-active --quiet manager-hive-allocation-sync.timer
           sudo manager hive allocation status | grep -q '^delivery_transport=lease-control-pull$'
           sudo manager hive allocation controller status | grep -q '^automatic_distribution=1$'
-          sudo systemctl stop manager-hive-allocation-sync.timer
+          # Make the explicit-pull assertions deterministic: a timer can already have
+          # spawned its oneshot service by the time the timer itself is stopped.
+          sudo systemctl stop manager-hive-allocation-sync.timer manager-hive-allocation-sync.service
+          if sudo systemctl is-active --quiet manager-hive-allocation-sync.service; then
+            echo 'allocation sync service still active after deterministic stop' >&2
+            exit 1
+          fi
 
       - name: Queue, pull, validate and ack a signed allocation
         shell: bash
@@ -148,7 +154,11 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          sudo systemctl stop manager-hive-allocation-sync.timer
+          sudo systemctl stop manager-hive-allocation-sync.timer manager-hive-allocation-sync.service
+          if sudo systemctl is-active --quiet manager-hive-allocation-sync.service; then
+            echo 'allocation sync service still active before revoke test' >&2
+            exit 1
+          fi
           sudo /opt/manager/modules/protocol_leases.sh --observe-connect ssh alloc-dist-ssh dist-device-c 0 ci notty
           sudo /opt/manager/modules/protocol_leases.sh --observe-disconnect ssh dist-device-c
           created="$(sudo manager hive allocation controller create allocdist ssh /tmp/revoke.json BR-SP PREMIUM revoke '*' 120)"
