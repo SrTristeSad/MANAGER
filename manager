@@ -347,6 +347,7 @@ case "${1:-}" in
           enable) exec "$MANAGER_HOME/modules/hive_allocations.sh" --node-enable ;;
           disable) exec "$MANAGER_HOME/modules/hive_allocations.sh" --node-disable ;;
           accept) [[ -n "${4:-}" ]] || { err "Uso: manager hive allocation accept BUNDLE"; exit 64; }; exec "$MANAGER_HOME/modules/hive_allocations.sh" --accept "$4" ;;
+          sync) exec "$MANAGER_HOME/modules/hive_allocations.sh" --sync "${4:-8}" ;;
           controller)
             case "${4:-status}" in
               status) exec "$MANAGER_HOME/modules/hive_allocations.sh" --controller-status ;;
@@ -358,7 +359,7 @@ case "${1:-}" in
               *) err "Uso: manager hive allocation controller {status|create|revoke} ..."; exit 64 ;;
             esac
             ;;
-          *) err "Uso: manager hive allocation {status|enable|disable|accept|controller ...}"; exit 64 ;;
+          *) err "Uso: manager hive allocation {status|enable|disable|accept|sync [LIMIT]|controller ...}"; exit 64 ;;
         esac
         ;;
       node)
