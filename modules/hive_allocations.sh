@@ -41,12 +41,18 @@ CTRL_NODES = os.path.join(CTRL_DIR, "nodes")
 LIMIT_DIR = os.path.join(CTRL_DIR, "leases", "limits")
 DATA_DIR = os.environ.get("MANAGER_HIVE_ALLOCATION_DATA_DIR", "/var/lib/manager/hive-allocations")
 CTRL_EPOCH_DIR = os.path.join(DATA_DIR, "controller", "epochs")
+CTRL_OUTBOX_DIR = os.path.join(DATA_DIR, "controller", "outbox")
 NODE_ACTIVE_DIR = os.path.join(DATA_DIR, "node", "active")
 NODE_STATE_DIR = os.path.join(DATA_DIR, "node", "state")
 NODE_EPOCH_DIR = os.path.join(DATA_DIR, "node", "epochs")
 LOCK_FILE = os.path.join(DATA_DIR, ".lock")
 AUDIT_FILE = os.environ.get("MANAGER_HIVE_ALLOCATION_AUDIT_FILE", "/var/log/manager/hive-allocation-audit.jsonl")
 LEASE_MODULE = os.path.join(MANAGER_HOME, "modules", "hive_leases.sh")
+SYSTEMD_DIR = os.environ.get("MANAGER_HIVE_ALLOCATION_SYSTEMD_DIR", "/etc/systemd/system")
+SYNC_SERVICE = os.path.join(SYSTEMD_DIR, "manager-hive-allocation-sync.service")
+SYNC_TIMER = os.path.join(SYSTEMD_DIR, "manager-hive-allocation-sync.timer")
+SYNC_SERVICE_MARKER = "# MANAGER-HIVE-ALLOCATION-SYNC-SERVICE v1"
+SYNC_TIMER_MARKER = "# MANAGER-HIVE-ALLOCATION-SYNC-TIMER v1"
 CONTRACT = "manager-hive-vpn-allocation-v1"
 STATUS_CONTRACT = "manager-hive-vpn-allocation-status-v1"
 VERSION = 1
@@ -75,6 +81,7 @@ def init_dirs():
     ensure_dir(ALLOC_ETC)
     ensure_dir(DATA_DIR)
     ensure_dir(CTRL_EPOCH_DIR)
+    ensure_dir(CTRL_OUTBOX_DIR)
     ensure_dir(NODE_ACTIVE_DIR)
     ensure_dir(NODE_STATE_DIR)
     ensure_dir(NODE_EPOCH_DIR)
@@ -98,6 +105,79 @@ def atomic_write(path, data, mode=0o600):
     finally:
         try: os.unlink(tmp)
         except FileNotFoundError: pass
+
+
+def systemctl(*args):
+    if os.environ.get("MANAGER_HIVE_ALLOCATION_SKIP_SYSTEMD") == "1": return 0
+    try:
+        return subprocess.run(["systemctl", *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              timeout=30, check=False).returncode
+    except (OSError, subprocess.TimeoutExpired): return 1
+
+
+def unit_owned(path, marker):
+    try:
+        st = os.lstat(path)
+        return stat.S_ISREG(st.st_mode) and Path(path).read_text(encoding="utf-8").splitlines()[0] == marker
+    except Exception: return False
+
+
+def write_sync_units():
+    ensure_dir(SYSTEMD_DIR, 0o755)
+    for path, marker in ((SYNC_SERVICE, SYNC_SERVICE_MARKER), (SYNC_TIMER, SYNC_TIMER_MARKER)):
+        if os.path.lexists(path) and not unit_owned(path, marker):
+            die(f"Unidade externa encontrada; recusando sobrescrever {os.path.basename(path)}.", 65)
+    service = f"""{SYNC_SERVICE_MARKER}
+[Unit]
+Description=MANAGER Hive automatic VPN allocation delivery
+After=network-online.target
+ConditionPathExists={NODE_CONF}
+ConditionPathExists={NODE_LEASE_CONF}
+
+[Service]
+Type=oneshot
+ExecStart={MANAGER_HOME}/modules/hive_allocations.sh --sync 8
+UMask=0077
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+PrivateDevices=true
+RestrictSUIDSGID=true
+"""
+    timer = f"""{SYNC_TIMER_MARKER}
+[Unit]
+Description=Poll MANAGER Hive controller for signed VPN allocations
+
+[Timer]
+OnBootSec=2s
+OnUnitActiveSec=3s
+AccuracySec=1s
+Unit=manager-hive-allocation-sync.service
+
+[Install]
+WantedBy=timers.target
+"""
+    atomic_write(SYNC_SERVICE, service, 0o644); atomic_write(SYNC_TIMER, timer, 0o644)
+    systemctl("daemon-reload")
+
+
+def enable_sync_timer():
+    write_sync_units()
+    if systemctl("enable", "--now", "manager-hive-allocation-sync.timer") != 0:
+        die("Não foi possível ativar a distribuição automática de allocations.", 70)
+
+
+def disable_sync_timer(remove_units=False):
+    systemctl("disable", "--now", "manager-hive-allocation-sync.timer")
+    if remove_units:
+        for path, marker in ((SYNC_TIMER, SYNC_TIMER_MARKER), (SYNC_SERVICE, SYNC_SERVICE_MARKER)):
+            if os.path.lexists(path):
+                if unit_owned(path, marker): os.unlink(path)
+                else: die(f"Unidade externa encontrada; recusando remover {os.path.basename(path)}.", 65)
+        systemctl("daemon-reload")
 
 
 def write_external_new(path, data):
@@ -271,6 +351,34 @@ def parse_kv(text):
     return out
 
 
+def controller_outbox_path(node_id, allocation_id):
+    validate_node_id(node_id)
+    if not ID_RE.fullmatch(str(allocation_id)): die("allocation_id inválido.", 64)
+    root = os.path.join(CTRL_OUTBOX_DIR, node_id); ensure_dir(root)
+    return os.path.join(root, allocation_id + ".json")
+
+
+def queue_bundle(bundle):
+    path = controller_outbox_path(bundle.get("selected_node", ""), bundle.get("allocation_id", ""))
+    if os.path.exists(path):
+        current = read_json(path)
+        if current != bundle: die("allocation_id colidiu no outbox do controlador.", 65)
+        return path
+    atomic_write(path, json.dumps(bundle, sort_keys=True, separators=(",", ":")) + "
+")
+    return path
+
+
+def purge_controller_outbox_identity(identity_id):
+    removed = 0
+    for path in list(Path(CTRL_OUTBOX_DIR).glob("node-*/*.json")):
+        bundle = read_json(str(path))
+        if bundle and bundle.get("identity_id") == identity_id:
+            try: path.unlink(); removed += 1
+            except FileNotFoundError: pass
+    return removed
+
+
 def controller_create(identity_id,protocol,out_path,region="",pool="",sticky="",node_scope="*",ttl=DEFAULT_TTL):
     init_dirs(); ctrl=controller_identity()
     identity_id=validate_identity(identity_id); protocol=validate_protocol(protocol)
@@ -311,16 +419,19 @@ def controller_create(identity_id,protocol,out_path,region="",pool="",sticky="",
                 "global_lease_id":global_id,"global_epoch":global_epoch_i,"grant_device":grant_device,
                 "session_epoch":session_epoch,"max_sessions_global":maximum,"issued_at":now,"expires_epoch":expires_i}
     allocation["signature"]=sign(CTRL_KEY,canonical(allocation))
-    write_external_new(out_path,json.dumps(allocation,sort_keys=True,separators=(",",":"))+"\n")
+    payload=json.dumps(allocation,sort_keys=True,separators=(",",":"))+"\n"
+    write_external_new(out_path,payload)
+    queued_path=queue_bundle(allocation)
     audit("create",identity_id=identity_id,product_id=product_id,protocol=protocol,allocation_id=allocation_id,
           global_lease_id=global_id,node_id=selected_node,node_epoch=node_epoch,session_epoch=session_epoch,
-          expires_epoch=expires_i)
+          expires_epoch=expires_i,distribution_queued=1)
     print(f"contract={CONTRACT}"); print(f"allocation_file={out_path}"); print(f"allocation_id={allocation_id}")
     print(f"identity_id={identity_id}"); print(f"product_id={product_id}"); print(f"protocol={protocol}")
     print(f"selected_node={selected_node}"); print(f"selected_name={grant.get('selected_name','')}")
     print(f"node_epoch={node_epoch}"); print(f"global_lease_id={global_id}"); print(f"global_epoch={global_epoch_i}")
     print(f"session_epoch={session_epoch}"); print(f"expires_epoch={expires_i}"); print("lease_state=reserved")
-    print("controller_in_user_vpn_path=0")
+    print("distribution_queued=1"); print(f"distribution_queue={queued_path}")
+    print("delivery_transport=lease-control-pull"); print("controller_in_user_vpn_path=0")
 
 
 def validate_bundle(bundle):
@@ -355,12 +466,13 @@ def node_enable():
         die("Ative/configure a autoridade global de leases neste nó antes da allocation 0.8.5.",67)
     atomic_write(NODE_CONF,f"version=1\nenabled=1\nnode_id={node_id}\nnode_epoch={node_epoch}\n"
                            f"controller_id={enrollment.get('controller_id','')}\nupdated_epoch={int(time.time())}\n")
+    enable_sync_timer()
     print("vpn_allocation_enforcement=1"); print(f"node_id={node_id}"); print(f"node_epoch={node_epoch}")
-    print("failure_mode=fail-closed")
+    print("automatic_distribution=1"); print("sync_interval_seconds=3"); print("failure_mode=fail-closed")
 
 
 def node_disable():
-    init_dirs(); conf=read_conf(NODE_CONF)
+    init_dirs(); disable_sync_timer(False); conf=read_conf(NODE_CONF)
     if conf:
         atomic_write(NODE_CONF,f"version=1\nenabled=0\nnode_id={conf.get('node_id','')}\nnode_epoch={conf.get('node_epoch','')}\n"
                                f"controller_id={conf.get('controller_id','')}\nupdated_epoch={int(time.time())}\n")
@@ -425,10 +537,11 @@ def purge_older_identity_allocations(identity_id,minimum_epoch,keep_id=""):
             except FileNotFoundError: pass
 
 
-def accept_bundle(path):
+def accept_bundle_object(raw_bundle):
     init_dirs()
     if not node_enabled(): die("Allocation enforcement está desabilitado neste nó.",67)
-    bundle=validate_bundle(read_json(path)); identity_id=bundle["identity_id"]; allocation_id=bundle["allocation_id"]
+    bundle=validate_bundle(raw_bundle); identity_id=bundle["identity_id"]; allocation_id=bundle["allocation_id"]
+    idempotent=False
     with open(LOCK_FILE,"r+") as lock:
         fcntl.flock(lock.fileno(),fcntl.LOCK_EX); cleanup_node_locked()
         seen=read_epoch(NODE_EPOCH_DIR,identity_id); incoming=bundle["session_epoch"]
@@ -440,16 +553,53 @@ def accept_bundle(path):
         if os.path.exists(dest):
             current=read_json(dest)
             if current!=bundle: die("allocation_id colidiu com conteúdo diferente.",65)
-            print("allocation_accepted=1"); print("idempotent=1"); print(f"allocation_id={allocation_id}"); return
-        atomic_write(dest,json.dumps(bundle,sort_keys=True,separators=(",",":"))+"\n"); state_write(allocation_id,"ready")
-        audit("accept",identity_id=identity_id,product_id=bundle["product_id"],protocol=bundle["protocol"],
-              allocation_id=allocation_id,global_lease_id=bundle["global_lease_id"],node_id=bundle["selected_node"],
-              session_epoch=incoming)
+            idempotent=True
+        else:
+            atomic_write(dest,json.dumps(bundle,sort_keys=True,separators=(",",":"))+"\n"); state_write(allocation_id,"ready")
+            audit("accept",identity_id=identity_id,product_id=bundle["product_id"],protocol=bundle["protocol"],
+                  allocation_id=allocation_id,global_lease_id=bundle["global_lease_id"],node_id=bundle["selected_node"],
+                  session_epoch=incoming)
         fcntl.flock(lock.fileno(),fcntl.LOCK_UN)
-    print("allocation_accepted=1"); print("idempotent=0"); print(f"allocation_id={allocation_id}")
-    print(f"identity_id={identity_id}"); print(f"product_id={bundle['product_id']}"); print(f"protocol={bundle['protocol']}")
-    print(f"global_lease_id={bundle['global_lease_id']}"); print(f"session_epoch={incoming}")
+    return bundle,idempotent
+
+
+def accept_bundle(path):
+    bundle,idempotent=accept_bundle_object(read_json(path))
+    print("allocation_accepted=1"); print(f"idempotent={1 if idempotent else 0}"); print(f"allocation_id={bundle['allocation_id']}")
+    print(f"identity_id={bundle['identity_id']}"); print(f"product_id={bundle['product_id']}"); print(f"protocol={bundle['protocol']}")
+    print(f"global_lease_id={bundle['global_lease_id']}"); print(f"session_epoch={bundle['session_epoch']}")
     print(f"expires_epoch={bundle['expires_epoch']}")
+
+
+def sync_node(limit=8):
+    init_dirs()
+    if not node_enabled(): die("Allocation enforcement está desabilitado neste nó.",67)
+    try: limit=int(limit)
+    except (TypeError,ValueError): die("limit de sync inválido.",64)
+    if limit<1 or limit>8: die("limit de sync deve ficar entre 1 e 8.",64)
+    proc=subprocess.run([LEASE_MODULE,"--allocation-pull-node",str(limit)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                        text=True,timeout=20,check=False)
+    if proc.returncode!=0: die(proc.stderr.strip() or "Falha ao buscar allocations no controlador.",proc.returncode)
+    try: result=json.loads(proc.stdout)
+    except json.JSONDecodeError: die("Resposta de distribuição de allocation não é JSON válido.",70)
+    bundles=result.get("bundles",[]) if isinstance(result,dict) else []
+    if not isinstance(bundles,list) or len(bundles)>limit: die("Resposta de distribuição de allocation inválida.",70)
+    accepted=idempotent_count=acked=0
+    for raw in bundles:
+        bundle,was_idempotent=accept_bundle_object(raw)
+        if was_idempotent: idempotent_count+=1
+        else: accepted+=1
+        ack=subprocess.run([LEASE_MODULE,"--allocation-ack-node",bundle["allocation_id"]],stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE,text=True,timeout=20,check=False)
+        if ack.returncode!=0:
+            audit("sync-ack-failed",identity_id=bundle.get("identity_id"),allocation_id=bundle.get("allocation_id"))
+            die(ack.stderr.strip() or "Allocation foi persistida localmente, mas o ACK ao controlador falhou.",ack.returncode)
+        acked+=1
+        audit("sync-delivered",identity_id=bundle.get("identity_id"),protocol=bundle.get("protocol"),
+              allocation_id=bundle.get("allocation_id"),global_lease_id=bundle.get("global_lease_id"))
+    print(f"allocations_pulled={len(bundles)}"); print(f"allocations_accepted={accepted}")
+    print(f"allocations_idempotent={idempotent_count}"); print(f"allocations_acked={acked}")
+    print("delivery_transport=lease-control-pull")
 
 
 def reserve(identity_id,protocol):
@@ -522,7 +672,7 @@ def abort(allocation_id,token):
 def controller_revoke(identity_id,reason="admin"):
     init_dirs(); identity_id=validate_identity(identity_id)
     if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}",reason): die("Motivo inválido.",64)
-    new_epoch=bump_epoch(CTRL_EPOCH_DIR,identity_id)
+    new_epoch=bump_epoch(CTRL_EPOCH_DIR,identity_id); queued_removed=purge_controller_outbox_identity(identity_id)
     proc=subprocess.run([LEASE_MODULE,"--controller-revoke",identity_id,reason],stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                         text=True,timeout=15,check=False)
     if proc.returncode!=0: die(proc.stderr.strip() or "Falha ao revogar grants/leases globais.",proc.returncode)
@@ -530,7 +680,7 @@ def controller_revoke(identity_id,reason="admin"):
     audit("revoke",identity_id=identity_id,reason=reason,session_epoch=new_epoch,global_epoch=result.get("global_epoch",""),
           leases_revoked=result.get("leases_revoked",""))
     print(f"identity_id={identity_id}"); print(f"session_epoch={new_epoch}"); print(f"global_epoch={result.get('global_epoch','')}")
-    print(f"leases_revoked={result.get('leases_revoked','')}")
+    print(f"leases_revoked={result.get('leases_revoked','')}"); print(f"queued_allocations_revoked={queued_removed}")
 
 
 def node_status():
@@ -538,7 +688,9 @@ def node_status():
     print(f"contract={STATUS_CONTRACT}"); print(f"enabled={1 if node_enabled() else 0}")
     print(f"node_id={conf.get('node_id','')}"); print(f"node_epoch={conf.get('node_epoch','')}")
     print(f"controller_id={conf.get('controller_id','')}"); print("signed_allocation_bundle=1")
-    print("exact_global_grant_required_when_enabled=1"); print("controller_in_user_vpn_path=0")
+    print("exact_global_grant_required_when_enabled=1"); print("automatic_distribution=1"); print("sync_interval_seconds=3")
+    print(f"sync_timer_active={1 if systemctl('is-active','--quiet','manager-hive-allocation-sync.timer')==0 else 0}")
+    print("delivery_transport=lease-control-pull"); print("controller_in_user_vpn_path=0")
     ready=pending=consumed=0
     for path in Path(NODE_STATE_DIR).glob("*.conf"):
         state=read_conf(str(path)).get("status")
@@ -550,8 +702,10 @@ def node_status():
 
 def controller_status():
     init_dirs(); ctrl=controller_identity()
+    queued=sum(1 for path in Path(CTRL_OUTBOX_DIR).glob("node-*/*.json") if read_json(str(path)))
     print(f"contract={STATUS_CONTRACT}"); print("role=controller"); print(f"controller_id={ctrl.get('controller_id','')}")
     print("signed_allocation_bundle=1"); print("global_grant_binding=1"); print("session_epoch_fencing=1")
+    print("automatic_distribution=1"); print("delivery_transport=lease-control-pull"); print(f"queued_allocations={queued}")
     print("protocols=ssh,wireguard,openvpn"); print("controller_in_user_vpn_path=0")
 
 
@@ -564,18 +718,23 @@ def audit(event,**fields):
     finally: os.close(fd)
 
 
-def install(): init_dirs()
-def detach(): return
+def install():
+    init_dirs()
+    if read_conf(NODE_CONF).get("enabled")=="1" and node_enabled(): enable_sync_timer()
+
+
+def detach():
+    disable_sync_timer(True)
 
 
 def purge():
-    shutil.rmtree(ALLOC_ETC,ignore_errors=True); shutil.rmtree(DATA_DIR,ignore_errors=True)
+    detach(); shutil.rmtree(ALLOC_ETC,ignore_errors=True); shutil.rmtree(DATA_DIR,ignore_errors=True)
     try: os.unlink(AUDIT_FILE)
     except FileNotFoundError: pass
 
 
 def usage():
-    print("Uso: hive_allocations.sh {--status|--node-enable|--node-disable|--accept BUNDLE|--controller-status|"
+    print("Uso: hive_allocations.sh {--status|--node-enable|--node-disable|--accept BUNDLE|--sync [LIMIT]|--controller-status|"
           "--controller-create ID PROTO OUT [REGION] [POOL] [STICKY] [SCOPE] [TTL]|--controller-revoke ID [REASON]|"
           "--reserve ID PROTO|--commit ALLOCATION_ID TOKEN SESSION|--abort ALLOCATION_ID TOKEN|--install|--detach|--purge}",
           file=sys.stderr)
@@ -588,6 +747,7 @@ def main(argv):
     if cmd=="--node-enable": node_enable(); return
     if cmd=="--node-disable": node_disable(); return
     if cmd=="--accept" and len(argv)==2: accept_bundle(argv[1]); return
+    if cmd=="--sync" and len(argv) in {1,2}: sync_node(argv[1] if len(argv)==2 else 8); return
     if cmd=="--controller-status": controller_status(); return
     if cmd=="--controller-create" and 4<=len(argv)<=9:
         controller_create(argv[1],argv[2],argv[3],argv[4] if len(argv)>4 else "",argv[5] if len(argv)>5 else "",

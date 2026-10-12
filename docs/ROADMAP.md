@@ -221,11 +221,21 @@ max_sessions_global = 1
 
 ### 0.8.5 — VPN allocation / login global 🚧
 
-- login/provisionamento capaz de escolher um nó elegível;
-- vínculo entre produto, região/pool, protocolo e lease global;
-- sessão criada somente no nó autorizado pelo grant atual;
-- `session_epoch`/fencing impedindo nó stale de aceitar retorno antigo;
-- suporte a SSH, WireGuard e OpenVPN conforme capacidades do nó.
+Implementado nesta fase:
+
+- ticket de allocation Ed25519 vinculado a produto, região/pool, protocolo, nó/`node_epoch`, lease global e `session_epoch`;
+- exact-grant: sessão só pode reclamar o `global_lease_id` autorizado pelo ticket atual;
+- suporte do contrato a SSH, WireGuard e OpenVPN;
+- outbox durável no controlador e distribuição automática por pull no mesmo TLS 1.3 pinado da autoridade de leases;
+- pull autenticado pela identidade Ed25519 enrolled do nó, com freshness, nonce e fencing de `node_epoch`;
+- ACK somente depois do aceite local durável; redelivery é idempotente e não exige nova porta/listener no nó;
+- timer de sync no nó e comando manual `manager hive allocation sync` para diagnóstico/recuperação;
+- revogação remove bundles ainda não entregues e mantém o controlador fora do caminho de dados VPN.
+
+Ainda pendente para fechar a 0.8.5:
+
+- integrar o provisionamento remoto de recursos/credenciais necessários no nó escolhido quando eles ainda não existirem;
+- fechar o fluxo público de login/provisionamento de ponta a ponta e seus gates finais antes de alterar `VERSION`.
 
 ### 0.8.6 — quotas e accounting globais
 

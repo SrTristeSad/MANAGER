@@ -56,6 +56,7 @@ REPLAY_DIR = os.path.join(DATA_DIR, "replay")
 NODE_AUTH_STATE = os.path.join(DATA_DIR, "node-authority.state")
 LOCK_FILE = os.path.join(DATA_DIR, ".lock")
 AUDIT_FILE = os.environ.get("MANAGER_HIVE_LEASE_AUDIT_FILE", "/var/log/manager/hive-lease-audit.jsonl")
+ALLOCATION_OUTBOX_DIR = os.environ.get("MANAGER_HIVE_ALLOCATION_OUTBOX_DIR", "/var/lib/manager/hive-allocations/controller/outbox")
 SYSTEMD_DIR = os.environ.get("MANAGER_HIVE_LEASE_SYSTEMD_DIR", "/etc/systemd/system")
 CTRL_SERVICE = os.path.join(SYSTEMD_DIR, "manager-hive-lease-controller.service")
 UNIT_MARKER = "# MANAGER-HIVE-GLOBAL-LEASE v1"
@@ -768,6 +769,70 @@ def release_locked(node_id, params):
     return {"released": True, "identity_id": identity_id, "local_session_id": local_session_id}
 
 
+def allocation_pull_locked(node_id, node_epoch, params):
+    if not isinstance(params, dict) or set(params) - {"limit"}:
+        raise LeaseError(64, "invalid-allocation-pull-params")
+    try: limit = int(params.get("limit", 4))
+    except (TypeError, ValueError): raise LeaseError(64, "invalid-allocation-pull-limit")
+    if limit < 1 or limit > 8:
+        raise LeaseError(64, "allocation-pull-limit-out-of-range")
+    root = Path(ALLOCATION_OUTBOX_DIR) / node_id
+    if not root.is_dir():
+        return {"count": 0, "bundles": []}
+    now = int(time.time()); bundles = []
+    for path in sorted(root.glob("*.json")):
+        if len(bundles) >= limit: break
+        bundle = read_json(str(path))
+        if not bundle:
+            audit("allocation-delivery-deny", node_id=node_id, reason="invalid-outbox-bundle", file=path.name)
+            continue
+        if bundle.get("selected_node") != node_id:
+            audit("allocation-delivery-deny", node_id=node_id, reason="wrong-selected-node", allocation_id=bundle.get("allocation_id"))
+            continue
+        try:
+            bundle_node_epoch = int(bundle.get("node_epoch", 0)); expires = int(bundle.get("expires_epoch", 0))
+        except (TypeError, ValueError):
+            audit("allocation-delivery-deny", node_id=node_id, reason="invalid-bundle-epoch", allocation_id=bundle.get("allocation_id"))
+            continue
+        if bundle_node_epoch != int(node_epoch):
+            try: path.unlink()
+            except FileNotFoundError: pass
+            audit("allocation-delivery-fence", node_id=node_id, allocation_id=bundle.get("allocation_id"),
+                  bundle_node_epoch=bundle_node_epoch, node_epoch=int(node_epoch))
+            continue
+        if expires <= now:
+            try: path.unlink()
+            except FileNotFoundError: pass
+            audit("allocation-delivery-expire", node_id=node_id, allocation_id=bundle.get("allocation_id"))
+            continue
+        bundles.append(bundle)
+    audit("allocation-pull", node_id=node_id, count=len(bundles))
+    return {"count": len(bundles), "bundles": bundles}
+
+
+def allocation_ack_locked(node_id, node_epoch, params):
+    if not isinstance(params, dict) or set(params) != {"allocation_id"}:
+        raise LeaseError(64, "invalid-allocation-ack-params")
+    allocation_id = str(params.get("allocation_id", ""))
+    if not SESSION_RE.fullmatch(allocation_id):
+        raise LeaseError(64, "invalid-allocation-id")
+    path = Path(ALLOCATION_OUTBOX_DIR) / node_id / f"{allocation_id}.json"
+    if not path.exists():
+        return {"acked": True, "idempotent": True, "allocation_id": allocation_id}
+    bundle = read_json(str(path))
+    if not bundle:
+        raise LeaseError(70, "invalid-outbox-bundle")
+    try: bundle_node_epoch = int(bundle.get("node_epoch", 0))
+    except (TypeError, ValueError): bundle_node_epoch = 0
+    if bundle.get("selected_node") != node_id or bundle_node_epoch != int(node_epoch):
+        raise LeaseError(67, "allocation-ack-node-mismatch")
+    try: path.unlink()
+    except FileNotFoundError: pass
+    audit("allocation-ack", node_id=node_id, allocation_id=allocation_id,
+          identity_id=bundle.get("identity_id"), global_lease_id=bundle.get("global_lease_id"))
+    return {"acked": True, "idempotent": False, "allocation_id": allocation_id}
+
+
 class LeaseError(Exception):
     def __init__(self, code, reason):
         super().__init__(reason); self.code = code; self.reason = reason
@@ -832,6 +897,8 @@ def handle_request(request):
             if action == "acquire": result = acquire_locked(node_id, node_epoch, params)
             elif action == "heartbeat": result = heartbeat_locked(node_id, node_epoch, params)
             elif action == "release": result = release_locked(node_id, params)
+            elif action == "allocation_pull": result = allocation_pull_locked(node_id, node_epoch, params)
+            elif action == "allocation_ack": result = allocation_ack_locked(node_id, node_epoch, params)
             else: raise LeaseError(64, "invalid-action")
             return response(True, 0, result=result)
         except LeaseError as exc:
@@ -951,6 +1018,24 @@ def node_heartbeat(identity_id, local_session_id, ttl):
 def node_release(identity_id, local_session_id):
     node_request("release", {"identity_id": validate_identity(identity_id), "local_session_id": validate_session(local_session_id)})
     print("released=1")
+
+
+def node_allocation_pull(limit=4):
+    try: limit = int(limit)
+    except (TypeError, ValueError): die("limit de allocation inválido.", 64)
+    if limit < 1 or limit > 8: die("limit de allocation deve ficar entre 1 e 8.", 64)
+    result = node_request("allocation_pull", {"limit": limit})
+    bundles = result.get("bundles", [])
+    if not isinstance(bundles, list): die("Resposta de allocation do controlador inválida.", 70)
+    print(json.dumps({"count": len(bundles), "bundles": bundles}, sort_keys=True, separators=(",", ":")))
+
+
+def node_allocation_ack(allocation_id):
+    if not SESSION_RE.fullmatch(str(allocation_id)): die("allocation_id inválido.", 64)
+    result = node_request("allocation_ack", {"allocation_id": allocation_id})
+    print(f"allocation_acked={1 if result.get('acked') else 0}")
+    print(f"idempotent={1 if result.get('idempotent') else 0}")
+    print(f"allocation_id={allocation_id}")
 
 
 def controller_list(identity_id=""):
@@ -1112,7 +1197,7 @@ def purge():
 
 
 def usage():
-    print("Uso: hive_leases.sh {--status|--node-status|--node-configure HOST PORT FP [GRACE]|--node-disable|--controller-init|--controller-status|--controller-enable BIND [PORT]|--controller-disable|--controller-rotate-tls|--controller-grant ID PROTO [REGION] [POOL] [STICKY] [SCOPE] [DEVICE] [TTL]|--limit-set ID MAX [PRODUCT]|--limit-import-local ID|--limit-sync-local|--limit-show ID|--limit-list|--limit-unset ID|--controller-list [ID]|--controller-revoke ID [REASON]|--acquire-node ID PROTO RESOURCE DEVICE SESSION [TTL] [GLOBAL_LEASE_ID]|--heartbeat-node ID SESSION [TTL]|--release-node ID SESSION|--serve-controller|--install|--detach|--purge}", file=sys.stderr)
+    print("Uso: hive_leases.sh {--status|--node-status|--node-configure HOST PORT FP [GRACE]|--node-disable|--controller-init|--controller-status|--controller-enable BIND [PORT]|--controller-disable|--controller-rotate-tls|--controller-grant ID PROTO [REGION] [POOL] [STICKY] [SCOPE] [DEVICE] [TTL]|--limit-set ID MAX [PRODUCT]|--limit-import-local ID|--limit-sync-local|--limit-show ID|--limit-list|--limit-unset ID|--controller-list [ID]|--controller-revoke ID [REASON]|--acquire-node ID PROTO RESOURCE DEVICE SESSION [TTL] [GLOBAL_LEASE_ID]|--heartbeat-node ID SESSION [TTL]|--release-node ID SESSION|--allocation-pull-node [LIMIT]|--allocation-ack-node ALLOCATION_ID|--serve-controller|--install|--detach|--purge}", file=sys.stderr)
     raise SystemExit(64)
 
 
@@ -1145,6 +1230,8 @@ def main(argv):
                      argv[7] if len(argv) == 8 else ""); return
     if cmd == "--heartbeat-node" and len(argv) in {3,4}: node_heartbeat(argv[1], argv[2], argv[3] if len(argv) == 4 else DEFAULT_TTL); return
     if cmd == "--release-node" and len(argv) == 3: node_release(argv[1], argv[2]); return
+    if cmd == "--allocation-pull-node" and len(argv) in {1,2}: node_allocation_pull(argv[1] if len(argv) == 2 else 4); return
+    if cmd == "--allocation-ack-node" and len(argv) == 2: node_allocation_ack(argv[1]); return
     if cmd == "--serve-controller": serve_controller(); return
     if cmd == "--install": install(); return
     if cmd == "--detach": detach(); return

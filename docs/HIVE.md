@@ -731,7 +731,18 @@ manager hive allocation controller create \
   maria wireguard /root/maria.alloc.json BR-SP PREMIUM maria '*' 60
 ```
 
-No nó selecionado:
+A criação também coloca o bundle assinado em um outbox durável do controlador para o `selected_node`. Com `manager hive allocation enable`, o nó instala um timer de sync que consulta o **mesmo canal TLS 1.3 pinado da autoridade global de leases**. O pull é assinado pela identidade Ed25519 enrolled do nó, inclui freshness/nonce/`node_epoch` e só recebe bundles destinados ao próprio nó/epoch.
+
+Entrega normal:
+
+```bash
+manager hive allocation enable
+manager hive allocation sync        # diagnóstico/forçar sync; o timer faz isso automaticamente
+```
+
+O nó valida novamente assinatura Ed25519, destino, expiração e `session_epoch` antes de persistir o ticket. Só depois do aceite durável envia ACK ao controlador. Se o ACK se perder, o mesmo bundle pode ser puxado novamente e o aceite local é idempotente; o outbox só é removido após ACK válido do nó destinatário. Não é aberta uma nova porta: a distribuição reutiliza o control plane de leases já configurado.
+
+O aceite manual continua disponível como recuperação/diagnóstico:
 
 ```bash
 manager hive allocation accept /root/maria.alloc.json
@@ -739,7 +750,7 @@ manager hive allocation accept /root/maria.alloc.json
 
 Quando o enforcement de allocation está ativo, o Protocol Lease Bridge exige um ticket local atual e reclama **exatamente** o `global_lease_id` vinculado. Não existe fallback para acquire global genérico apenas porque ainda há capacidade. SSH/OpenVPN continuam com admissão síncrona; WireGuard passa a poder receber autorização antes do primeiro uso quando a allocation é entregue ao nó.
 
-Revogação avança o `session_epoch` da allocation e também revoga grants/leases globais:
+Revogação avança o `session_epoch` da allocation, remove allocations ainda não entregues do outbox e também revoga grants/leases globais:
 
 ```bash
 manager hive allocation controller revoke maria compromised
