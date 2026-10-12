@@ -1,0 +1,162 @@
+name: Hive VPN Remote Provisioning
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hive-vpn-remote-provisioning:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          test "$(sudo cat /opt/manager/VERSION)" = 0.8.4
+          sudo test -x /opt/manager/modules/provision.sh
+          sudo test -x /opt/manager/modules/hive_allocations.sh
+
+      - name: Initialize controller and selected local node
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager hive controller init >/dev/null
+          sudo manager hive lease controller init >/dev/null
+          sudo manager hive lease controller enable 127.0.0.1 19445 >/dev/null
+          lease_fp="$(sudo manager hive lease controller status | awk -F= '$1=="tls_fingerprint"{print $2}')"
+          controller_fp="$(sudo manager hive controller fingerprint)"
+          sudo manager hive request /tmp/node.request.json >/dev/null
+          sudo manager hive controller approve /tmp/node.request.json /tmp/node.bundle.json >/dev/null
+          sudo manager hive accept /tmp/node.bundle.json "$controller_fp" >/dev/null
+          sudo manager hive lease node configure 127.0.0.1 19445 "$lease_fp" 30 >/dev/null
+          node="$(sudo manager hive status | awk -F= '$1=="node_id"{print $2}')"
+          test -n "$node"
+          printf '%s\n' "$node" >/tmp/node.id
+          sudo manager hive node placement "$node" BR-SP-A BR BR-SP PREMIUM >/dev/null
+          sudo mkdir -p /etc/manager/hive/controller/health /var/lib/manager/hive-health/nodes
+          cat <<'EOF' | sudo tee /etc/manager/hive/controller/health/controller.conf >/dev/null
+          version=1
+          degraded_after_seconds=75
+          offline_after_seconds=180
+          EOF
+          now="$(date +%s)"
+          sudo python3 - "$now" "$node" <<'PY'
+          import json,sys
+          now=int(sys.argv[1]); node=sys.argv[2]; conf={}
+          with open(f'/etc/manager/hive/controller/nodes/{node}.conf') as f:
+              for line in f:
+                  if '=' in line:
+                      k,v=line.rstrip().split('=',1); conf[k]=v
+          obs={'version':1,'node_id':node,'node_epoch':int(conf['node_epoch']),'issued_at':now,'received_at':now,
+               'source':'ci','base_state':'HEALTHY','base_reason':'ok',
+               'metrics':{'sessions':0,'max_sessions':100,'capacity':10,'weight':1,'previous_rtt_ms':10,
+                          'protocols':['ssh','wireguard','openvpn'],'service_ssh':'active',
+                          'service_wireguard':'active','service_openvpn':'active'}}
+          with open(f'/var/lib/manager/hive-health/nodes/{node}.json','w') as f:
+              json.dump(obs,f,sort_keys=True,separators=(',',':'))
+          PY
+          sudo chmod 600 /var/lib/manager/hive-health/nodes/*.json
+
+      - name: Enable allocation delivery and prepare only the product
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/products.sh --create PREMIUM 'CI Premium' 1 0 1 ssh 0 none warn '*' '*' '*'
+          sudo manager hive allocation enable >/tmp/alloc-enable
+          grep -q '^automatic_remote_provisioning=1$' /tmp/alloc-enable
+          sudo systemctl stop manager-hive-allocation-sync.timer manager-hive-allocation-sync.service
+          sudo test ! -e /etc/manager/connection/identities/hive-auto-ssh.conf
+          if id hive-auto-ssh >/dev/null 2>&1; then
+            echo 'SSH resource unexpectedly exists before allocation sync' >&2
+            exit 1
+          fi
+
+      - name: Provision before ACK and survive ACK loss idempotently
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager hive lease limit set hive-auto-ssh 1 PREMIUM >/dev/null
+          created="$(sudo manager hive allocation controller create hive-auto-ssh ssh /tmp/hive-auto-ssh.json BR-SP PREMIUM hive-auto-ssh '*' 120)"
+          allocation_id="$(awk -F= '$1=="allocation_id"{print $2}' <<<"$created")"
+          test -n "$allocation_id"
+          node="$(cat /tmp/node.id)"
+          outbox="/var/lib/manager/hive-allocations/controller/outbox/$node/$allocation_id.json"
+          receipt="/var/lib/manager/hive-allocations/node/provisioned/$allocation_id.conf"
+          sudo test -f "$outbox"
+          sudo test ! -e "$receipt"
+
+          sudo mv /opt/manager/modules/hive_leases.sh /opt/manager/modules/hive_leases.real
+          cat <<'EOF' | sudo tee /opt/manager/modules/hive_leases.sh >/dev/null
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [[ "${1:-}" == "--allocation-ack-node" ]]; then
+            echo 'ci simulated allocation ACK loss' >&2
+            exit 75
+          fi
+          exec /opt/manager/modules/hive_leases.real "$@"
+          EOF
+          sudo chmod 755 /opt/manager/modules/hive_leases.sh
+
+          if sudo manager hive allocation sync >/tmp/first-sync.out 2>/tmp/first-sync.err; then
+            echo 'sync unexpectedly succeeded while ACK was forced to fail' >&2
+            exit 1
+          fi
+          grep -q 'ci simulated allocation ACK loss' /tmp/first-sync.err
+          sudo test -f "$outbox"
+          sudo test -f "$receipt"
+          test "$(sudo stat -c '%a' "$receipt")" = 600
+          id hive-auto-ssh
+          sudo test -f /etc/manager/connection/identities/hive-auto-ssh.conf
+          sudo /opt/manager/manager --identity hive-auto-ssh >/tmp/identity.out
+          grep -q '^state=active$' /tmp/identity.out
+          grep -q '^ssh_user=hive-auto-ssh$' /tmp/identity.out
+          sudo /opt/manager/manager --product-assignment hive-auto-ssh >/tmp/product.out
+          grep -q '^product_id=PREMIUM$' /tmp/product.out
+          password="$(sudo awk -F= '$1=="ssh_password"{print substr($0,index($0,"=")+1)}' "$receipt")"
+          test -n "$password"
+          if sudo grep -Fq "$password" /var/log/manager/hive-allocation-audit.jsonl; then
+            echo 'allocation audit leaked the generated SSH password' >&2
+            exit 1
+          fi
+          first_hash="$(sudo sha256sum "$receipt" | awk '{print $1}')"
+          printf '%s\n' "$first_hash" >/tmp/receipt.hash
+
+          sudo rm /opt/manager/modules/hive_leases.sh
+          sudo mv /opt/manager/modules/hive_leases.real /opt/manager/modules/hive_leases.sh
+          second="$(sudo manager hive allocation sync)"
+          grep -q '^allocations_pulled=1$' <<<"$second"
+          grep -q '^allocations_accepted=0$' <<<"$second"
+          grep -q '^allocations_idempotent=1$' <<<"$second"
+          grep -q '^allocations_provisioned=0$' <<<"$second"
+          grep -q '^allocations_provision_idempotent=1$' <<<"$second"
+          grep -q '^allocations_acked=1$' <<<"$second"
+          sudo test ! -e "$outbox"
+          test "$(sudo sha256sum "$receipt" | awk '{print $1}')" = "$(cat /tmp/receipt.hash)"
+          test "$(sudo stat -c '%a' "$receipt")" = 600
+          test "$(sudo passwd -S hive-auto-ssh | awk '{print $2}')" = P
+
+      - name: Preserve legacy binding names under ensure
+        shell: bash
+        run: |
+          set -euxo pipefail
+          id hive-legacy-user >/dev/null 2>&1 || sudo useradd -M -s /usr/sbin/nologin hive-legacy-user
+          sudo /opt/manager/modules/connection_engine.sh --create hive-legacy '' 0 10 ssh >/dev/null
+          sudo /opt/manager/modules/connection_engine.sh --bind hive-legacy ssh hive-legacy-user >/dev/null
+          sudo /opt/manager/modules/products.sh --assign hive-legacy PREMIUM >/dev/null
+          ensured="$(sudo /opt/manager/modules/provision.sh --ensure hive-legacy PREMIUM ssh)"
+          grep -q '^provision_action=reused$' <<<"$ensured"
+          grep -q '^resource_created=0$' <<<"$ensured"
+          grep -q '^ssh_user=hive-legacy-user$' <<<"$ensured"
+          id hive-legacy-user
+          if id hive-legacy >/dev/null 2>&1; then
+            echo 'ensure created a duplicate SSH user instead of preserving the existing binding' >&2
+            exit 1
+          fi

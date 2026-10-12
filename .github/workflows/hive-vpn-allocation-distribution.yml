@@ -84,9 +84,11 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          sudo /opt/manager/modules/products.sh --create PREMIUM 'CI Premium' 1 0 10 ssh 0 none warn '*' '*' '*'
           id alloc-dist-ssh >/dev/null 2>&1 || sudo useradd -M -s /usr/sbin/nologin alloc-dist-ssh
           sudo /opt/manager/modules/connection_engine.sh --create allocdist '' 0 10 ssh >/dev/null
           sudo /opt/manager/modules/connection_engine.sh --bind allocdist ssh alloc-dist-ssh >/dev/null
+          sudo /opt/manager/modules/products.sh --assign allocdist PREMIUM >/dev/null
           sudo manager hive lease limit set allocdist 1 PREMIUM >/dev/null
           created="$(sudo manager hive allocation controller create allocdist ssh /tmp/allocdist.json BR-SP PREMIUM allocdist '*' 120)"
           grep -q '^distribution_queued=1$' <<<"$created"

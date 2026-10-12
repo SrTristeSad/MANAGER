@@ -45,9 +45,11 @@ CTRL_OUTBOX_DIR = os.path.join(DATA_DIR, "controller", "outbox")
 NODE_ACTIVE_DIR = os.path.join(DATA_DIR, "node", "active")
 NODE_STATE_DIR = os.path.join(DATA_DIR, "node", "state")
 NODE_EPOCH_DIR = os.path.join(DATA_DIR, "node", "epochs")
+NODE_PROVISION_DIR = os.path.join(DATA_DIR, "node", "provisioned")
 LOCK_FILE = os.path.join(DATA_DIR, ".lock")
 AUDIT_FILE = os.environ.get("MANAGER_HIVE_ALLOCATION_AUDIT_FILE", "/var/log/manager/hive-allocation-audit.jsonl")
 LEASE_MODULE = os.path.join(MANAGER_HOME, "modules", "hive_leases.sh")
+PROVISION_MODULE = os.path.join(MANAGER_HOME, "modules", "provision.sh")
 SYSTEMD_DIR = os.environ.get("MANAGER_HIVE_ALLOCATION_SYSTEMD_DIR", "/etc/systemd/system")
 SYNC_SERVICE = os.path.join(SYSTEMD_DIR, "manager-hive-allocation-sync.service")
 SYNC_TIMER = os.path.join(SYSTEMD_DIR, "manager-hive-allocation-sync.timer")
@@ -85,6 +87,7 @@ def init_dirs():
     ensure_dir(NODE_ACTIVE_DIR)
     ensure_dir(NODE_STATE_DIR)
     ensure_dir(NODE_EPOCH_DIR)
+    ensure_dir(NODE_PROVISION_DIR)
     Path(LOCK_FILE).touch(mode=0o600, exist_ok=True)
     os.chmod(LOCK_FILE, 0o600)
 
@@ -467,7 +470,7 @@ def node_enable():
                            f"controller_id={enrollment.get('controller_id','')}\nupdated_epoch={int(time.time())}\n")
     enable_sync_timer()
     print("vpn_allocation_enforcement=1"); print(f"node_id={node_id}"); print(f"node_epoch={node_epoch}")
-    print("automatic_distribution=1"); print("sync_interval_seconds=3"); print("failure_mode=fail-closed")
+    print("automatic_distribution=1"); print("automatic_remote_provisioning=1"); print("sync_interval_seconds=3"); print("failure_mode=fail-closed")
 
 
 def node_disable():
@@ -570,6 +573,53 @@ def accept_bundle(path):
     print(f"expires_epoch={bundle['expires_epoch']}")
 
 
+def provision_receipt_path(allocation_id):
+    if not ID_RE.fullmatch(str(allocation_id)): die("allocation_id inválido para receipt de provisionamento.",64)
+    return os.path.join(NODE_PROVISION_DIR,allocation_id+".conf")
+
+
+def receipt_matches(receipt,bundle):
+    return (receipt.get("status")=="ok" and receipt.get("allocation_id")==bundle.get("allocation_id") and
+            receipt.get("identity_id")==bundle.get("identity_id") and receipt.get("product_id")==bundle.get("product_id") and
+            receipt.get("protocol")==bundle.get("protocol"))
+
+
+def provision_bundle(bundle):
+    init_dirs(); path=provision_receipt_path(bundle["allocation_id"]); receipt=read_conf(path)
+    if receipt:
+        if not receipt_matches(receipt,bundle): die("Receipt local de provisionamento colidiu com outra allocation.",65)
+        return receipt,True
+    if not os.path.isfile(PROVISION_MODULE) or not os.access(PROVISION_MODULE,os.X_OK):
+        die("Módulo de provisionamento local não está disponível no nó.",69)
+    proc=subprocess.run([PROVISION_MODULE,"--ensure",bundle["identity_id"],bundle["product_id"],bundle["protocol"]],
+                        stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=90,check=False)
+    if proc.returncode!=0:
+        audit("provision-failed",identity_id=bundle.get("identity_id"),product_id=bundle.get("product_id"),
+              protocol=bundle.get("protocol"),allocation_id=bundle.get("allocation_id"),result=proc.returncode)
+        die(proc.stderr.strip() or "Provisionamento local da allocation falhou.",proc.returncode)
+    result=parse_kv(proc.stdout)
+    if result.get("status")!="ok" or result.get("identity_id")!=bundle["identity_id"] or result.get("product_id")!=bundle["product_id"]:
+        die("Provisionamento local retornou identidade/produto inesperado.",70)
+    provisioned_protocols=result.get("protocols","").split(",")
+    if bundle["protocol"] not in provisioned_protocols: die("Provisionamento local não confirmou o protocolo da allocation.",70)
+    lines=["version=1","status=ok",f"allocation_id={bundle['allocation_id']}",f"identity_id={bundle['identity_id']}",
+           f"product_id={bundle['product_id']}",f"protocol={bundle['protocol']}",
+           f"resource_created={result.get('resource_created','0')}",f"provision_action={result.get('provision_action','')}",
+           f"provisioned_epoch={int(time.time())}"]
+    secret_keys=("ssh_user","ssh_password","wireguard_client","wireguard_ip","wireguard_ipv4","wireguard_ipv6","wireguard_profile",
+                 "openvpn_client","openvpn_ipv6","openvpn_profile")
+    for key in secret_keys:
+        value=result.get(key)
+        if value is not None and "\n" not in value and "\r" not in value:
+            lines.append(f"{key}={value}")
+    atomic_write(path,"\n".join(lines)+"\n")
+    receipt=read_conf(path)
+    audit("provision-ok",identity_id=bundle.get("identity_id"),product_id=bundle.get("product_id"),protocol=bundle.get("protocol"),
+          allocation_id=bundle.get("allocation_id"),resource_created=result.get("resource_created","0"))
+    return receipt,False
+
+
+
 def sync_node(limit=8):
     init_dirs()
     if not node_enabled(): die("Allocation enforcement está desabilitado neste nó.",67)
@@ -583,11 +633,14 @@ def sync_node(limit=8):
     except json.JSONDecodeError: die("Resposta de distribuição de allocation não é JSON válido.",70)
     bundles=result.get("bundles",[]) if isinstance(result,dict) else []
     if not isinstance(bundles,list) or len(bundles)>limit: die("Resposta de distribuição de allocation inválida.",70)
-    accepted=idempotent_count=acked=0
+    accepted=idempotent_count=acked=provisioned=provision_idempotent=0
     for raw in bundles:
         bundle,was_idempotent=accept_bundle_object(raw)
         if was_idempotent: idempotent_count+=1
         else: accepted+=1
+        _,was_provisioned=provision_bundle(bundle)
+        if was_provisioned: provision_idempotent+=1
+        else: provisioned+=1
         ack=subprocess.run([LEASE_MODULE,"--allocation-ack-node",bundle["allocation_id"]],stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE,text=True,timeout=20,check=False)
         if ack.returncode!=0:
@@ -597,8 +650,9 @@ def sync_node(limit=8):
         audit("sync-delivered",identity_id=bundle.get("identity_id"),protocol=bundle.get("protocol"),
               allocation_id=bundle.get("allocation_id"),global_lease_id=bundle.get("global_lease_id"))
     print(f"allocations_pulled={len(bundles)}"); print(f"allocations_accepted={accepted}")
-    print(f"allocations_idempotent={idempotent_count}"); print(f"allocations_acked={acked}")
-    print("delivery_transport=lease-control-pull")
+    print(f"allocations_idempotent={idempotent_count}"); print(f"allocations_provisioned={provisioned}")
+    print(f"allocations_provision_idempotent={provision_idempotent}"); print(f"allocations_acked={acked}")
+    print("delivery_transport=lease-control-pull"); print("automatic_remote_provisioning=1")
 
 
 def reserve(identity_id,protocol):
@@ -689,7 +743,8 @@ def node_status():
     print(f"controller_id={conf.get('controller_id','')}"); print("signed_allocation_bundle=1")
     print("exact_global_grant_required_when_enabled=1"); print("automatic_distribution=1"); print("sync_interval_seconds=3")
     print(f"sync_timer_active={1 if systemctl('is-active','--quiet','manager-hive-allocation-sync.timer')==0 else 0}")
-    print("delivery_transport=lease-control-pull"); print("controller_in_user_vpn_path=0")
+    print("delivery_transport=lease-control-pull"); print("automatic_remote_provisioning=1"); print("controller_in_user_vpn_path=0")
+    print(f"provision_receipts={sum(1 for path in Path(NODE_PROVISION_DIR).glob('*.conf') if read_conf(str(path)).get('status')=='ok')}")
     ready=pending=consumed=0
     for path in Path(NODE_STATE_DIR).glob("*.conf"):
         state=read_conf(str(path)).get("status")

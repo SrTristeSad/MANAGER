@@ -230,12 +230,16 @@ Implementado nesta fase:
 - pull autenticado pela identidade Ed25519 enrolled do nó, com freshness, nonce e fencing de `node_epoch`;
 - ACK somente depois do aceite local durável; redelivery é idempotente e não exige nova porta/listener no nó;
 - timer de sync no nó e comando manual `manager hive allocation sync` para diagnóstico/recuperação;
-- revogação remove bundles ainda não entregues e mantém o controlador fora do caminho de dados VPN.
+- revogação remove bundles ainda não entregues e mantém o controlador fora do caminho de dados VPN;
+- nó selecionado executa provisionamento remoto idempotente antes do ACK da allocation;
+- SSH, WireGuard e OpenVPN reutilizam o provisionamento transacional local, sem shell remoto arbitrário;
+- redelivery após perda de ACK reutiliza o recurso já criado e um receipt root-only vinculado à allocation;
+- falha de produto/protocolo/preflight no nó impede ACK e mantém o fluxo fail-closed.
 
 Ainda pendente para fechar a 0.8.5:
 
-- integrar o provisionamento remoto de recursos/credenciais necessários no nó escolhido quando eles ainda não existirem;
-- fechar o fluxo público de login/provisionamento de ponta a ponta e seus gates finais antes de alterar `VERSION`.
+- devolver ao fluxo público o resultado/credencial criada no nó sem expor segredo em logs ou no audit;
+- fechar o endpoint/contrato público de login/provisionamento de ponta a ponta e seus gates finais antes de alterar `VERSION`.
 
 ### 0.8.6 — quotas e accounting globais
 
