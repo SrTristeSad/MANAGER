@@ -54,6 +54,7 @@ ACTIVE_DIR = os.path.join(DATA_DIR, "active")
 EPOCH_DIR = os.path.join(DATA_DIR, "epochs")
 REPLAY_DIR = os.path.join(DATA_DIR, "replay")
 NODE_AUTH_STATE = os.path.join(DATA_DIR, "node-authority.state")
+NODE_AUTH_LOCK = os.path.join(DATA_DIR, ".node-authority.lock")
 LOCK_FILE = os.path.join(DATA_DIR, ".lock")
 AUDIT_FILE = os.environ.get("MANAGER_HIVE_LEASE_AUDIT_FILE", "/var/log/manager/hive-lease-audit.jsonl")
 ALLOCATION_OUTBOX_DIR = os.environ.get("MANAGER_HIVE_ALLOCATION_OUTBOX_DIR", "/var/lib/manager/hive-allocations/controller/outbox")
@@ -307,6 +308,113 @@ def node_enrollment():
     if not NODE_ID_RE.fullmatch(node_id) or epoch < 1:
         die("Enrollment local inválido.", 67)
     return conf, node_id, epoch
+
+
+def authority_state_snapshot(controller_id=""):
+    raw = read_conf(NODE_AUTH_STATE)
+    stored_controller = raw.get("controller_id", "")
+    if controller_id and stored_controller and stored_controller != controller_id:
+        raw = {}
+    def integer(key):
+        try: return max(0, int(raw.get(key, "0")))
+        except (TypeError, ValueError): return 0
+    state = raw.get("state", "unknown")
+    if state not in {"unknown", "healthy", "outage", "fenced"}:
+        state = "unknown"
+    return {
+        "controller_id": controller_id or stored_controller,
+        "authority_epoch": integer("authority_epoch"),
+        "state": state,
+        "last_success_epoch": integer("last_success_epoch"),
+        "outage_started_epoch": integer("outage_started_epoch"),
+        "last_transport_failure_epoch": integer("last_transport_failure_epoch"),
+        "last_recovery_epoch": integer("last_recovery_epoch"),
+        "recovery_count": integer("recovery_count"),
+        "last_fenced_epoch": integer("last_fenced_epoch"),
+        "returned_authority_epoch": integer("returned_authority_epoch"),
+    }
+
+
+def write_authority_state_locked(state):
+    now = int(time.time())
+    atomic_write(NODE_AUTH_STATE,
+                 f"version=1\ncontroller_id={state.get('controller_id','')}\n"
+                 f"authority_epoch={int(state.get('authority_epoch',0))}\nstate={state.get('state','unknown')}\n"
+                 f"last_success_epoch={int(state.get('last_success_epoch',0))}\n"
+                 f"outage_started_epoch={int(state.get('outage_started_epoch',0))}\n"
+                 f"last_transport_failure_epoch={int(state.get('last_transport_failure_epoch',0))}\n"
+                 f"last_recovery_epoch={int(state.get('last_recovery_epoch',0))}\n"
+                 f"recovery_count={int(state.get('recovery_count',0))}\n"
+                 f"last_fenced_epoch={int(state.get('last_fenced_epoch',0))}\n"
+                 f"returned_authority_epoch={int(state.get('returned_authority_epoch',0))}\n"
+                 f"updated_epoch={now}\n")
+
+
+def authority_state_update(controller_id, mutator):
+    ensure_dir(DATA_DIR)
+    Path(NODE_AUTH_LOCK).touch(mode=0o600, exist_ok=True)
+    os.chmod(NODE_AUTH_LOCK, 0o600)
+    with open(NODE_AUTH_LOCK, "r+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        state = authority_state_snapshot(controller_id)
+        before = dict(state)
+        mutator(state)
+        write_authority_state_locked(state)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    return before, state
+
+
+def authority_seen_epoch(controller_id):
+    return int(authority_state_snapshot(controller_id).get("authority_epoch", 0))
+
+
+def authority_mark_outage(node_id, controller_id):
+    now = int(time.time())
+    def mutate(state):
+        if state.get("state") != "fenced":
+            if int(state.get("outage_started_epoch", 0)) <= 0:
+                state["outage_started_epoch"] = now
+            state["state"] = "outage"
+        state["last_transport_failure_epoch"] = now
+    before, after = authority_state_update(controller_id, mutate)
+    if before.get("state") not in {"outage", "fenced"}:
+        audit("node-authority-outage", node_id=node_id, controller_id=controller_id,
+              authority_epoch=after.get("authority_epoch", 0), outage_started_epoch=after.get("outage_started_epoch", 0))
+
+
+def authority_mark_success(node_id, controller_id, authority_epoch):
+    now = int(time.time())
+    def mutate(state):
+        previous = state.get("state", "unknown")
+        recovered = previous in {"outage", "fenced"}
+        state["controller_id"] = controller_id
+        state["authority_epoch"] = max(int(state.get("authority_epoch", 0)), int(authority_epoch))
+        state["state"] = "healthy"
+        state["last_success_epoch"] = now
+        state["outage_started_epoch"] = 0
+        state["returned_authority_epoch"] = int(authority_epoch)
+        if recovered:
+            state["last_recovery_epoch"] = now
+            state["recovery_count"] = int(state.get("recovery_count", 0)) + 1
+    before, after = authority_state_update(controller_id, mutate)
+    if before.get("state") in {"outage", "fenced"}:
+        audit("node-authority-recovered", node_id=node_id, controller_id=controller_id,
+              authority_epoch=authority_epoch, previous_state=before.get("state"),
+              recovery_count=after.get("recovery_count", 0))
+
+
+def authority_mark_fenced(node_id, controller_id, returned_epoch, seen_epoch):
+    now = int(time.time())
+    def mutate(state):
+        state["controller_id"] = controller_id
+        state["authority_epoch"] = max(int(state.get("authority_epoch", 0)), int(seen_epoch))
+        state["state"] = "fenced"
+        state["last_fenced_epoch"] = now
+        state["returned_authority_epoch"] = max(0, int(returned_epoch))
+    before, after = authority_state_update(controller_id, mutate)
+    if before.get("state") != "fenced" or int(before.get("returned_authority_epoch", 0)) != int(returned_epoch):
+        audit("node-authority-fenced", node_id=node_id, controller_id=controller_id,
+              seen_authority_epoch=seen_epoch, returned_authority_epoch=returned_epoch)
 
 
 def controller_node(node_id):
@@ -1203,6 +1311,10 @@ def handle_request(request):
             if action == "acquire": result = acquire_locked(node_id, node_epoch, params)
             elif action == "heartbeat": result = heartbeat_locked(node_id, node_epoch, params)
             elif action == "release": result = release_locked(node_id, params)
+            elif action == "probe":
+                ctrl = controller_identity()
+                result = {"node_id": node_id, "node_epoch": node_epoch,
+                          "controller_id": ctrl.get("controller_id", ""), "server_epoch": int(time.time())}
             elif action == "usage_ingest": result = usage_ingest_locked(node_id, node_epoch, params)
             elif action == "allocation_pull": result = allocation_pull_locked(node_id, node_epoch, params)
             elif action == "allocation_ack": result = allocation_ack_locked(node_id, node_epoch, params)
@@ -1277,6 +1389,7 @@ def node_request(action, params):
                     if not chunk: break
                     buf += chunk
     except (OSError, ssl.SSLError, socket.timeout):
+        authority_mark_outage(node_id, conf.get("controller_id", enroll.get("controller_id", "")))
         die("Autoridade global de leases indisponível; acesso recusado em fail-closed.", 69)
     if not buf or len(buf) > MAX_MESSAGE: die("Resposta inválida da autoridade global.", 70)
     try: answer = json.loads(buf.decode("utf-8"))
@@ -1285,19 +1398,33 @@ def node_request(action, params):
         die("Contrato de resposta da autoridade global inválido.", 70)
     try: authority_epoch = int(answer.get("authority_epoch", 0))
     except (TypeError, ValueError): authority_epoch = 0
-    state = read_conf(NODE_AUTH_STATE)
-    try: seen_authority = int(state.get("authority_epoch", "0"))
-    except ValueError: seen_authority = 0
+    controller_id = conf.get("controller_id", enroll.get("controller_id", ""))
+    seen_authority = authority_seen_epoch(controller_id)
     if authority_epoch < 1 or authority_epoch < seen_authority:
+        authority_mark_fenced(node_id, controller_id, authority_epoch, seen_authority)
         die("Autoridade global antiga/fenced tentou retornar.", 70)
-    if authority_epoch > seen_authority:
-        atomic_write(NODE_AUTH_STATE, f"authority_epoch={authority_epoch}\nupdated_epoch={int(time.time())}\n")
+    authority_mark_success(node_id, controller_id, authority_epoch)
     if not answer.get("ok"):
         code = answer.get("code", 70)
         try: code = int(code)
         except Exception: code = 70
         die(f"Lease global recusada: {answer.get('error','denied')}", code)
     return answer.get("result", {})
+
+
+def node_probe():
+    result = node_request("probe", {})
+    conf = read_conf(NODE_CONF)
+    state = authority_state_snapshot(conf.get("controller_id", ""))
+    print("contract=manager-hive-authority-recovery-v1")
+    print("authority_reachable=1")
+    print(f"authority_state={state.get('state','unknown')}")
+    print(f"seen_authority_epoch={state.get('authority_epoch',0)}")
+    print(f"last_success_epoch={state.get('last_success_epoch',0)}")
+    print(f"last_recovery_epoch={state.get('last_recovery_epoch',0)}")
+    print(f"recovery_count={state.get('recovery_count',0)}")
+    print(f"controller_id={result.get('controller_id','')}")
+    print(f"node_id={result.get('node_id','')}")
 
 
 def node_acquire(identity_id, protocol, resource, device, local_session_id, ttl, global_lease_id=""):
@@ -1514,7 +1641,19 @@ def node_status():
     print(f"port={conf.get('port','')}")
     print(f"tls_fingerprint={conf.get('tls_fingerprint','')}")
     print(f"grace_seconds={conf.get('grace_seconds','30')}")
+    state = authority_state_snapshot(conf.get("controller_id", ""))
+    print(f"authority_state={state.get('state','unknown')}")
+    print(f"seen_authority_epoch={state.get('authority_epoch',0)}")
+    print(f"last_success_epoch={state.get('last_success_epoch',0)}")
+    print(f"outage_started_epoch={state.get('outage_started_epoch',0)}")
+    print(f"last_transport_failure_epoch={state.get('last_transport_failure_epoch',0)}")
+    print(f"last_recovery_epoch={state.get('last_recovery_epoch',0)}")
+    print(f"recovery_count={state.get('recovery_count',0)}")
+    print(f"last_fenced_epoch={state.get('last_fenced_epoch',0)}")
+    print(f"returned_authority_epoch={state.get('returned_authority_epoch',0)}")
     print("new_grants_failure_mode=fail-closed")
+    print("existing_session_outage_policy=bounded-grace")
+    print("recovery_fencing=authority-epoch")
 
 
 def install():
@@ -1542,7 +1681,7 @@ def purge():
 
 
 def usage():
-    print("Uso: hive_leases.sh {--status|--node-status|--node-configure HOST PORT FP [GRACE]|--node-disable|--controller-init|--controller-status|--controller-enable BIND [PORT]|--controller-disable|--controller-rotate-tls|--controller-grant ID PROTO [REGION] [POOL] [STICKY] [SCOPE] [DEVICE] [TTL]|--limit-set ID MAX [PRODUCT]|--limit-import-local ID|--limit-sync-local|--limit-show ID|--limit-list|--limit-unset ID|--controller-list [ID]|--controller-revoke ID [REASON]|--acquire-node ID PROTO RESOURCE DEVICE SESSION [TTL] [GLOBAL_LEASE_ID]|--heartbeat-node ID SESSION [TTL]|--release-node ID SESSION|--allocation-pull-node [LIMIT]|--allocation-ack-node ALLOCATION_ID [RESULT_JSON]|--serve-controller|--install|--detach|--purge}", file=sys.stderr)
+    print("Uso: hive_leases.sh {--status|--node-status|--node-probe|--node-configure HOST PORT FP [GRACE]|--node-disable|--controller-init|--controller-status|--controller-enable BIND [PORT]|--controller-disable|--controller-rotate-tls|--controller-grant ID PROTO [REGION] [POOL] [STICKY] [SCOPE] [DEVICE] [TTL]|--limit-set ID MAX [PRODUCT]|--limit-import-local ID|--limit-sync-local|--limit-show ID|--limit-list|--limit-unset ID|--controller-list [ID]|--controller-revoke ID [REASON]|--acquire-node ID PROTO RESOURCE DEVICE SESSION [TTL] [GLOBAL_LEASE_ID]|--heartbeat-node ID SESSION [TTL]|--release-node ID SESSION|--allocation-pull-node [LIMIT]|--allocation-ack-node ALLOCATION_ID [RESULT_JSON]|--serve-controller|--install|--detach|--purge}", file=sys.stderr)
     raise SystemExit(64)
 
 
@@ -1550,6 +1689,7 @@ def main(argv):
     cmd = argv[0] if argv else "--status"
     if cmd == "--status": status(); return
     if cmd == "--node-status": node_status(); return
+    if cmd == "--node-probe" and len(argv) == 1: node_probe(); return
     if cmd == "--node-configure" and len(argv) in {4,5}: node_configure(argv[1], argv[2], argv[3], argv[4] if len(argv) == 5 else 30); return
     if cmd == "--node-disable": node_disable(); return
     if cmd == "--controller-init": controller_status(); return

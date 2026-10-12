@@ -924,3 +924,27 @@ A coleta 0.6.11 mede bytes de WireGuard e OpenVPN. SSH registra sessão/atividad
 ### Lifecycle
 
 O timer `manager-hive-accounting-sync.timer` é apenas um produtor de telemetria do nó. Uninstall normal o destaca e preserva configuração, snapshots globais, baselines e audit. `manager-uninstall --purge` remove o estado persistente da 0.8.6. O controlador continua fora do caminho de dados VPN.
+
+## 22. Resiliência operacional — fundação 0.8.7
+
+A autoridade global continua fora do caminho de dados VPN. A 0.8.7 torna explícito no nó o estado operacional do control plane sem criar uma segunda autoridade.
+
+```bash
+manager hive lease node status
+manager hive lease node probe
+```
+
+O probe usa o mesmo contrato autenticado das leases: identidade Ed25519 enrolled do nó, `node_epoch`, timestamp/nonce, TLS 1.3 e pin SHA-256. Ele não abre nova porta e não envia tráfego VPN pelo controlador.
+
+O estado persistente em `/var/lib/manager/hive-leases/node-authority.state` registra o maior `authority_epoch` aceito, último sucesso, início da outage, última falha de transporte, último recovery e eventos de fencing. O arquivo permanece root-only e é preservado em uninstall/reinstall normal.
+
+Semântica operacional:
+
+- falha de transporte: `authority_state=outage`; novas admissões continuam fail-closed;
+- sessão já válida: o Protocol Lease Bridge mantém apenas o grace configurado e limitado, ancorado no último heartbeat global daquela sessão;
+- resposta válida após outage: `authority_state=healthy`, recovery é contabilizado e a sessão volta a ser revalidada normalmente;
+- resposta com `authority_epoch` inferior ao maior já observado: `authority_state=fenced`, sem grace para deny/fencing;
+- drain do scheduler continua impedindo novas alocações sem revogar lease/sessão saudável já existente;
+- sticky affinity continua sendo usada enquanto o nó permanecer elegível.
+
+Eventos `node-authority-outage`, `node-authority-recovered` e `node-authority-fenced` entram no audit de leases sem persistir segredos.

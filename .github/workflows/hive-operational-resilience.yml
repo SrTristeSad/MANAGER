@@ -1,0 +1,210 @@
+name: Hive Operational Resilience
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hive-operational-resilience:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="file://${GITHUB_WORKSPACE}" bash install.sh
+          test "$(sudo cat /opt/manager/VERSION)" = 0.8.6
+          sudo test -x /opt/manager/modules/hive_leases.sh
+          sudo manager --help | grep -q 'hive lease node status|probe|configure'
+
+      - name: Initialize controller, node and global lease authority
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager hive controller init >/dev/null
+          sudo manager hive lease controller init >/dev/null
+          sudo manager hive lease controller enable 127.0.0.1 19445 >/tmp/lease-enable
+          fp="$(sudo manager hive lease controller status | awk -F= '$1=="tls_fingerprint"{print $2}')"
+          controller_fp="$(sudo manager hive controller fingerprint)"
+          sudo manager hive request /tmp/node.request.json >/dev/null
+          sudo manager hive controller approve /tmp/node.request.json /tmp/node.bundle.json >/dev/null
+          sudo manager hive accept /tmp/node.bundle.json "$controller_fp" >/dev/null
+          sudo manager hive lease node configure 127.0.0.1 19445 "$fp" 30 >/dev/null
+          node="$(sudo manager hive status | awk -F= '$1=="node_id"{print $2}')"
+          test -n "$node"
+          printf '%s\n' "$node" >/tmp/node.id
+          sudo manager hive lease limit set resilience 2 >/dev/null
+          probe="$(sudo manager hive lease node probe)"
+          grep -q '^authority_reachable=1$' <<<"$probe"
+          grep -q '^authority_state=healthy$' <<<"$probe"
+          seen="$(awk -F= '$1=="seen_authority_epoch"{print $2}' <<<"$probe")"
+          test "$seen" -ge 2
+          printf '%s\n' "$seen" >/tmp/seen.epoch
+
+      - name: Track outage and keep new admission fail closed
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sid1=11111111111111111111111111111111
+          sudo /opt/manager/modules/hive_leases.sh --acquire-node resilience wireguard client-a device-a "$sid1" 60 >/dev/null
+          sudo /opt/manager/modules/hive_leases.sh --heartbeat-node resilience "$sid1" 60 >/dev/null
+          sudo systemctl stop manager-hive-lease-controller.service
+          if sudo manager hive lease node probe >/tmp/outage.out 2>/tmp/outage.err; then
+            echo 'probe unexpectedly succeeded while authority was down' >&2
+            exit 1
+          fi
+          status="$(sudo manager hive lease node status)"
+          grep -q '^authority_state=outage$' <<<"$status"
+          grep -Eq '^outage_started_epoch=[1-9][0-9]*$' <<<"$status"
+          grep -Eq '^last_transport_failure_epoch=[1-9][0-9]*$' <<<"$status"
+          sid2=22222222222222222222222222222222
+          if sudo /opt/manager/modules/hive_leases.sh --acquire-node resilience wireguard client-b device-b "$sid2" 60 >/tmp/new.out 2>/tmp/new.err; then
+            echo 'new admission bypassed authority outage' >&2
+            exit 1
+          fi
+          grep -q 'fail-closed' /tmp/new.err
+          sudo grep -q '"event":"node-authority-outage"' /var/log/manager/hive-lease-audit.jsonl
+
+      - name: Recover existing authority generation without losing lease
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo systemctl start manager-hive-lease-controller.service
+          probe=""
+          for _ in {1..20}; do
+            if probe="$(sudo manager hive lease node probe 2>/tmp/recover.err)"; then
+              break
+            fi
+            sleep 0.25
+          done
+          test -n "$probe"
+          grep -q '^authority_state=healthy$' <<<"$probe"
+          grep -q '^recovery_count=1$' <<<"$probe"
+          grep -Eq '^last_recovery_epoch=[1-9][0-9]*$' <<<"$probe"
+          sid1=11111111111111111111111111111111
+          sudo /opt/manager/modules/hive_leases.sh --heartbeat-node resilience "$sid1" 60 >/dev/null
+          sudo manager hive lease controller list resilience | grep -q "$sid1"
+          sudo grep -q '"event":"node-authority-recovered"' /var/log/manager/hive-lease-audit.jsonl
+
+      - name: Fence stale controller generation and recover only valid authority
+        shell: bash
+        run: |
+          set -euxo pipefail
+          seen="$(cat /tmp/seen.epoch)"
+          test "$seen" -ge 2
+          sudo systemctl stop manager-hive-lease-controller.service
+          sudo python3 - "$seen" <<'PY'
+          from pathlib import Path
+          import sys
+          path=Path('/etc/manager/hive/controller/leases/controller.conf')
+          seen=int(sys.argv[1]); stale=max(1, seen-1)
+          lines=[]
+          for line in path.read_text().splitlines():
+              if line.startswith('authority_epoch='):
+                  line=f'authority_epoch={stale}'
+              lines.append(line)
+          path.write_text('\n'.join(lines)+'\n')
+          PY
+          sudo systemctl start manager-hive-lease-controller.service
+          stale_rc=0
+          for _ in {1..20}; do
+            set +e
+            sudo manager hive lease node probe >/tmp/stale.out 2>/tmp/stale.err
+            stale_rc=$?
+            set -e
+            if (( stale_rc == 70 )); then
+              break
+            fi
+            if (( stale_rc != 69 )); then
+              cat /tmp/stale.err >&2
+              echo "unexpected stale probe rc=$stale_rc" >&2
+              exit 1
+            fi
+            sleep 0.25
+          done
+          test "$stale_rc" -eq 70
+          grep -q 'antiga/fenced' /tmp/stale.err
+          status="$(sudo manager hive lease node status)"
+          grep -q '^authority_state=fenced$' <<<"$status"
+          grep -q "^seen_authority_epoch=${seen}$" <<<"$status"
+          sudo grep -q '"event":"node-authority-fenced"' /var/log/manager/hive-lease-audit.jsonl
+
+          sudo systemctl stop manager-hive-lease-controller.service
+          sudo python3 - "$seen" <<'PY'
+          from pathlib import Path
+          import sys
+          path=Path('/etc/manager/hive/controller/leases/controller.conf')
+          seen=int(sys.argv[1]); lines=[]
+          for line in path.read_text().splitlines():
+              if line.startswith('authority_epoch='):
+                  line=f'authority_epoch={seen}'
+              lines.append(line)
+          path.write_text('\n'.join(lines)+'\n')
+          PY
+          sudo systemctl start manager-hive-lease-controller.service
+          probe=""
+          for _ in {1..20}; do
+            if probe="$(sudo manager hive lease node probe 2>/tmp/restore.err)"; then
+              break
+            fi
+            sleep 0.25
+          done
+          test -n "$probe"
+          grep -q '^authority_state=healthy$' <<<"$probe"
+          grep -q '^recovery_count=2$' <<<"$probe"
+          sid1=11111111111111111111111111111111
+          sudo /opt/manager/modules/hive_leases.sh --heartbeat-node resilience "$sid1" 60 >/dev/null
+
+      - name: Drain blocks new placement without revoking healthy existing lease
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node="$(cat /tmp/node.id)"
+          sudo manager hive node placement "$node" BR-SP-A BR BR-SP PREMIUM >/dev/null
+          sudo mkdir -p /etc/manager/hive/controller/health /var/lib/manager/hive-health/nodes
+          printf 'version=1\ndegraded_after_seconds=180\noffline_after_seconds=300\n' | sudo tee /etc/manager/hive/controller/health/controller.conf >/dev/null
+          now="$(date +%s)"
+          sudo python3 - "$now" "$node" <<'PY'
+          import json,sys
+          now=int(sys.argv[1]); node=sys.argv[2]; conf={}
+          for line in open(f'/etc/manager/hive/controller/nodes/{node}.conf'):
+              if '=' in line:
+                  k,v=line.rstrip().split('=',1); conf[k]=v
+          obs={'version':1,'node_id':node,'node_epoch':int(conf['node_epoch']),'issued_at':now,'received_at':now,'source':'ci',
+               'base_state':'HEALTHY','base_reason':'ok','metrics':{'sessions':1,'max_sessions':100,'capacity':10,'weight':1,
+               'previous_rtt_ms':10,'protocols':['ssh','wireguard','openvpn'],'service_ssh':'active','service_wireguard':'active','service_openvpn':'active'}}
+          open(f'/var/lib/manager/hive-health/nodes/{node}.json','w').write(json.dumps(obs,sort_keys=True,separators=(',',':')))
+          PY
+          sudo chmod 600 /var/lib/manager/hive-health/nodes/*.json
+          sid1=11111111111111111111111111111111
+          sudo manager hive lease controller list resilience | grep -q "$sid1"
+          sudo manager hive node drain "$node" maintenance >/dev/null
+          sudo manager hive lease controller list resilience | grep -q "$sid1"
+          sudo manager hive lease limit set candidate 1 >/dev/null
+          if sudo manager hive lease controller grant candidate wireguard BR-SP PREMIUM sticky-candidate '*' candidate-device 60 >/tmp/drain.out 2>/tmp/drain.err; then
+            echo 'drained node received a new placement' >&2
+            exit 1
+          fi
+          sudo manager hive node undrain "$node" >/dev/null
+          grant="$(sudo manager hive lease controller grant candidate wireguard BR-SP PREMIUM sticky-candidate '*' candidate-device 60)"
+          grep -q "^selected_node=${node}$" <<<"$grant"
+          sudo manager hive lease controller revoke candidate ci-cleanup >/dev/null
+          sudo manager hive lease controller revoke resilience ci-cleanup >/dev/null
+
+      - name: Preserve recovery state through detach and reinstall
+        shell: bash
+        run: |
+          set -euxo pipefail
+          before="$(sudo manager hive lease node status | awk -F= '$1=="recovery_count"{print $2}')"
+          test "$before" -ge 2
+          sudo /opt/manager/modules/hive_leases.sh --detach
+          sudo test -f /var/lib/manager/hive-leases/node-authority.state
+          sudo /opt/manager/modules/hive_leases.sh --install
+          after="$(sudo manager hive lease node status | awk -F= '$1=="recovery_count"{print $2}')"
+          test "$after" = "$before"
