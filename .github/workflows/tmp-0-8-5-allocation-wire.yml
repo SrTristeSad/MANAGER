@@ -27,6 +27,6 @@ jobs:
           git diff --check
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add manager install.sh uninstall.sh rollback.sh modules/hive_leases.sh modules/protocol_leases.sh
-          git commit -m 'apply 0.8.5 allocation wiring'
+          git add manager install.sh uninstall.sh rollback.sh modules/hive_leases.sh modules/protocol_leases.sh docs/HIVE.md docs/ROADMAP.md
+          git commit -m 'apply 0.8.5 allocation docs'
           git push origin HEAD:feature/0.8.5-vpn-allocation-foundation
