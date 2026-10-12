@@ -1,79 +1,36 @@
-name: Finalize MANAGER 0.8.4 Release Docs
+name: Validate MANAGER 0.8.4 Release Metadata
 
 on:
+  push:
+    branches: [main]
   pull_request:
-    types: [reopened]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release-docs:
-    if: github.head_ref == 'release/0.8.4' && github.event.pull_request.head.repo.full_name == github.repository
+  release-metadata:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.head_ref }}
-          fetch-depth: 0
-      - name: Remove stale 0.8.3 release wording
+
+      - name: Verify 0.8.4 version and release documentation
         shell: bash
         run: |
           set -euxo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          p=Path('README.md'); t=p.read_text()
-          old='''0.8.3  scheduler / drain / seleção de nó                             ✅
-0.8.4  autoridade de leases globais                                  próximo
-0.8.5  VPN allocation / login global'''
-          new='''0.8.3  scheduler / drain / seleção de nó                             ✅
-0.8.4  autoridade de leases globais                                  ✅
-0.8.5  VPN allocation / login global                                 próximo'''
-          if old not in t: raise SystemExit('README roadmap target missing')
-          t=t.replace(old,new,1)
-          old='''O CI cobre syntax/ShellCheck, lifecycle, Connection/Session Engine, products/quotas, IPv6, Automation v2 e Colmeia. A 0.8.3 possui workflow dedicado `Hive Scheduler and Drain`, cobrindo:
-
-- contrato público `manager hive node ...`;
-- placement controller-authoritative e aliases de nó;
-- weighted least-loaded com capacidade/peso;
-- sticky affinity;
-- drain por nome amigável sem alterar sessões existentes;
-- failover quando o sticky deixa de ser elegível;
-- filtro por health, protocolo, região, pool e node scope;
-- audit de seleção/drain/undrain;
-- `global_lease_authority=0` como fronteira explícita;
-- detach preservando placement/sticky;
-- purge removendo estado/auditoria do scheduler.'''
-          new='''O CI cobre syntax/ShellCheck, lifecycle, Connection/Session Engine, products/quotas, IPv6, Automation v2 e Colmeia. A 0.8.4 mantém o gate `Hive Scheduler and Drain` e adiciona `Hive Global Lease Authority`, cobrindo:
-
-- scheduler/placement/sticky/drain/failover da 0.8.3;
-- dois nós enrolled disputando o mesmo `max_sessions_global`;
-- Maria com limite global 1 sem conseguir manter sessão simultânea em outro nó;
-- TLS 1.3 pinado, assinatura Ed25519, nonce e fencing por `node_epoch`/`authority_epoch`;
-- grant que combina seleção do scheduler e reserva global antes do claim;
-- revogação/epoch invalidando lease antiga;
-- enforcement real pelo Protocol Lease Bridge para SSH, WireGuard e OpenVPN;
-- novas sessões fail-closed durante outage;
-- grace limitado apenas para sessão já autorizada;
-- uninstall/reinstall preservando política/estado e purge removendo a autoridade global.'''
-          if old not in t: raise SystemExit('README CI target missing')
-          p.write_text(t.replace(old,new,1))
-
-          p=Path('docs/HIVE.md'); t=p.read_text()
-          t=t.replace('Accounting global continua fora da 0.8.3.','Accounting global continua fora da 0.8.4.',1)
-          p.write_text(t)
-          PY
-          grep -q '0.8.4  autoridade de leases globais.*✅' README.md
-          grep -q 'Hive Global Lease Authority' README.md
-          ! grep -q 'global_lease_authority=0' README.md
+          test "$(cat VERSION)" = "0.8.4"
+          grep -q 'Versão atual: \*\*0.8.4\*\*' README.md
+          grep -q '0.8.4.*autoridade global de leases' README.md
+          grep -q '^## \[0.8.4\] - 2026-10-12$' CHANGELOG.md
+          grep -q '^## 15\. Autoridade global de leases — 0\.8\.4$' docs/HIVE.md
           grep -q 'Accounting global continua fora da 0.8.4' docs/HIVE.md
-      - name: Commit final documentation cleanup
+          ! grep -q 'Accounting global continua fora da 0.8.3' docs/HIVE.md
+          grep -q 'WireGuard.*reconcil' docs/HIVE.md
+          grep -q 'global_accounting=0' docs/HIVE.md
+
+      - name: Keep 0.8.5 outside the 0.8.4 release gate
         shell: bash
         run: |
           set -euxo pipefail
-          git config user.name github-actions
-          git config user.email github-actions@github.com
-          git add README.md docs/HIVE.md
-          git commit -m 'docs: align README and Hive guide with 0.8.4'
-          git push origin HEAD:${{ github.head_ref }}
+          grep -q '^## Próxima etapa — 0.8.5$' docs/HIVE.md
+          grep -q '0.8.5.*VPN allocation / login global' CHANGELOG.md
