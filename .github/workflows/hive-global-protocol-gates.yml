@@ -1,0 +1,134 @@
+name: Hive Global Protocol Gates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hive-global-protocol-gates:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install and initialize global lease authority
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo manager hive controller init >/dev/null
+          sudo manager hive lease controller init >/dev/null
+          sudo manager hive lease controller enable 127.0.0.1 19446 >/tmp/lease-enable
+          controller_fp="$(sudo manager hive controller fingerprint)"
+          lease_fp="$(sudo manager hive lease controller status | awk -F= '$1=="tls_fingerprint"{print $2}')"
+          printf '%s\n' "$lease_fp" | grep -q '^SHA256:[a-f0-9]\{64\}$'
+          sudo manager hive request /tmp/protocol-node.request.json >/dev/null
+          sudo manager hive controller approve /tmp/protocol-node.request.json /tmp/protocol-node.bundle.json >/dev/null
+          sudo manager hive accept /tmp/protocol-node.bundle.json "$controller_fp" >/dev/null
+          sudo manager hive lease node configure 127.0.0.1 19446 "$lease_fp" 30 >/dev/null
+          sudo systemctl is-active --quiet manager-hive-lease-controller.service
+
+      - name: Gate OpenVPN client-connect through global lease authority
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo systemctl disable --now manager-openvpn-lease-queue.path >/dev/null 2>&1 || true
+          sudo systemctl stop manager-openvpn-lease-queue.service >/dev/null 2>&1 || true
+          sudo mkdir -p /etc/manager/openvpn/meta
+          printf 'client=ovpn-ci\n' | sudo tee /etc/manager/openvpn/meta/ovpn-ci.meta >/dev/null
+          sudo /opt/manager/modules/connection_engine.sh --create ovpnglobal '' 0 10 openvpn
+          sudo /opt/manager/modules/connection_engine.sh --bind ovpnglobal openvpn ovpn-ci
+          sudo manager hive lease limit set ovpnglobal 1 TEST >/dev/null
+
+          req=/run/manager-protocol-leases/openvpn-requests
+          resp=/run/manager-protocol-leases/openvpn-responses
+          cat <<'EOF' | sudo tee "$req/request.ALLOW1.req" >/dev/null
+          event=client-connect
+          client=ovpn-ci
+          remote=198.51.100.10
+          port=41000
+          EOF
+          sudo /opt/manager/modules/protocol_leases.sh --process-openvpn-requests
+          test "$(sudo cat "$resp/request.ALLOW1.resp")" = ALLOW
+          test "$(sudo manager hive lease controller list ovpnglobal | grep -c '^ovpnglobal|' || true)" = 1
+          test "$(sudo /opt/manager/modules/session_engine.sh --list ovpnglobal | grep -c '^ovpnglobal' || true)" = 1
+
+          cat <<'EOF' | sudo tee "$req/request.DENY2.req" >/dev/null
+          event=client-connect
+          client=ovpn-ci
+          remote=198.51.100.11
+          port=41001
+          EOF
+          sudo /opt/manager/modules/protocol_leases.sh --process-openvpn-requests
+          test "$(sudo cat "$resp/request.DENY2.resp")" = DENY
+          test "$(sudo manager hive lease controller list ovpnglobal | grep -c '^ovpnglobal|' || true)" = 1
+          test "$(sudo /opt/manager/modules/session_engine.sh --list ovpnglobal | grep -c '^ovpnglobal' || true)" = 1
+
+          sudo manager hive lease controller revoke ovpnglobal protocol-gate-cleanup >/dev/null
+          sudo /opt/manager/modules/protocol_leases.sh --reconcile || true
+          test "$(sudo /opt/manager/modules/session_engine.sh --list ovpnglobal | grep -c '^ovpnglobal' || true)" = 0
+
+      - name: Enforce WireGuard global lease on reconciliation
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo mkdir -p /etc/manager/wireguard/clients /tmp/manager-fakebin
+          cat <<'EOF' | sudo tee /etc/manager/wireguard/clients/wg-ci.meta >/dev/null
+          ip=10.66.0.10
+          public_key=WGCI_PUBLIC_KEY
+          EOF
+          sudo touch /etc/manager/wireguard/clients/wg-ci.conf
+          sudo /opt/manager/modules/connection_engine.sh --create wgglobal '' 0 10 wireguard
+          sudo /opt/manager/modules/connection_engine.sh --bind wgglobal wireguard wg-ci
+          sudo manager hive lease limit set wgglobal 1 TEST >/dev/null
+
+          cat <<'EOF' | sudo tee /tmp/manager-fakebin/wg >/dev/null
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [[ "${1:-}" == show && "${2:-}" == wg0 && $# -eq 2 ]]; then
+            exit 0
+          fi
+          if [[ "${1:-}" == show && "${2:-}" == wg0 && "${3:-}" == latest-handshakes ]]; then
+            printf 'WGCI_PUBLIC_KEY\t%s\n' "$(date +%s)"
+            exit 0
+          fi
+          if [[ "${1:-}" == set && "${2:-}" == wg0 ]]; then
+            printf '%s\n' "$*" >>/tmp/manager-fake-wg.log
+            exit 0
+          fi
+          exit 1
+          EOF
+          cat <<'EOF' | sudo tee /tmp/manager-fakebin/iptables >/dev/null
+          #!/usr/bin/env bash
+          set -euo pipefail
+          state=/tmp/manager-fake-iptables.state
+          case "${1:-}" in
+            -C) [[ -f "$state" ]] ;;
+            -I) touch "$state" ;;
+            -D) rm -f "$state" ;;
+            *) exit 0 ;;
+          esac
+          EOF
+          sudo chmod 0755 /tmp/manager-fakebin/wg /tmp/manager-fakebin/iptables
+
+          blocker=dddddddddddddddddddddddddddddddd
+          sudo /opt/manager/modules/hive_leases.sh --acquire-node wgglobal wireguard blocker blocker-device "$blocker" 60 >/dev/null
+          test "$(sudo manager hive lease controller list wgglobal | grep -c '^wgglobal|' || true)" = 1
+
+          test_path="/tmp/manager-fakebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          sudo env PATH="$test_path" /opt/manager/modules/protocol_leases.sh --reconcile || true
+          sudo test -f /tmp/manager-fake-iptables.state
+          test -z "$(sudo grep -l '^protocol=wireguard$' /run/manager-protocol-leases/maps/*.map 2>/dev/null || true)"
+          test "$(sudo /opt/manager/modules/session_engine.sh --list wgglobal | grep -c '^wgglobal' || true)" = 0
+          test "$(sudo manager hive lease controller list wgglobal | grep -c '^wgglobal|' || true)" = 1
+
+          sudo /opt/manager/modules/hive_leases.sh --release-node wgglobal "$blocker" >/dev/null
+          sudo env PATH="$test_path" /opt/manager/modules/protocol_leases.sh --reconcile
+          sudo test ! -e /tmp/manager-fake-iptables.state
+          test -n "$(sudo grep -l '^protocol=wireguard$' /run/manager-protocol-leases/maps/*.map 2>/dev/null || true)"
+          test "$(sudo /opt/manager/modules/session_engine.sh --list wgglobal | grep -c '^wgglobal' || true)" = 1
+          test "$(sudo manager hive lease controller list wgglobal | grep -c '^wgglobal|' || true)" = 1
