@@ -367,7 +367,9 @@ status() {
   local enabled=0 active=0 node="" epoch=""
   init_dirs
   if node_conf_valid; then enabled=1; node="$(read_kv "$NODE_CONF" node_id)"; epoch="$(read_kv "$NODE_CONF" node_epoch)"; fi
-  systemctl is-active --quiet manager-hive-accounting-sync.timer 2>/dev/null && active=1 || true
+  if systemctl is-active --quiet manager-hive-accounting-sync.timer 2>/dev/null; then
+    active=1
+  fi
   printf 'contract=manager-hive-global-accounting-v1\nglobal_accounting=%s\nnode_id=%s\nnode_epoch=%s\ntransport=lease-control-ed25519-tls13\ningestion=cumulative-per-node-delta-dedup\nbilling_authoritative=1\nmetered_protocols=wireguard,openvpn\nssh_bytes_supported=0\nsync_timer_active=%s\n' "$enabled" "$node" "$epoch" "$active"
 }
 
