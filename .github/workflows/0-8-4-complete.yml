@@ -2,7 +2,7 @@ name: Complete MANAGER 0.8.4 Authority
 
 on:
   pull_request:
-    types: [synchronize]
+    types: [synchronize, reopened]
 
 permissions:
   contents: write
