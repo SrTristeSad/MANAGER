@@ -299,10 +299,18 @@ Nova fundação de roteamento explícito por nó:
 - requisição remota reutiliza a chave Ed25519 do próprio controlador da Colmeia como principal reservado `hive-controller`; a chave privada não é distribuída;
 - nó revalida controller_id, node_epoch e action_scope antes da idempotência/dispatcher da Automation v2.
 
+Roteamento por pool implementado:
+
+- o controlador filtra rotas assinadas por `action_scope` e passa apenas esses node_ids como `node_scope` ao scheduler 0.8.3;
+- seleção por pool exige nó enrolled, `HEALTHY`, fora de drain, com protocolo/serviço ativo e capacidade disponível;
+- weighted least-loaded, RTT secundário e sticky/failover continuam sendo calculados por uma única autoridade de scheduler;
+- `manager hive remote controller select POOL PROTOCOL ACTION [STICKY]` expõe a decisão sem executar ação;
+- `manager hive remote controller call-pool POOL PROTOCOL ACTION ...` seleciona e executa a mesma operação tipada, revalidando rota/node_epoch após a seleção;
+- nós sem rota ou sem permissão para a ação nunca entram no conjunto de candidatos.
+
 Ainda pendente para fechar 0.8.8:
 
-- seleção/roteamento por pool sobre múltiplos nós enrolled/saudáveis;
-- gate end-to-end de roteamento entre controlador e múltiplos nós;
+- gate end-to-end final de múltiplos nós/pool + regressão completa;
 - fechamento formal da release 0.8.8;
 - integração futura com Telegram sem criar uma segunda autoridade paralela.
 

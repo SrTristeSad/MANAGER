@@ -991,4 +991,7 @@ Fronteiras de segurança:
 - o nó revalida a mesma política antes do dispatcher e antes de replay idempotente;
 - TLS permanece 1.3 com fingerprint SHA-256 pinado;
 - a chave privada Ed25519 do controlador permanece apenas no controlador;
-- esta fundação roteia por `node_id`; seleção por pool continua pendente para fechar a 0.8.8.
+- `controller select POOL PROTOCOL ACTION [STICKY]` filtra primeiro pelas rotas assinadas que permitem a ação e entrega esse `node_scope` ao scheduler 0.8.3;
+- `controller call-pool` usa exatamente a seleção `HEALTHY`, weighted least-loaded, drain e sticky do scheduler antes de executar a mesma chamada tipada;
+- o scheduler nunca pode devolver um nó fora do conjunto de rotas válidas para a ação; a rota/node_epoch são revalidados depois da seleção para fechar corridas;
+- nenhum algoritmo paralelo de saúde/carga foi criado para o roteamento remoto.
