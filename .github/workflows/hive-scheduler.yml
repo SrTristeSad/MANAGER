@@ -25,7 +25,8 @@ jobs:
           grep -q '^contract=manager-hive-scheduler-v1$' <<<"$out"
           grep -q '^scheduler=weighted-least-loaded$' <<<"$out"
           grep -q '^drain_runtime=1$' <<<"$out"
-          grep -q '^global_lease_authority=0$' <<<"$out"
+          grep -q '^global_lease_authority=1$' <<<"$out"
+          grep -q '^global_max_sessions=1$' <<<"$out"
 
       - name: Public manager hive node surface
         shell: bash
@@ -34,7 +35,8 @@ jobs:
           out="$(sudo manager hive node status)"
           grep -q '^contract=manager-hive-scheduler-v1$' <<<"$out"
           grep -q '^scheduler=weighted-least-loaded$' <<<"$out"
-          grep -q '^global_lease_authority=0$' <<<"$out"
+          grep -q '^global_lease_authority=1$' <<<"$out"
+          grep -q '^global_max_sessions=1$' <<<"$out"
           if sudo manager hive node select invalid-protocol; then
             echo 'public scheduler CLI accepted invalid protocol' >&2
             exit 1
@@ -119,7 +121,7 @@ jobs:
           grep -q '^selected_node=node-2222222222222222$' <<<"$first"
           grep -q '^selection_reason=weighted-least-loaded$' <<<"$first"
           grep -q '^sticky=1$' <<<"$first"
-          grep -q '^global_lease_authority=0$' <<<"$first"
+          grep -q '^global_lease_authority=1$' <<<"$first"
 
           sudo python3 - <<'PY'
           import json
