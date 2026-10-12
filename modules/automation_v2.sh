@@ -305,6 +305,7 @@ show_status() {
   printf 'tls_server_pinning=sha256\nremote_local_root=0\n'
   printf 'idempotency=1\naudit=1\nsecret_replay=0\n'
   printf 'remote_scoped_rbac=1\nremote_node_scope=1\nremote_pool_scope=1\nremote_action_scope=1\n'
+  printf 'hive_controller_remote_auth=1\nhive_controller_private_key_distribution=0\n'
 }
 
 run_backend() {
@@ -346,6 +347,13 @@ NODE_USAGE = os.path.join(MANAGER_HOME, "modules", "node_usage.sh")
 RESELLERS_DIR = os.path.join(MANAGER_ETC, "access", "resellers")
 IDENTITY_DIR = os.path.join(MANAGER_ETC, "connection", "identities")
 NODE_CONF = os.path.join(MANAGER_ETC, "connection", "node", "node.conf")
+HIVE_CONTROLLER_ID = "hive-controller"
+HIVE_NODE_CONTROLLER_PUB = os.path.join(MANAGER_ETC, "hive", "node", "controller.pub")
+HIVE_NODE_ENROLLMENT = os.path.join(MANAGER_ETC, "hive", "node", "enrollment.conf")
+HIVE_CONTROLLER_CONF = os.path.join(MANAGER_ETC, "hive", "controller", "controller.conf")
+HIVE_CONTROLLER_KEY = os.path.join(MANAGER_ETC, "hive", "controller", "controller.key")
+HIVE_CONTROLLER_PUB = os.path.join(MANAGER_ETC, "hive", "controller", "controller.pub")
+HIVE_CONTROLLER_POLICY = os.path.join(STATE_DIR, "hive-controller.conf")
 CONTRACT = "manager-automation-v2-local-v1"
 VERSION = 1
 MAX_REQUEST = 65536
@@ -459,6 +467,8 @@ def identity_record(identity_id):
 def load_principal(principal_id):
     if not isinstance(principal_id, str) or not PRINCIPAL_RE.fullmatch(principal_id):
         raise PermissionError("principal_id inválido")
+    if principal_id == HIVE_CONTROLLER_ID:
+        return load_hive_controller_principal()
     data = read_conf(os.path.join(PRINCIPALS_DIR, principal_id + ".conf"), strict=True)
     if data is None or data.get("principal_id") != principal_id:
         raise PermissionError("principal desconhecido ou inconsistente")
@@ -524,6 +534,61 @@ def scope_allows(scope, value):
     return scope == "*" or (bool(value) and value in set(scope.split(",")))
 
 
+def load_hive_controller_principal():
+    policy = read_conf(HIVE_CONTROLLER_POLICY, strict=True)
+    enrollment = read_conf(HIVE_NODE_ENROLLMENT, strict=True)
+    if not policy or policy.get("version") != "1" or policy.get("enabled") != "1":
+        raise PermissionError("autoridade remota do controlador não está habilitada neste nó")
+    if not enrollment or enrollment.get("version") != "1":
+        raise PermissionError("nó não possui enrollment válido para autoridade remota")
+    ctx = local_node_context()
+    node_id = ctx.get("node_id", "")
+    if not node_id or policy.get("node_id") != node_id or enrollment.get("node_id") != node_id:
+        raise PermissionError("política remota não corresponde ao node_id local")
+    controller_id = enrollment.get("controller_id", "")
+    if not re.fullmatch(r"controller-[a-f0-9]{16}", controller_id) or policy.get("controller_id") != controller_id:
+        raise PermissionError("política remota pertence a outro controlador")
+    try:
+        policy_epoch = int(policy.get("node_epoch", "0"))
+        enrollment_epoch = int(enrollment.get("node_epoch", "0"))
+    except ValueError as exc:
+        raise PermissionError("node_epoch remoto inválido") from exc
+    if policy_epoch < 1 or policy_epoch != enrollment_epoch:
+        raise PermissionError("política remota cercada por node_epoch")
+    action_scope = policy.get("action_scope", "")
+    if not action_scope or action_scope == "*":
+        raise PermissionError("controlador Hive exige action_scope explícito")
+    validate_scope(action_scope, "action")
+    return {"principal_id": HIVE_CONTROLLER_ID, "role": "admin", "subject": "*", "products": "*",
+            "node_scope": node_id, "pool_scope": ctx.get("pool", "") or "*", "action_scope": action_scope}
+
+
+def hive_controller_public(key_id):
+    if not isinstance(key_id, str) or not KEY_ID_RE.fullmatch(key_id):
+        raise PermissionError("key_id do controlador Hive inválido")
+    enrollment = read_conf(HIVE_NODE_ENROLLMENT, strict=True)
+    if not enrollment:
+        raise PermissionError("enrollment Hive ausente")
+    try:
+        st = os.lstat(HIVE_NODE_CONTROLLER_PUB)
+    except FileNotFoundError as exc:
+        raise PermissionError("chave pública do controlador Hive ausente") from exc
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or stat.S_IMODE(st.st_mode) & 0o077:
+        raise PermissionError("chave pública do controlador Hive insegura")
+    proc = subprocess.run(["openssl", "pkey", "-pubin", "-in", HIVE_NODE_CONTROLLER_PUB, "-outform", "DER"],
+                          stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, check=False)
+    if proc.returncode != 0 or not proc.stdout:
+        raise PermissionError("chave pública do controlador Hive inválida")
+    digest = hashlib.sha256(proc.stdout).digest()
+    expected_key_id = "ed25519-" + digest.hex()[:16]
+    expected_controller_id = "controller-" + digest.hex()[:16]
+    expected_hive_fp = "SHA256:" + digest.hex()
+    if key_id != expected_key_id or enrollment.get("controller_id") != expected_controller_id or enrollment.get("controller_fingerprint") != expected_hive_fp:
+        raise PermissionError("identidade pública do controlador Hive não confere")
+    fingerprint = "SHA256:" + base64.b64encode(digest).decode("ascii").rstrip("=")
+    return HIVE_NODE_CONTROLLER_PUB, fingerprint
+
+
 def canonical_auth_payload(request):
     payload = {"contract": CONTRACT, "version": request.get("version"), "request_id": request.get("request_id"),
                "principal_id": request.get("principal_id"), "action_id": request.get("action_id"),
@@ -532,6 +597,8 @@ def canonical_auth_payload(request):
 
 
 def load_credential(principal_id, key_id):
+    if principal_id == HIVE_CONTROLLER_ID:
+        return hive_controller_public(key_id)
     if not isinstance(key_id, str) or not KEY_ID_RE.fullmatch(key_id):
         raise PermissionError("key_id inválido")
     base = os.path.join(CREDENTIALS_DIR, principal_id)
@@ -995,6 +1062,35 @@ def serve_remote():
             except (ssl.SSLError, ValueError, OSError, json.JSONDecodeError): continue
 
 
+def load_hive_controller_credential():
+    conf = read_conf(HIVE_CONTROLLER_CONF, strict=True)
+    if not conf or conf.get("version") != "1":
+        raise ValueError("controlador Hive não está inicializado")
+    for path in (HIVE_CONTROLLER_KEY, HIVE_CONTROLLER_PUB):
+        try:
+            st = os.lstat(path)
+        except FileNotFoundError as exc:
+            raise ValueError("material de chave do controlador Hive ausente") from exc
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or stat.S_IMODE(st.st_mode) & 0o077:
+            raise PermissionError("material de chave do controlador Hive inseguro")
+    pub_proc = subprocess.run(["openssl", "pkey", "-pubin", "-in", HIVE_CONTROLLER_PUB, "-outform", "DER"],
+                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, check=False)
+    key_proc = subprocess.run(["openssl", "pkey", "-in", HIVE_CONTROLLER_KEY, "-pubout", "-outform", "DER"],
+                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, check=False)
+    if pub_proc.returncode != 0 or key_proc.returncode != 0 or not pub_proc.stdout or pub_proc.stdout != key_proc.stdout:
+        raise PermissionError("par de chaves do controlador Hive inconsistente")
+    digest = hashlib.sha256(pub_proc.stdout).digest()
+    controller_id = "controller-" + digest.hex()[:16]
+    if conf.get("controller_id") != controller_id or conf.get("fingerprint") != "SHA256:" + digest.hex():
+        raise PermissionError("identidade do controlador Hive não confere com a chave")
+    with open(HIVE_CONTROLLER_KEY, "r", encoding="utf-8") as fh:
+        private_pem = fh.read()
+    return {"version": 1, "principal_id": HIVE_CONTROLLER_ID,
+            "key_id": "ed25519-" + digest.hex()[:16], "algorithm": "ed25519",
+            "fingerprint": "SHA256:" + base64.b64encode(digest).decode("ascii").rstrip("="),
+            "private_key_pem": private_pem}
+
+
 def load_client_credential(path):
     try: st = os.lstat(path)
     except FileNotFoundError as exc: raise ValueError(f"credencial não encontrada: {path}") from exc
@@ -1067,9 +1163,14 @@ def send_remote(raw, endpoint, expected_fp):
 
 def call_client(argv):
     principal_id = credential_file = remote = server_fingerprint = None
+    hive_controller = False
     args = list(argv)
     while args:
         item = args[0]
+        if item == "--hive-controller":
+            hive_controller = True
+            args = args[1:]
+            continue
         if item in {"--principal", "--credential", "--remote", "--server-fingerprint"}:
             if len(args) < 2: raise ValueError(f"{item} exige valor")
             value, args = args[1], args[2:]
@@ -1089,10 +1190,14 @@ def call_client(argv):
                 break
         if matched: continue
         break
-    credential = load_client_credential(credential_file) if credential_file else None
+    if hive_controller and (credential_file is not None or principal_id is not None):
+        raise ValueError("--hive-controller não pode ser combinado com --principal/--credential")
+    credential = load_hive_controller_credential() if hive_controller else (load_client_credential(credential_file) if credential_file else None)
     if credential:
         if principal_id is not None and principal_id != credential["principal_id"]: raise ValueError("--principal não corresponde ao principal da credencial")
         principal_id = credential["principal_id"]
+    if hive_controller and not remote:
+        raise ValueError("--hive-controller exige transporte --remote")
     if principal_id is None: principal_id = LOCAL_ROOT_ID
     if not PRINCIPAL_RE.fullmatch(principal_id): raise ValueError("principal_id inválido")
     if principal_id == LOCAL_ROOT_ID and credential is not None: raise ValueError("local-root usa SO_PEERCRED e não aceita --credential")

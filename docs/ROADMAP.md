@@ -291,10 +291,19 @@ Fundação implementada nesta fase:
 - audit registra os escopos do principal e o contexto local usados na decisão;
 - `local-root` permanece apenas local/Unix e não pode ser convertido em autoridade remota.
 
+Nova fundação de roteamento explícito por nó:
+
+- nó enrolled publica anúncio assinado contendo endpoint IP literal, fingerprint TLS, `action_scope`, `node_epoch` e `route_epoch`;
+- controlador aceita rota somente para node_id registrado/ativo e cerca replay/rollback pelo `route_epoch`;
+- `manager hive remote controller call NODE_ID ACTION ...` resolve endpoint/fingerprint apenas pelo registro assinado, nunca pela linha de comando;
+- requisição remota reutiliza a chave Ed25519 do próprio controlador da Colmeia como principal reservado `hive-controller`; a chave privada não é distribuída;
+- nó revalida controller_id, node_epoch e action_scope antes da idempotência/dispatcher da Automation v2.
+
 Ainda pendente para fechar 0.8.8:
 
-- superfície de roteamento/controlador para selecionar um nó/pool e encaminhar uma operação tipada sem distribuir shell;
+- seleção/roteamento por pool sobre múltiplos nós enrolled/saudáveis;
 - gate end-to-end de roteamento entre controlador e múltiplos nós;
+- fechamento formal da release 0.8.8;
 - integração futura com Telegram sem criar uma segunda autoridade paralela.
 
 ### 0.8.9 — rotação de chaves e anti-replay distribuído
