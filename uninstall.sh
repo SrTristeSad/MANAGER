@@ -45,6 +45,19 @@ remove_protocol_pam_fallback() {
   rm -f "$tmp"
 }
 
+# Allocation 0.8.5 não possui daemon. Tickets/epochs sobrevivem ao uninstall normal
+# e são removidos apenas no purge, junto da autoridade global que os sustenta.
+if [[ -x /opt/manager/modules/hive_allocations.sh ]]; then
+  if $PURGE; then
+    /opt/manager/modules/hive_allocations.sh --purge >/dev/null 2>&1 || true
+  else
+    /opt/manager/modules/hive_allocations.sh --detach >/dev/null 2>&1 || true
+  fi
+elif $PURGE; then
+  rm -rf /etc/manager/hive/allocations /var/lib/manager/hive-allocations
+  rm -f /var/log/manager/hive-allocation-audit.jsonl
+fi
+
 # A autoridade global de leases sai antes dos bridges de protocolo. Configuração,
 # limites e leases persistentes sobrevivem ao uninstall normal; --purge remove tudo.
 if [[ -x /opt/manager/modules/hive_leases.sh ]]; then

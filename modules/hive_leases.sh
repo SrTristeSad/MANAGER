@@ -660,6 +660,9 @@ def parse_params(params, require_full=True):
 
 def acquire_locked(node_id, node_epoch, params):
     identity_id, local_session_id, protocol, resource, device, ttl = parse_params(params, True)
+    exact_global_id = params.get("global_lease_id", "") if isinstance(params, dict) else ""
+    if exact_global_id and not SESSION_RE.fullmatch(str(exact_global_id)):
+        raise LeaseError(64, "invalid-global-lease-id")
     maximum, policy = get_limit(identity_id)
     if maximum < 1:
         raise LeaseError(67, "no-global-policy")
@@ -671,13 +674,37 @@ def acquire_locked(node_id, node_epoch, params):
         actual = (existing.get("identity_id"), existing.get("protocol"), existing.get("resource"), existing.get("device_id"))
         if actual != expected:
             raise LeaseError(65, "local-session-conflict")
+        if exact_global_id and existing.get("global_lease_id") != exact_global_id:
+            raise LeaseError(65, "exact-grant-session-conflict")
         existing["heartbeat_epoch"] = now
         existing["expires_epoch"] = now + ttl
         atomic_write(path, json.dumps(existing, sort_keys=True, separators=(",", ":")) + "\n")
         audit("renew", identity_id=identity_id, node_id=node_id, global_lease_id=existing.get("global_lease_id"),
               local_session_id=local_session_id)
         return existing
-    # A grant reserved by this controller can be claimed only by its selected node/protocol/device.
+    # 0.8.5 can require one exact controller-issued grant. In that mode there is no
+    # fallback to another reservation or to generic free global capacity.
+    if exact_global_id:
+        reserved_path = lease_path(exact_global_id)
+        reserved = read_json(reserved_path)
+        if not reserved or reserved.get("lease_state") != "reserved":
+            raise LeaseError(69, "exact-global-grant-not-reserved")
+        expected = (identity_id, node_id, int(node_epoch), protocol, device, current_epoch(identity_id))
+        actual = (reserved.get("identity_id"), reserved.get("node_id"), int(reserved.get("node_epoch", 0)),
+                  reserved.get("protocol"), reserved.get("device_id"), int(reserved.get("global_epoch", 0)))
+        if actual != expected:
+            raise LeaseError(67, "exact-global-grant-mismatch")
+        reserved["lease_state"] = "active"
+        reserved["local_session_id"] = local_session_id
+        reserved["resource"] = resource
+        reserved["heartbeat_epoch"] = now
+        reserved["expires_epoch"] = now + ttl
+        atomic_write(reserved_path, json.dumps(reserved, sort_keys=True, separators=(",", ":")) + "\n")
+        audit("grant-claim-exact", identity_id=identity_id, node_id=node_id,
+              global_lease_id=reserved.get("global_lease_id"), local_session_id=local_session_id)
+        return reserved
+
+    # Compatibility path for 0.8.4 callers that did not receive an exact allocation ticket.
     for reserved_path in Path(ACTIVE_DIR).glob("*.json"):
         reserved = read_json(str(reserved_path))
         if not reserved or reserved.get("lease_state") != "reserved":
@@ -899,9 +926,13 @@ def node_request(action, params):
     return answer.get("result", {})
 
 
-def node_acquire(identity_id, protocol, resource, device, local_session_id, ttl):
+def node_acquire(identity_id, protocol, resource, device, local_session_id, ttl, global_lease_id=""):
     params = {"identity_id": validate_identity(identity_id), "protocol": protocol, "resource": resource,
               "device_id": device, "local_session_id": validate_session(local_session_id), "ttl": int(ttl)}
+    if global_lease_id:
+        if not SESSION_RE.fullmatch(str(global_lease_id)):
+            die("global_lease_id inválido.", 64)
+        params["global_lease_id"] = global_lease_id
     result = node_request("acquire", params)
     print(f"global_lease_id={result.get('global_lease_id','')}")
     print(f"global_epoch={result.get('global_epoch','')}")
@@ -1081,7 +1112,7 @@ def purge():
 
 
 def usage():
-    print("Uso: hive_leases.sh {--status|--node-status|--node-configure HOST PORT FP [GRACE]|--node-disable|--controller-init|--controller-status|--controller-enable BIND [PORT]|--controller-disable|--controller-rotate-tls|--controller-grant ID PROTO [REGION] [POOL] [STICKY] [SCOPE] [DEVICE] [TTL]|--limit-set ID MAX [PRODUCT]|--limit-import-local ID|--limit-sync-local|--limit-show ID|--limit-list|--limit-unset ID|--controller-list [ID]|--controller-revoke ID [REASON]|--acquire-node ID PROTO RESOURCE DEVICE SESSION [TTL]|--heartbeat-node ID SESSION [TTL]|--release-node ID SESSION|--serve-controller|--install|--detach|--purge}", file=sys.stderr)
+    print("Uso: hive_leases.sh {--status|--node-status|--node-configure HOST PORT FP [GRACE]|--node-disable|--controller-init|--controller-status|--controller-enable BIND [PORT]|--controller-disable|--controller-rotate-tls|--controller-grant ID PROTO [REGION] [POOL] [STICKY] [SCOPE] [DEVICE] [TTL]|--limit-set ID MAX [PRODUCT]|--limit-import-local ID|--limit-sync-local|--limit-show ID|--limit-list|--limit-unset ID|--controller-list [ID]|--controller-revoke ID [REASON]|--acquire-node ID PROTO RESOURCE DEVICE SESSION [TTL] [GLOBAL_LEASE_ID]|--heartbeat-node ID SESSION [TTL]|--release-node ID SESSION|--serve-controller|--install|--detach|--purge}", file=sys.stderr)
     raise SystemExit(64)
 
 
@@ -1108,7 +1139,10 @@ def main(argv):
     if cmd == "--limit-unset" and len(argv) == 2: unset_limit(argv[1]); return
     if cmd == "--controller-list" and len(argv) <= 2: controller_list(argv[1] if len(argv) == 2 else ""); return
     if cmd == "--controller-revoke" and len(argv) in {2,3}: controller_revoke(argv[1], argv[2] if len(argv) == 3 else "admin"); return
-    if cmd == "--acquire-node" and len(argv) in {6,7}: node_acquire(argv[1], argv[2], argv[3], argv[4], argv[5], argv[6] if len(argv) == 7 else DEFAULT_TTL); return
+    if cmd == "--acquire-node" and len(argv) in {6,7,8}:
+        node_acquire(argv[1], argv[2], argv[3], argv[4], argv[5],
+                     argv[6] if len(argv) >= 7 else DEFAULT_TTL,
+                     argv[7] if len(argv) == 8 else ""); return
     if cmd == "--heartbeat-node" and len(argv) in {3,4}: node_heartbeat(argv[1], argv[2], argv[3] if len(argv) == 4 else DEFAULT_TTL); return
     if cmd == "--release-node" and len(argv) == 3: node_release(argv[1], argv[2]); return
     if cmd == "--serve-controller": serve_controller(); return

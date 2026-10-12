@@ -12,6 +12,8 @@ require_root
 SESSION_ENGINE="$MANAGER_HOME/modules/session_engine.sh"
 GLOBAL_LEASE_MODULE="$MANAGER_HOME/modules/hive_leases.sh"
 GLOBAL_LEASE_CONF="$MANAGER_ETC/hive/leases/node.conf"
+ALLOCATION_MODULE="$MANAGER_HOME/modules/hive_allocations.sh"
+ALLOCATION_CONF="$MANAGER_ETC/hive/allocations/node.conf"
 BRIDGE_RUNTIME="${MANAGER_PROTOCOL_LEASE_RUNTIME:-/run/manager-protocol-leases}"
 MAP_DIR="$BRIDGE_RUNTIME/maps"
 OVPN_REQ_DIR="$BRIDGE_RUNTIME/openvpn-requests"
@@ -152,11 +154,40 @@ global_lease_enabled() {
   [[ "$(awk -F= '$1=="enabled" {print $2; exit}' "$GLOBAL_LEASE_CONF" 2>/dev/null || true)" == 1 ]]
 }
 
+allocation_enabled() {
+  [[ -f "$ALLOCATION_CONF" ]] || return 1
+  [[ "$(awk -F= '$1=="enabled" {print $2; exit}' "$ALLOCATION_CONF" 2>/dev/null || true)" == 1 ]]
+}
+
+allocation_reserve() {
+  local identity="$1" protocol="$2"
+  [[ -x "$ALLOCATION_MODULE" ]] || { err "Allocation 0.8.5 está habilitada, mas hive_allocations.sh não existe."; return 69; }
+  "$ALLOCATION_MODULE" --reserve "$identity" "$protocol"
+}
+
+allocation_commit() {
+  local allocation_id="$1" token="$2" session_id="$3"
+  "$ALLOCATION_MODULE" --commit "$allocation_id" "$token" "$session_id" >/dev/null
+}
+
+allocation_abort() {
+  local allocation_id="$1" token="$2"
+  "$ALLOCATION_MODULE" --abort "$allocation_id" "$token" >/dev/null 2>&1 || true
+}
+
 global_lease_acquire() {
-  local identity="$1" protocol="$2" resource="$3" device="$4" session_id="$5"
+  local identity="$1" protocol="$2" resource="$3" device="$4" session_id="$5" grant_id="${6:-}" grant_device="${7:-}"
+  if allocation_enabled && ! global_lease_enabled; then
+    err "Allocation 0.8.5 exige enforcement global de leases ativo neste nó."
+    return 69
+  fi
   global_lease_enabled || return 0
   [[ -x "$GLOBAL_LEASE_MODULE" ]] || { err "Enforcement global está habilitado, mas hive_leases.sh não existe."; return 69; }
-  "$GLOBAL_LEASE_MODULE" --acquire-node "$identity" "$protocol" "$resource" "$device" "$session_id" "$LEASE_TTL" >/dev/null
+  if [[ -n "$grant_id" ]]; then
+    "$GLOBAL_LEASE_MODULE" --acquire-node "$identity" "$protocol" "$resource" "${grant_device:-$device}" "$session_id" "$LEASE_TTL" "$grant_id" >/dev/null
+  else
+    "$GLOBAL_LEASE_MODULE" --acquire-node "$identity" "$protocol" "$resource" "$device" "$session_id" "$LEASE_TTL" >/dev/null
+  fi
 }
 
 global_lease_grace_seconds() {
@@ -251,20 +282,48 @@ release_matching() {
 }
 
 acquire_managed() {
-  local protocol="$1" resource="$2" device="$3" source_pid="${4:-0}" remote="${5:--}" tty="${6:--}" identity token session_id epoch rc=0
+  local protocol="$1" resource="$2" device="$3" source_pid="${4:-0}" remote="${5:--}" tty="${6:--}"
+  local identity token session_id epoch rc=0 allocation="" allocation_id="" allocation_token="" grant_id="" grant_device=""
   valid_protocol "$protocol" || return 64
   valid_resource "$resource" || return 64
   valid_device "$device" || return 64
   identity="$(find_identity_by_binding "$protocol" "$resource" 2>/dev/null || true)"
   [[ -n "$identity" ]] || return 0
-  token="$("$SESSION_ENGINE" --acquire "$identity" "$protocol" "$resource" "$device" "$LEASE_TTL")" || return $?
+
+  if allocation_enabled; then
+    allocation="$(allocation_reserve "$identity" "$protocol")" || return $?
+    allocation_id="$(token_value "$allocation" allocation_id)"
+    allocation_token="$(token_value "$allocation" reservation_token)"
+    grant_id="$(token_value "$allocation" global_lease_id)"
+    grant_device="$(token_value "$allocation" grant_device)"
+    if [[ ! "$allocation_id" =~ ^[a-f0-9]{32}$ || ! "$allocation_token" =~ ^[a-f0-9]{32,64}$ || ! "$grant_id" =~ ^[a-f0-9]{32}$ ]]; then
+      err "Allocation local retornou contrato inválido."
+      return 70
+    fi
+  fi
+
+  token="$("$SESSION_ENGINE" --acquire "$identity" "$protocol" "$resource" "$device" "$LEASE_TTL")" || {
+    rc=$?
+    [[ -z "$allocation_id" ]] || allocation_abort "$allocation_id" "$allocation_token"
+    return "$rc"
+  }
   session_id="$(token_value "$token" session_id)"
   epoch="$(token_value "$token" epoch)"
-  [[ "$session_id" =~ ^[a-f0-9]{32}$ && "$epoch" =~ ^[1-9][0-9]*$ ]] || return 70
-  global_lease_acquire "$identity" "$protocol" "$resource" "$device" "$session_id" || rc=$?
+  if [[ ! "$session_id" =~ ^[a-f0-9]{32}$ || ! "$epoch" =~ ^[1-9][0-9]*$ ]]; then
+    [[ -z "$allocation_id" ]] || allocation_abort "$allocation_id" "$allocation_token"
+    return 70
+  fi
+  global_lease_acquire "$identity" "$protocol" "$resource" "$device" "$session_id" "$grant_id" "$grant_device" || rc=$?
   if (( rc != 0 )); then
     "$SESSION_ENGINE" --release "$session_id" "$epoch" >/dev/null 2>&1 || true
+    [[ -z "$allocation_id" ]] || allocation_abort "$allocation_id" "$allocation_token"
     return "$rc"
+  fi
+  if [[ -n "$allocation_id" ]] && ! allocation_commit "$allocation_id" "$allocation_token" "$session_id"; then
+    global_lease_release "$identity" "$session_id" >/dev/null 2>&1 || true
+    "$SESSION_ENGINE" --release "$session_id" "$epoch" >/dev/null 2>&1 || true
+    allocation_abort "$allocation_id" "$allocation_token"
+    return 70
   fi
   write_map "$protocol" "$resource" "$device" "$identity" "$session_id" "$epoch" "$source_pid" "$remote" "$tty"
 }
