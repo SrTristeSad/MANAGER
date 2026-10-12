@@ -304,6 +304,7 @@ show_status() {
   printf 'rate_limit=1\nprincipal_action_rate_limit=1\nremote_source_burst_limit=1\n'
   printf 'tls_server_pinning=sha256\nremote_local_root=0\n'
   printf 'idempotency=1\naudit=1\nsecret_replay=0\n'
+  printf 'public_login_claim=1\nclaim_transport=direct-node-tls1.3\nclaim_one_shot=1\nclaim_secret_cache=0\n'
 }
 
 run_backend() {
@@ -342,6 +343,7 @@ AUDIT_FILE = "/var/log/manager/automation-v2-audit.jsonl"
 SOCKET_FILE = "/run/manager-automation-v2/manager.sock"
 CONNECTION_ACTIONS = os.path.join(MANAGER_HOME, "modules", "connection_actions.sh")
 NODE_USAGE = os.path.join(MANAGER_HOME, "modules", "node_usage.sh")
+HIVE_ALLOCATIONS = os.path.join(MANAGER_HOME, "modules", "hive_allocations.sh")
 RESELLERS_DIR = os.path.join(MANAGER_ETC, "access", "resellers")
 IDENTITY_DIR = os.path.join(MANAGER_ETC, "connection", "identities")
 CONTRACT = "manager-automation-v2-local-v1"
@@ -359,6 +361,10 @@ KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{32,80}$")
 SENSITIVE_RE = re.compile(r"(?i)(password|passwd|secret|private[_-]?key|credential|token)")
 ACTIONS = {"system.describe", "node.usage", "connection.preflight", "connection.create", "connection.status", "connection.revoke"}
+CLAIM_ACTION = "allocation.claim"
+CLAIM_PRINCIPAL = "hive-claim"
+CLAIM_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{40,128}$")
+ALLOCATION_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 READ_ACTIONS = {"system.describe", "node.usage", "connection.status"}
 RATE_READ_PER_MIN = 120.0
 RATE_READ_BURST = 20.0
@@ -767,6 +773,73 @@ def prune_cache():
         except (FileNotFoundError, OSError): pass
 
 
+def execute_claim(request, uid, transport):
+    request_id, action_id = request.get("request_id", ""), request.get("action_id", "")
+    principal = {"principal_id": CLAIM_PRINCIPAL, "role": "claim", "subject": ""}
+    auth_meta = {"scheme": "hive-claim-v1", "key_id": "", "fingerprint": "", "decision": "deny", "freshness": "allocation-expiry"}
+    if uid != 0 or transport != "remote-tls-v1":
+        result = response_error(request_id, action_id, 67, "claim público exige gateway TLS direto do nó", principal=principal)
+        audit(request_id, action_id, uid, result, principal=principal, decision="deny", reason="claim-transport",
+              auth=auth_meta, transport=transport); return result
+    if request.get("principal_id") != CLAIM_PRINCIPAL:
+        result = response_error(request_id, action_id, 67, "principal de claim inválido", principal=principal)
+        audit(request_id, action_id, uid, result, principal=principal, decision="deny", reason="claim-principal",
+              auth=auth_meta, transport=transport); return result
+    forbidden = {"issued_at", "nonce"} & set(request)
+    if forbidden:
+        result = response_error(request_id, action_id, 64, "envelope de claim contém campos não permitidos", principal=principal)
+        audit(request_id, action_id, uid, result, principal=principal, decision="deny", reason="claim-envelope",
+              auth=auth_meta, transport=transport); return result
+    params, auth = request.get("params"), request.get("auth")
+    if not isinstance(params, dict) or set(params) != {"allocation_id"}:
+        result = response_error(request_id, action_id, 64, "params de claim inválidos", principal=principal)
+        audit(request_id, action_id, uid, result, principal=principal, decision="deny", reason="claim-params",
+              auth=auth_meta, transport=transport); return result
+    allocation_id = params.get("allocation_id", "")
+    if not isinstance(allocation_id, str) or not ALLOCATION_ID_RE.fullmatch(allocation_id):
+        result = response_error(request_id, action_id, 64, "allocation_id inválido", principal=principal)
+        audit(request_id, action_id, uid, result, principal=principal, decision="deny", reason="claim-allocation",
+              auth=auth_meta, transport=transport); return result
+    principal["subject"] = allocation_id
+    if not isinstance(auth, dict) or set(auth) != {"scheme", "token"} or auth.get("scheme") != "hive-claim-v1":
+        result = response_error(request_id, action_id, 67, "autenticação de claim inválida", principal=principal)
+        audit(request_id, action_id, uid, result, principal=principal, decision="deny", reason="claim-auth",
+              auth=auth_meta, transport=transport); return result
+    token = auth.get("token", "")
+    if not isinstance(token, str) or not CLAIM_TOKEN_RE.fullmatch(token):
+        result = response_error(request_id, action_id, 67, "autenticação de claim inválida", principal=principal)
+        audit(request_id, action_id, uid, result, principal=principal, decision="deny", reason="claim-token-format",
+              auth=auth_meta, transport=transport); return result
+    if not os.path.isfile(HIVE_ALLOCATIONS) or not os.access(HIVE_ALLOCATIONS, os.X_OK):
+        result = response_error(request_id, action_id, 69, "módulo de allocation indisponível", principal=principal)
+        audit(request_id, action_id, uid, result, principal=principal, decision="deny", reason="claim-module",
+              auth=auth_meta, transport=transport); return result
+    auth_meta["decision"] = "allow"
+    try:
+        proc = subprocess.run([HIVE_ALLOCATIONS, "--claim", allocation_id], input=token + "\n",
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30, shell=False)
+    except subprocess.TimeoutExpired:
+        result = response_error(request_id, action_id, 70, "tempo limite do claim excedido", principal=principal)
+        audit(request_id, action_id, uid, result, principal=principal, decision="allow", reason="claim-timeout",
+              auth=auth_meta, transport=transport); return result
+    if proc.returncode != 0:
+        message = proc.stderr.strip() or "claim recusado"
+        result = response_error(request_id, action_id, int(proc.returncode), message, principal=principal)
+        audit(request_id, action_id, uid, result, principal=principal, decision="allow", reason="claim-denied",
+              auth=auth_meta, transport=transport); return result
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        result = response_error(request_id, action_id, 70, "resposta local de claim inválida", principal=principal)
+        audit(request_id, action_id, uid, result, principal=principal, decision="allow", reason="claim-response",
+              auth=auth_meta, transport=transport); return result
+    result = {"contract": CONTRACT, "version": VERSION, "request_id": request_id, "action_id": action_id,
+              "principal_id": CLAIM_PRINCIPAL, "principal_role": "claim", "ok": True, "code": 0,
+              "result": payload, "cached": False, "secret_replay_available": False, "secret_returned_once": True}
+    audit(request_id, action_id, uid, result, principal=principal, decision="allow", reason="claim-one-shot",
+          auth=auth_meta, transport=transport); return result
+
+
 def execute(request, uid):
     request_id, action_id = request.get("request_id", ""), request.get("action_id", "")
     principal_id, params = request.get("principal_id", LOCAL_ROOT_ID), request.get("params", {})
@@ -776,6 +849,7 @@ def execute(request, uid):
     if set(request) - allowed_keys: return response_error(str(request_id), str(action_id), 64, "campo de envelope não permitido", principal_id=principal_id)
     if request.get("version") != VERSION: return response_error(str(request_id), str(action_id), 64, "versão de envelope não suportada", principal_id=principal_id)
     if not isinstance(request_id, str) or not REQUEST_RE.fullmatch(request_id): return response_error(str(request_id), str(action_id), 64, "request_id inválido", principal_id=principal_id)
+    if action_id == CLAIM_ACTION: return execute_claim(request, uid, transport)
     if not isinstance(action_id, str) or action_id not in ACTIONS: return response_error(request_id, str(action_id), 64, "action_id não permitido", principal_id=principal_id)
     if uid != 0:
         result = response_error(request_id, action_id, 67, "peer não autorizado", principal_id=principal_id)
@@ -1065,11 +1139,49 @@ def call_client(argv):
     code = result.get("code", 70); return code if isinstance(code, int) and 0 <= code <= 255 else 70
 
 
+def claim_client(path):
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError as exc:
+        raise ValueError("bundle de public login não encontrado") from exc
+    if not stat.S_ISREG(st.st_mode) or stat.S_IMODE(st.st_mode) & 0o077 or st.st_size > 65536:
+        raise PermissionError("bundle de public login deve ser arquivo regular privado")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            bundle = json.load(fh)
+    except Exception as exc:
+        raise ValueError("bundle de public login inválido") from exc
+    required = {"contract", "version", "allocation_id", "identity_id", "product_id", "protocol", "selected_node",
+                "selected_name", "endpoint", "server_fingerprint", "claim_token", "expires_epoch"}
+    if not isinstance(bundle, dict) or set(bundle) != required or bundle.get("contract") != "manager-hive-public-login-v1" or bundle.get("version") != 1:
+        raise ValueError("contrato de public login inválido")
+    allocation_id, token = bundle.get("allocation_id", ""), bundle.get("claim_token", "")
+    if not ALLOCATION_ID_RE.fullmatch(str(allocation_id)) or not CLAIM_TOKEN_RE.fullmatch(str(token)):
+        raise ValueError("credencial de claim inválida")
+    if not isinstance(bundle.get("expires_epoch"), int) or bundle["expires_epoch"] <= int(time.time()):
+        raise PermissionError("public login expirou")
+    request = {"version": VERSION, "request_id": secrets.token_hex(16), "principal_id": CLAIM_PRINCIPAL,
+               "action_id": CLAIM_ACTION, "params": {"allocation_id": allocation_id},
+               "auth": {"scheme": "hive-claim-v1", "token": token}}
+    raw = (json.dumps(request, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
+    payload = send_remote(raw, bundle["endpoint"], bundle["server_fingerprint"])
+    if not payload:
+        raise RuntimeError("resposta vazia do nó selecionado")
+    result = json.loads(payload.decode("utf-8")); print(json.dumps(result, sort_keys=True, ensure_ascii=False))
+    code = result.get("code", 70); return code if isinstance(code, int) and 0 <= code <= 255 else 70
+
+
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in {"serve-local", "serve-remote", "call"}: return 64
+    if len(sys.argv) < 2 or sys.argv[1] not in {"serve-local", "serve-remote", "call", "claim-client"}: return 64
     mode, args = sys.argv[1], sys.argv[2:]
     if mode == "serve-local": serve_local(); return 0
     if mode == "serve-remote": serve_remote(); return 0
+    if mode == "claim-client":
+        if len(args) != 1: return 64
+        try: return claim_client(args[0])
+        except PermissionError as exc: print(str(exc), file=sys.stderr); return 67
+        except ValueError as exc: print(str(exc), file=sys.stderr); return 64
+        except (OSError, ssl.SSLError, RuntimeError, json.JSONDecodeError) as exc: print(str(exc), file=sys.stderr); return 70
     try: return call_client(args)
     except PermissionError as exc: print(str(exc), file=sys.stderr); return 67
     except ValueError as exc: print(str(exc), file=sys.stderr); return 64
@@ -1099,6 +1211,12 @@ call_v2() {
   run_backend call "$@"
 }
 
+claim_v2() {
+  ensure_dependencies || exit 69
+  ensure_dirs
+  run_backend claim-client "$1"
+}
+
 case "${1:-}" in
   --install) install_v2 ;;
   --detach) detach_v2 ;;
@@ -1110,13 +1228,14 @@ case "${1:-}" in
   --remote-disable) remote_disable ;;
   --remote-status) remote_status ;;
   --remote-rotate-certificate) remote_rotate_certificate ;;
+  --claim-bundle) [[ -n "${2:-}" ]] || { err "Uso: automation_v2.sh --claim-bundle /CAMINHO/login.json"; exit 64; }; claim_v2 "$2" ;;
   --call)
     shift
     call_v2 "$@"
     ;;
   "") show_status ;;
   *)
-    err "Uso: automation_v2.sh {--install|--detach|--purge|--status|--serve|--serve-remote|--remote-enable IP [PORT]|--remote-disable|--remote-status|--remote-rotate-certificate|--call ...}"
+    err "Uso: automation_v2.sh {--install|--detach|--purge|--status|--serve|--serve-remote|--remote-enable IP [PORT]|--remote-disable|--remote-status|--remote-rotate-certificate|--claim-bundle FILE|--call ...}"
     exit 64
     ;;
 esac

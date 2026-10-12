@@ -234,12 +234,17 @@ Implementado nesta fase:
 - nó selecionado executa provisionamento remoto idempotente antes do ACK da allocation;
 - SSH, WireGuard e OpenVPN reutilizam o provisionamento transacional local, sem shell remoto arbitrário;
 - redelivery após perda de ACK reutiliza o recurso já criado e um receipt root-only vinculado à allocation;
-- falha de produto/protocolo/preflight no nó impede ACK e mantém o fluxo fail-closed.
+- falha de produto/protocolo/preflight no nó impede ACK e mantém o fluxo fail-closed;
+- public login v1 gera token bootstrap de alta entropia, mas somente seu SHA-256 entra no ticket assinado/outbox;
+- endpoint público do nó usa o gateway Automation v2 existente com TLS 1.3 e pin SHA-256;
+- claim é one-shot e validado no `managerd` do nó, sem passar pelo controlador e sem cache idempotente de segredo;
+- SSH devolve usuário/senha somente quando a senha foi realmente criada pela allocation; binding legado sem senha recuperável falha fechado;
+- WireGuard/OpenVPN devolvem o conteúdo do profile diretamente do nó, nunca um caminho local e nunca através do controlador;
+- token, senha e profiles não entram no audit da Automation/Colmeia.
 
 Ainda pendente para fechar a 0.8.5:
 
-- devolver ao fluxo público o resultado/credencial criada no nó sem expor segredo em logs ou no audit;
-- fechar o endpoint/contrato público de login/provisionamento de ponta a ponta e seus gates finais antes de alterar `VERSION`.
+- fechar os gates finais do public login/claim e a revisão de release antes de alterar `VERSION`.
 
 ### 0.8.6 — quotas e accounting globais
 

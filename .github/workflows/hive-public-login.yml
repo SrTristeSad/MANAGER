@@ -1,0 +1,313 @@
+name: Hive Public Login Claim
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  public-login:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          test "$(sudo cat /opt/manager/VERSION)" = 0.8.4
+          sudo manager automation v2 status | grep -q '^public_login_claim=1$'
+          sudo manager automation v2 status | grep -q '^claim_secret_cache=0$'
+
+      - name: Initialize Hive controller, selected node and TLS claim endpoint
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager hive controller init >/dev/null
+          sudo manager hive lease controller init >/dev/null
+          sudo manager hive lease controller enable 127.0.0.1 19445 >/dev/null
+          lease_fp="$(sudo manager hive lease controller status | awk -F= '$1=="tls_fingerprint"{print $2}')"
+          controller_fp="$(sudo manager hive controller fingerprint)"
+          sudo manager hive request /tmp/node.request.json >/dev/null
+          sudo manager hive controller approve /tmp/node.request.json /tmp/node.bundle.json >/dev/null
+          sudo manager hive accept /tmp/node.bundle.json "$controller_fp" >/dev/null
+          sudo manager hive lease node configure 127.0.0.1 19445 "$lease_fp" 30 >/dev/null
+          node="$(sudo manager hive status | awk -F= '$1=="node_id"{print $2}')"
+          test -n "$node"
+          printf '%s\n' "$node" >/tmp/node.id
+          sudo manager hive node placement "$node" BR-SP-A BR BR-SP PREMIUM >/dev/null
+
+          sudo mkdir -p /etc/manager/hive/controller/health /var/lib/manager/hive-health/nodes
+          cat <<'EOF' | sudo tee /etc/manager/hive/controller/health/controller.conf >/dev/null
+          version=1
+          degraded_after_seconds=75
+          offline_after_seconds=180
+          EOF
+          now="$(date +%s)"
+          sudo python3 - "$now" "$node" <<'PY'
+          import json,sys
+          now=int(sys.argv[1]); node=sys.argv[2]; conf={}
+          with open(f'/etc/manager/hive/controller/nodes/{node}.conf') as f:
+              for line in f:
+                  if '=' in line:
+                      k,v=line.rstrip().split('=',1); conf[k]=v
+          obs={'version':1,'node_id':node,'node_epoch':int(conf['node_epoch']),'issued_at':now,'received_at':now,
+               'source':'ci','base_state':'HEALTHY','base_reason':'ok',
+               'metrics':{'sessions':0,'max_sessions':100,'capacity':10,'weight':1,'previous_rtt_ms':10,
+                          'protocols':['ssh','wireguard','openvpn'],'service_ssh':'active',
+                          'service_wireguard':'active','service_openvpn':'active'}}
+          with open(f'/var/lib/manager/hive-health/nodes/{node}.json','w') as f:
+              json.dump(obs,f,sort_keys=True,separators=(',',':'))
+          PY
+          sudo chmod 600 /var/lib/manager/hive-health/nodes/*.json
+
+          sudo manager automation v2 remote enable 127.0.0.1 19443 >/tmp/remote-enable
+          sudo manager automation v2 remote status >/tmp/remote-status
+          grep -q '^remote_enabled=1$' /tmp/remote-status
+          grep -q '^remote_service=active$' /tmp/remote-status
+          claim_fp="$(awk -F= '$1=="server_fingerprint"{print $2}' /tmp/remote-status)"
+          test -n "$claim_fp"
+          printf '%s\n' "$claim_fp" >/tmp/claim.fp
+          ready=0
+          for _ in $(seq 1 50); do
+            if sudo ss -ltnH | awk '$4 ~ /:19443$/ {found=1} END {exit(found ? 0 : 1)}'; then ready=1; break; fi
+            sleep 0.1
+          done
+          test "$ready" -eq 1
+          sudo manager hive allocation controller endpoint "$node" 127.0.0.1 19443 "$claim_fp" >/tmp/endpoint
+          grep -q '^endpoint_configured=1$' /tmp/endpoint
+          grep -q '^endpoint=127.0.0.1:19443$' /tmp/endpoint
+
+      - name: Create public login with hash-only controller state
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/products.sh --create PREMIUM 'CI Premium' 1 0 4 ssh 0 none warn '*' '*' '*'
+          sudo manager hive allocation enable >/tmp/alloc-enable
+          sudo manager hive allocation status >/tmp/alloc-status
+          grep -q '^public_login_claim=1$' /tmp/alloc-status
+          sudo systemctl stop manager-hive-allocation-sync.timer manager-hive-allocation-sync.service
+          sudo manager hive lease limit set hive-login 4 PREMIUM >/dev/null
+          created="$(sudo manager hive allocation controller login hive-login ssh /tmp/hive-login.json BR-SP PREMIUM hive-login '*' 180)"
+          grep -q '^contract=manager-hive-public-login-v1$' <<<"$created"
+          grep -q '^claim_token_logged=0$' <<<"$created"
+          grep -q '^vpn_secret_on_controller=0$' <<<"$created"
+          test "$(sudo stat -c '%a' /tmp/hive-login.json)" = 600
+          sudo python3 - <<'PY'
+          import hashlib,json,pathlib
+          login=json.load(open('/tmp/hive-login.json'))
+          assert login['contract']=='manager-hive-public-login-v1'
+          assert login['protocol']=='ssh'
+          assert login['endpoint']=='127.0.0.1:19443'
+          assert login['server_fingerprint'].startswith('SHA256:')
+          token=login['claim_token']; assert len(token)>=40
+          pathlib.Path('/tmp/allocation.id').write_text(login['allocation_id'])
+          pathlib.Path('/tmp/claim.token').write_text(token)
+          node=pathlib.Path('/tmp/node.id').read_text().strip()
+          outbox=pathlib.Path(f'/var/lib/manager/hive-allocations/controller/outbox/{node}/{login["allocation_id"]}.json')
+          allocation=json.load(open(outbox))
+          assert allocation['contract']=='manager-hive-vpn-allocation-v2'
+          assert allocation['claim_token_hash']==hashlib.sha256(token.encode()).hexdigest()
+          assert 'claim_token' not in allocation
+          assert allocation['claim_endpoint']==login['endpoint']
+          assert allocation['claim_tls_fingerprint']==login['server_fingerprint']
+          PY
+          token="$(cat /tmp/claim.token)"
+          if sudo grep -R -Fq -- "$token" /etc/manager/hive /var/lib/manager/hive-allocations/controller /var/log/manager/hive-allocation-audit.jsonl 2>/dev/null; then
+            echo 'controller state or Hive audit leaked the public claim token' >&2
+            exit 1
+          fi
+
+      - name: Provision on selected node before public claim
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sync="$(sudo manager hive allocation sync)"
+          grep -q '^allocations_pulled=1$' <<<"$sync"
+          grep -q '^allocations_provisioned=1$' <<<"$sync"
+          grep -q '^allocations_acked=1$' <<<"$sync"
+          id hive-login
+          allocation_id="$(cat /tmp/allocation.id)"
+          receipt="/var/lib/manager/hive-allocations/node/provisioned/$allocation_id.conf"
+          sudo test -f "$receipt"
+          test "$(sudo stat -c '%a' "$receipt")" = 600
+          password="$(sudo awk -F= '$1=="ssh_password"{print substr($0,index($0,"=")+1)}' "$receipt")"
+          test -n "$password"
+          printf '%s' "$password" >/tmp/original.password
+
+      - name: Fail wrong pin and wrong token without consuming login
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo cp /tmp/hive-login.json /tmp/wrong-pin.json
+          sudo python3 - <<'PY'
+          import json
+          p='/tmp/wrong-pin.json'; d=json.load(open(p)); d['server_fingerprint']='SHA256:'+'0'*64
+          open(p,'w').write(json.dumps(d,separators=(',',':'))+'\n')
+          PY
+          sudo chmod 600 /tmp/wrong-pin.json
+          set +e
+          sudo manager hive allocation claim /tmp/wrong-pin.json >/tmp/wrong-pin.out 2>/tmp/wrong-pin.err
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+          grep -q 'fingerprint TLS do servidor não confere' /tmp/wrong-pin.err
+
+          sudo cp /tmp/hive-login.json /tmp/wrong-token.json
+          sudo python3 - <<'PY'
+          import json,secrets
+          p='/tmp/wrong-token.json'; d=json.load(open(p)); d['claim_token']=secrets.token_urlsafe(32)
+          open(p,'w').write(json.dumps(d,separators=(',',':'))+'\n')
+          PY
+          sudo chmod 600 /tmp/wrong-token.json
+          set +e
+          sudo manager hive allocation claim /tmp/wrong-token.json >/tmp/wrong-token.out 2>/tmp/wrong-token.err
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+          allocation_id="$(cat /tmp/allocation.id)"
+          sudo test ! -e "/var/lib/manager/hive-allocations/node/claims/$allocation_id.conf"
+
+      - name: Return SSH secret once directly from selected node
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager hive allocation claim /tmp/hive-login.json >/tmp/claim.json
+          python3 - <<'PY'
+          import json,pathlib
+          r=json.load(open('/tmp/claim.json'))
+          assert r['ok'] is True and r['code']==0 and r['cached'] is False
+          assert r['secret_replay_available'] is False and r['secret_returned_once'] is True
+          data=r['result']
+          assert data['contract']=='manager-hive-public-login-result-v1'
+          assert data['protocol']=='ssh' and data['username']=='hive-login'
+          assert data['password']==pathlib.Path('/tmp/original.password').read_text()
+          assert 'profile' not in data
+          PY
+          allocation_id="$(cat /tmp/allocation.id)"
+          claim_state="/var/lib/manager/hive-allocations/node/claims/$allocation_id.conf"
+          sudo test -f "$claim_state"
+          test "$(sudo stat -c '%a' "$claim_state")" = 600
+          sudo grep -q '^status=consumed$' "$claim_state"
+
+          set +e
+          sudo manager hive allocation claim /tmp/hive-login.json >/tmp/replay.out 2>/tmp/replay.err
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+
+          token="$(cat /tmp/claim.token)"
+          password="$(cat /tmp/original.password)"
+          for secret in "$token" "$password"; do
+            if sudo grep -R -Fq -- "$secret" /var/log/manager /var/lib/manager/automation-v2/idempotency 2>/dev/null; then
+              echo 'Automation audit/log/idempotency leaked public-login secret' >&2
+              exit 1
+            fi
+          done
+          sudo grep -q '"action_id":"allocation.claim"' /var/log/manager/automation-v2-audit.jsonl
+          sudo grep -q '"reason":"claim-one-shot"' /var/log/manager/automation-v2-audit.jsonl
+
+      - name: Reissue SSH login without rotating the credential
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager hive allocation controller login hive-login ssh /tmp/hive-login-2.json BR-SP PREMIUM hive-login '*' 180 >/tmp/login2-created
+          sudo manager hive allocation sync >/tmp/login2-sync
+          grep -q '^allocations_acked=1$' /tmp/login2-sync
+          sudo manager hive allocation claim /tmp/hive-login-2.json >/tmp/claim2.json
+          python3 - <<'PY'
+          import json,pathlib
+          r=json.load(open('/tmp/claim2.json'))
+          assert r['ok'] is True
+          assert r['result']['username']=='hive-login'
+          assert r['result']['password']==pathlib.Path('/tmp/original.password').read_text()
+          PY
+          test "$(sudo passwd -S hive-login | awk '{print $2}')" = P
+
+      - name: Keep unknown legacy SSH password fail-closed
+        shell: bash
+        run: |
+          set -euxo pipefail
+          id hive-legacy-user >/dev/null 2>&1 || sudo useradd -M -s /usr/sbin/nologin hive-legacy-user
+          sudo /opt/manager/modules/connection_engine.sh --create hive-legacy '' 0 10 ssh >/dev/null
+          sudo /opt/manager/modules/connection_engine.sh --bind hive-legacy ssh hive-legacy-user >/dev/null
+          sudo /opt/manager/modules/products.sh --assign hive-legacy PREMIUM >/dev/null
+          sudo manager hive lease limit set hive-legacy 1 PREMIUM >/dev/null
+          sudo manager hive allocation controller login hive-legacy ssh /tmp/hive-legacy.json BR-SP PREMIUM hive-legacy '*' 180 >/dev/null
+          sudo manager hive allocation sync >/tmp/legacy-sync
+          grep -q '^allocations_acked=1$' /tmp/legacy-sync
+          set +e
+          sudo manager hive allocation claim /tmp/hive-legacy.json >/tmp/legacy-claim.out 2>/tmp/legacy-claim.err
+          rc=$?
+          set -e
+          test "$rc" -eq 69
+          grep -q 'sem senha recuperável' /tmp/legacy-claim.out /tmp/legacy-claim.err
+          id hive-legacy-user
+          if id hive-legacy >/dev/null 2>&1; then
+            echo 'public login rotated/recreated a legacy SSH binding unexpectedly' >&2
+            exit 1
+          fi
+
+      - name: Return WireGuard and OpenVPN profile content, never local paths
+        shell: bash
+        run: |
+          set -euxo pipefail
+          for proto in wireguard openvpn; do
+            ident="hive-${proto}"
+            plan="PLAN-${proto}"
+            sudo manager hive lease limit set "$ident" 1 "$plan" >/dev/null
+            login="/tmp/${ident}.json"
+            sudo manager hive allocation controller login "$ident" "$proto" "$login" BR-SP PREMIUM "$ident" '*' 180 >/dev/null
+            allocation_id="$(sudo python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["allocation_id"])' "$login")"
+            node="$(cat /tmp/node.id)"
+            outbox="/var/lib/manager/hive-allocations/controller/outbox/$node/$allocation_id.json"
+            sudo cp "$outbox" "/tmp/${ident}.allocation.json"
+            sudo manager hive allocation accept "/tmp/${ident}.allocation.json" >/dev/null
+            profile="/tmp/${ident}.profile"
+            printf '# %s CI profile\nclient-secret-material-%s\n' "$proto" "$proto" | sudo tee "$profile" >/dev/null
+            sudo chmod 600 "$profile"
+            receipt="/var/lib/manager/hive-allocations/node/provisioned/$allocation_id.conf"
+            if [[ "$proto" == wireguard ]]; then
+              cat <<EOF | sudo tee "$receipt" >/dev/null
+          version=1
+          status=ok
+          allocation_id=$allocation_id
+          identity_id=$ident
+          product_id=$plan
+          protocol=wireguard
+          provisioned_epoch=$(date +%s)
+          wireguard_profile=$profile
+          wireguard_ip=10.0.0.2/32
+          wireguard_ipv6=fd00::2/128
+          EOF
+            else
+              cat <<EOF | sudo tee "$receipt" >/dev/null
+          version=1
+          status=ok
+          allocation_id=$allocation_id
+          identity_id=$ident
+          product_id=$plan
+          protocol=openvpn
+          provisioned_epoch=$(date +%s)
+          openvpn_profile=$profile
+          openvpn_ipv6=fd00::3/128
+          EOF
+            fi
+            sudo chmod 600 "$receipt"
+            sudo manager hive allocation claim "$login" > "/tmp/${ident}.claim.json"
+            sudo python3 - "$proto" "$profile" "/tmp/${ident}.claim.json" <<'PY'
+          import json,sys
+          proto,profile_path,response_path=sys.argv[1:]
+          response=json.load(open(response_path)); data=response['result']
+          expected=open(profile_path).read()
+          assert response['ok'] is True and data['protocol']==proto
+          assert data['profile']==expected
+          assert profile_path not in json.dumps(data)
+          assert data['profile_format']==proto
+          PY
+          done

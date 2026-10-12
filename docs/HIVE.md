@@ -764,6 +764,53 @@ Após validar e persistir uma allocation recebida por pull, o nó executa `provi
 
 Se o provisionamento falhar (produto ausente/desativado, protocolo não permitido, serviço VPN não configurado ou conflito local), a allocation **não recebe ACK**. Em redelivery, o mesmo ticket é aceito idempotentemente e o provisionamento é tentado novamente. Segredos não entram no audit JSONL; quando uma credencial nasce nesta etapa, o material necessário fica somente no receipt root-only até o fluxo público seguro de entrega ser fechado. O controlador continua fora do caminho de dados VPN.
 
+### Public login / claim direto no nó (0.8.5)
+
+O fluxo público não transporta a credencial VPN pelo controlador. O controlador conhece somente um **token bootstrap temporário** durante a criação do login; no ticket assinado e no outbox entra apenas `SHA-256(token)`.
+
+Cada nó elegível para public login precisa anunciar administrativamente o endpoint TLS que o cliente alcança:
+
+```bash
+manager automation v2 remote enable 203.0.113.20 9443
+manager hive allocation controller endpoint NODE_ID 203.0.113.20 9443 SHA256:<64-hex>
+```
+
+O fingerprint configurado no controlador é incorporado ao ticket assinado. Antes do ACK, o nó confirma que sua Automation v2 remota está habilitada em TLS 1.3, usa a mesma porta e apresenta exatamente o certificado pinado. Divergência falha fechado.
+
+Criação do login:
+
+```bash
+manager hive allocation controller login maria wireguard /root/maria.login.json BR-SP PREMIUM maria '*' 180
+```
+
+O arquivo `maria.login.json` é criado como `0600` e usa o contrato `manager-hive-public-login-v1`. Ele contém somente o bootstrap necessário para o cliente: allocation, nó, endpoint, fingerprint TLS, protocolo, expiração e o token one-shot. Senha SSH, chave/profile WireGuard e profile OpenVPN **não existem no controlador**.
+
+Depois que o nó recebeu, validou e provisionou a allocation, o cliente faz claim diretamente no nó:
+
+```bash
+manager hive allocation claim /root/maria.login.json
+```
+
+O helper acima é apenas uma implementação de referência do contrato. O fluxo de rede é:
+
+```text
+cliente
+  └─ TLS 1.3 + pin SHA-256 ──> gateway Automation v2 do nó selecionado
+                                  └─ Unix socket local ──> managerd
+                                                           └─ claim one-shot
+                                                              └─ receipt/profile local
+```
+
+A ação pública é tipada como `allocation.claim`; o gateway continua sem autoridade lógica. O `managerd` valida transporte, allocation, token, expiração, `session_epoch`, receipt de provisionamento e consumo único. O token é enviado ao módulo local por stdin, nunca em argv. A resposta de segredo não passa pelo cache de idempotência e audit nenhum persiste token, senha ou profile.
+
+Semântica por protocolo:
+
+- **SSH:** retorna `username` + `password` somente quando a própria allocation gerou uma senha recuperável. Um binding SSH legado reutilizado sem senha disponível é recusado; não há rotação silenciosa.
+- **WireGuard:** retorna o conteúdo do profile root-only criado no nó, não o caminho do arquivo.
+- **OpenVPN:** retorna o conteúdo do profile root-only criado no nó, não o caminho do arquivo.
+
+Após um claim bem-sucedido, a allocation fica marcada como consumida para esse bootstrap. Repetir o mesmo token não devolve o segredo novamente. O controlador continua fora do caminho de dados VPN e também fora do caminho da credencial VPN final.
+
 ## 17. Audit global
 
 ```text

@@ -13,6 +13,9 @@ command -v openssl >/dev/null 2>&1 || { err "OpenSSL é necessário para allocat
 python3 - "$@" <<'PY'
 import base64
 import fcntl
+import hashlib
+import hmac
+import ipaddress
 import json
 import os
 import re
@@ -42,29 +45,40 @@ LIMIT_DIR = os.path.join(CTRL_DIR, "leases", "limits")
 DATA_DIR = os.environ.get("MANAGER_HIVE_ALLOCATION_DATA_DIR", "/var/lib/manager/hive-allocations")
 CTRL_EPOCH_DIR = os.path.join(DATA_DIR, "controller", "epochs")
 CTRL_OUTBOX_DIR = os.path.join(DATA_DIR, "controller", "outbox")
+CTRL_ENDPOINT_DIR = os.path.join(ALLOC_ETC, "controller-endpoints")
 NODE_ACTIVE_DIR = os.path.join(DATA_DIR, "node", "active")
 NODE_STATE_DIR = os.path.join(DATA_DIR, "node", "state")
 NODE_EPOCH_DIR = os.path.join(DATA_DIR, "node", "epochs")
 NODE_PROVISION_DIR = os.path.join(DATA_DIR, "node", "provisioned")
+NODE_CLAIM_DIR = os.path.join(DATA_DIR, "node", "claims")
 LOCK_FILE = os.path.join(DATA_DIR, ".lock")
 AUDIT_FILE = os.environ.get("MANAGER_HIVE_ALLOCATION_AUDIT_FILE", "/var/log/manager/hive-allocation-audit.jsonl")
 LEASE_MODULE = os.path.join(MANAGER_HOME, "modules", "hive_leases.sh")
 PROVISION_MODULE = os.path.join(MANAGER_HOME, "modules", "provision.sh")
+AUTOMATION_REMOTE_CONF = os.path.join(MANAGER_ETC, "automation", "v2", "remote.conf")
+AUTOMATION_REMOTE_CERT = os.path.join(MANAGER_ETC, "automation", "v2", "tls", "server.crt")
 SYSTEMD_DIR = os.environ.get("MANAGER_HIVE_ALLOCATION_SYSTEMD_DIR", "/etc/systemd/system")
 SYNC_SERVICE = os.path.join(SYSTEMD_DIR, "manager-hive-allocation-sync.service")
 SYNC_TIMER = os.path.join(SYSTEMD_DIR, "manager-hive-allocation-sync.timer")
 SYNC_SERVICE_MARKER = "# MANAGER-HIVE-ALLOCATION-SYNC-SERVICE v1"
 SYNC_TIMER_MARKER = "# MANAGER-HIVE-ALLOCATION-SYNC-TIMER v1"
 CONTRACT = "manager-hive-vpn-allocation-v1"
+CLAIM_CONTRACT = "manager-hive-vpn-allocation-v2"
+CLIENT_LOGIN_CONTRACT = "manager-hive-public-login-v1"
+CLAIM_RESULT_CONTRACT = "manager-hive-public-login-result-v1"
 STATUS_CONTRACT = "manager-hive-vpn-allocation-status-v1"
 VERSION = 1
 DEFAULT_TTL = 60
+DEFAULT_LOGIN_TTL = 180
 PENDING_TTL = 15
 MAX_JSON = 65536
+MAX_PROFILE = 262144
 IDENTITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$")
 NODE_ID_RE = re.compile(r"^node-[a-f0-9]{16}$")
 ID_RE = re.compile(r"^[a-f0-9]{32}$")
 TOKEN_RE = re.compile(r"^[a-f0-9]{32,64}$")
+CLAIM_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{40,128}$")
+FP_RE = re.compile(r"^SHA256:[a-f0-9]{64}$")
 LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 ALLOWED_PROTOCOLS = {"ssh", "wireguard", "openvpn"}
 
@@ -84,10 +98,12 @@ def init_dirs():
     ensure_dir(DATA_DIR)
     ensure_dir(CTRL_EPOCH_DIR)
     ensure_dir(CTRL_OUTBOX_DIR)
+    ensure_dir(CTRL_ENDPOINT_DIR)
     ensure_dir(NODE_ACTIVE_DIR)
     ensure_dir(NODE_STATE_DIR)
     ensure_dir(NODE_EPOCH_DIR)
     ensure_dir(NODE_PROVISION_DIR)
+    ensure_dir(NODE_CLAIM_DIR)
     Path(LOCK_FILE).touch(mode=0o600, exist_ok=True)
     os.chmod(LOCK_FILE, 0o600)
 
@@ -354,6 +370,98 @@ def parse_kv(text):
     return out
 
 
+def normalize_fp(value):
+    value = str(value or "").strip()
+    if value.startswith("SHA256:"):
+        value = "SHA256:" + value.split(":", 1)[1].lower()
+    if not FP_RE.fullmatch(value):
+        die("Fingerprint TLS inválido; esperado SHA256:<64 hex>.", 64)
+    return value
+
+
+def public_endpoint(host, port):
+    try:
+        addr = ipaddress.ip_address(str(host))
+        port_i = int(port)
+    except (ValueError, TypeError):
+        die("Endpoint público exige IP literal e porta válida.", 64)
+    if not 1024 <= port_i <= 65535:
+        die("Porta do endpoint público deve ficar entre 1024 e 65535.", 64)
+    rendered = f"[{addr.compressed}]:{port_i}" if addr.version == 6 else f"{addr.compressed}:{port_i}"
+    return rendered, port_i
+
+
+def parse_public_endpoint(value):
+    value = str(value or "")
+    if value.startswith("["):
+        end = value.find("]")
+        if end < 0 or end + 2 > len(value) or value[end + 1] != ":":
+            die("Endpoint público IPv6 inválido.", 64)
+        host, port = value[1:end], value[end + 2:]
+    else:
+        if value.count(":") != 1:
+            die("Endpoint público inválido.", 64)
+        host, port = value.rsplit(":", 1)
+    return public_endpoint(host, port)
+
+
+def endpoint_path(node_id):
+    validate_node_id(node_id)
+    return os.path.join(CTRL_ENDPOINT_DIR, node_id + ".conf")
+
+
+def controller_endpoint_set(node_id, host, port, tls_fp):
+    init_dirs(); controller_identity(); controller_node(node_id)
+    endpoint, port_i = public_endpoint(host, port); tls_fp = normalize_fp(tls_fp)
+    atomic_write(endpoint_path(node_id),
+                 f"version=1\nnode_id={node_id}\nendpoint={endpoint}\nport={port_i}\n"
+                 f"tls_fingerprint={tls_fp}\nupdated_epoch={int(time.time())}\n")
+    audit("endpoint-set", node_id=node_id, endpoint=endpoint, tls_fingerprint=tls_fp)
+    print("endpoint_configured=1"); print(f"node_id={node_id}"); print(f"endpoint={endpoint}")
+    print(f"tls_fingerprint={tls_fp}")
+
+
+def controller_endpoint(node_id):
+    conf = read_conf(endpoint_path(node_id))
+    if conf.get("version") != "1" or conf.get("node_id") != node_id:
+        die("Nó selecionado não possui endpoint público de claim configurado.", 69)
+    endpoint, _ = parse_public_endpoint(conf.get("endpoint", ""))
+    tls_fp = normalize_fp(conf.get("tls_fingerprint", ""))
+    return endpoint, tls_fp
+
+
+def local_remote_fingerprint():
+    try:
+        st = os.lstat(AUTOMATION_REMOTE_CERT)
+    except FileNotFoundError:
+        die("Automation v2 remota precisa estar habilitada no nó para public login.", 69)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or stat.S_IMODE(st.st_mode) & 0o077:
+        die("Certificado TLS da Automation v2 possui permissões inseguras.", 67)
+    proc = subprocess.run(["openssl", "x509", "-in", AUTOMATION_REMOTE_CERT, "-outform", "DER"],
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10, check=False)
+    if proc.returncode != 0 or not proc.stdout:
+        die("Certificado TLS da Automation v2 é inválido.", 67)
+    return "SHA256:" + hashlib.sha256(proc.stdout).hexdigest()
+
+
+def validate_local_claim_endpoint(bundle):
+    if bundle.get("contract") != CLAIM_CONTRACT:
+        return
+    conf = read_conf(AUTOMATION_REMOTE_CONF)
+    if conf.get("enabled") != "1" or conf.get("tls") != "TLSv1.3":
+        die("Public login exige Automation v2 remota TLS 1.3 habilitada no nó.", 69)
+    _endpoint, signed_port = parse_public_endpoint(bundle.get("claim_endpoint", ""))
+    try:
+        local_port = int(conf.get("port", "0"))
+    except ValueError:
+        local_port = 0
+    if local_port != signed_port:
+        die("Porta pública assinada não corresponde ao gateway TLS local.", 67)
+    expected = normalize_fp(bundle.get("claim_tls_fingerprint", ""))
+    if not hmac.compare_digest(local_remote_fingerprint(), expected):
+        die("Fingerprint público assinado não corresponde ao certificado TLS local.", 67)
+
+
 def controller_outbox_path(node_id, allocation_id):
     validate_node_id(node_id)
     if not ID_RE.fullmatch(str(allocation_id)): die("allocation_id inválido.", 64)
@@ -436,29 +544,116 @@ def controller_create(identity_id,protocol,out_path,region="",pool="",sticky="",
     print("delivery_transport=lease-control-pull"); print("controller_in_user_vpn_path=0")
 
 
+def controller_login(identity_id, protocol, out_path, region="", pool="", sticky="", node_scope="*", ttl=DEFAULT_LOGIN_TTL):
+    init_dirs(); ctrl = controller_identity()
+    identity_id = validate_identity(identity_id); protocol = validate_protocol(protocol)
+    region = validate_label(region, "region"); pool = validate_label(pool, "pool")
+    if sticky and (len(sticky) > 128 or any(ord(ch) < 32 for ch in sticky)):
+        die("Sticky key inválida.", 64)
+    if not isinstance(node_scope, str) or not node_scope:
+        node_scope = "*"
+    try:
+        ttl = int(ttl)
+    except (TypeError, ValueError):
+        die("TTL inválido.", 64)
+    if ttl < 30 or ttl > 300:
+        die("TTL do public login deve ficar entre 30 e 300 segundos.", 64)
+    _, maximum, product_id = limit_policy(identity_id)
+    if not isinstance(out_path, str) or not os.path.isabs(out_path) or not os.path.isdir(os.path.dirname(out_path)):
+        die("O arquivo de public login exige caminho absoluto em diretório existente.", 64)
+    if os.path.exists(out_path):
+        die("O arquivo de public login já existe; recusando reservar grant sem destino livre.", 65)
+
+    allocation_id = secrets.token_hex(16); grant_device = "alloc-" + allocation_id
+    proc = subprocess.run([LEASE_MODULE, "--controller-grant", identity_id, protocol, region or "*", pool or "*",
+                           sticky, node_scope, grant_device, str(ttl)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          text=True, timeout=20, check=False)
+    if proc.returncode != 0:
+        die(proc.stderr.strip() or "Não foi possível reservar grant global.", proc.returncode)
+    grant = parse_kv(proc.stdout)
+    global_id = grant.get("global_lease_id", ""); selected_node = grant.get("selected_node", "")
+    if not ID_RE.fullmatch(global_id) or not NODE_ID_RE.fullmatch(selected_node):
+        die("Resposta do grant global ficou incompleta.", 70)
+    _, node_epoch = controller_node(selected_node)
+    endpoint, tls_fp = controller_endpoint(selected_node)
+    try:
+        global_epoch_i = int(grant.get("global_epoch", "")); expires_i = int(grant.get("expires_epoch", ""))
+    except ValueError:
+        die("Epoch/expiração inválidos no grant global.", 70)
+    if global_epoch_i < 1 or expires_i <= int(time.time()):
+        die("Grant global retornou estado inválido.", 70)
+
+    claim_token = secrets.token_urlsafe(32)
+    claim_hash = hashlib.sha256(claim_token.encode("ascii")).hexdigest()
+    session_epoch = read_epoch(CTRL_EPOCH_DIR, identity_id); now = int(time.time())
+    allocation = {"contract": CLAIM_CONTRACT, "version": VERSION, "allocation_id": allocation_id,
+                  "controller_id": ctrl.get("controller_id", ""), "identity_id": identity_id, "product_id": product_id,
+                  "protocol": protocol, "region": region, "pool": pool, "node_scope": node_scope,
+                  "selected_node": selected_node, "selected_name": grant.get("selected_name", ""), "node_epoch": node_epoch,
+                  "global_lease_id": global_id, "global_epoch": global_epoch_i, "grant_device": grant_device,
+                  "session_epoch": session_epoch, "max_sessions_global": maximum, "issued_at": now,
+                  "expires_epoch": expires_i, "claim_token_hash": claim_hash, "claim_endpoint": endpoint,
+                  "claim_tls_fingerprint": tls_fp}
+    allocation["signature"] = sign(CTRL_KEY, canonical(allocation))
+    queued_path = queue_bundle(allocation)
+    client = {"contract": CLIENT_LOGIN_CONTRACT, "version": VERSION, "allocation_id": allocation_id,
+              "identity_id": identity_id, "product_id": product_id, "protocol": protocol,
+              "selected_node": selected_node, "selected_name": grant.get("selected_name", ""),
+              "endpoint": endpoint, "server_fingerprint": tls_fp, "claim_token": claim_token,
+              "expires_epoch": expires_i}
+    write_external_new(out_path, json.dumps(client, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n")
+    audit("login-create", identity_id=identity_id, product_id=product_id, protocol=protocol,
+          allocation_id=allocation_id, global_lease_id=global_id, node_id=selected_node,
+          node_epoch=node_epoch, session_epoch=session_epoch, expires_epoch=expires_i, distribution_queued=1)
+    print(f"contract={CLIENT_LOGIN_CONTRACT}"); print(f"login_bundle={out_path}"); print(f"allocation_id={allocation_id}")
+    print(f"identity_id={identity_id}"); print(f"product_id={product_id}"); print(f"protocol={protocol}")
+    print(f"selected_node={selected_node}"); print(f"selected_name={grant.get('selected_name','')}")
+    print(f"claim_endpoint={endpoint}"); print(f"claim_tls_fingerprint={tls_fp}")
+    print(f"expires_epoch={expires_i}"); print("claim_token_logged=0"); print("vpn_secret_on_controller=0")
+    print("distribution_queued=1"); print(f"distribution_queue={queued_path}")
+    print("controller_in_user_vpn_path=0")
+
+
 def validate_bundle(bundle):
-    expected={"contract","version","allocation_id","controller_id","identity_id","product_id","protocol","region","pool",
-              "node_scope","selected_node","selected_name","node_epoch","global_lease_id","global_epoch","grant_device",
-              "session_epoch","max_sessions_global","issued_at","expires_epoch","signature"}
-    if not isinstance(bundle,dict) or set(bundle)!=expected: die("Contrato de allocation inválido.",64)
-    if bundle.get("contract")!=CONTRACT or bundle.get("version")!=VERSION: die("Versão/contrato de allocation inválido.",64)
-    enrollment,node_id,node_epoch=node_enrollment()
-    if bundle.get("controller_id")!=enrollment.get("controller_id"): die("Allocation pertence a outro controlador.",67)
-    if bundle.get("selected_node")!=node_id or bundle.get("node_epoch")!=node_epoch:
-        die("Allocation foi emitida para outro nó ou node_epoch.",67)
+    base_expected = {"contract", "version", "allocation_id", "controller_id", "identity_id", "product_id", "protocol",
+                     "region", "pool", "node_scope", "selected_node", "selected_name", "node_epoch", "global_lease_id",
+                     "global_epoch", "grant_device", "session_epoch", "max_sessions_global", "issued_at", "expires_epoch",
+                     "signature"}
+    contract = bundle.get("contract") if isinstance(bundle, dict) else ""
+    if contract == CONTRACT:
+        expected = base_expected
+    elif contract == CLAIM_CONTRACT:
+        expected = base_expected | {"claim_token_hash", "claim_endpoint", "claim_tls_fingerprint"}
+    else:
+        die("Contrato de allocation inválido.", 64)
+    if set(bundle) != expected or bundle.get("version") != VERSION:
+        die("Versão/contrato de allocation inválido.", 64)
+    enrollment, node_id, node_epoch = node_enrollment()
+    if bundle.get("controller_id") != enrollment.get("controller_id"):
+        die("Allocation pertence a outro controlador.", 67)
+    if bundle.get("selected_node") != node_id or bundle.get("node_epoch") != node_epoch:
+        die("Allocation foi emitida para outro nó ou node_epoch.", 67)
     validate_identity(bundle.get("identity_id")); validate_protocol(bundle.get("protocol"))
-    if not IDENTITY_RE.fullmatch(str(bundle.get("product_id",""))): die("product_id inválido na allocation.",64)
-    if not ID_RE.fullmatch(str(bundle.get("allocation_id",""))) or not ID_RE.fullmatch(str(bundle.get("global_lease_id",""))):
-        die("IDs da allocation inválidos.",64)
-    if bundle.get("grant_device")!="alloc-"+bundle.get("allocation_id",""): die("grant_device não corresponde à allocation.",64)
-    for field in ("node_epoch","global_epoch","session_epoch","max_sessions_global","issued_at","expires_epoch"):
-        value=bundle.get(field)
-        if isinstance(value,bool) or not isinstance(value,int) or value<1: die(f"{field} inválido na allocation.",64)
-    now=int(time.time())
-    if bundle["issued_at"]>now+120 or bundle["expires_epoch"]<=now or bundle["expires_epoch"]<=bundle["issued_at"]:
-        die("Allocation expirada ou com timestamp inválido.",67)
-    if not verify(NODE_CONTROLLER_PUB,canonical(bundle),bundle.get("signature","")):
-        die("Assinatura da allocation não confere.",67)
+    if not IDENTITY_RE.fullmatch(str(bundle.get("product_id", ""))):
+        die("product_id inválido na allocation.", 64)
+    if not ID_RE.fullmatch(str(bundle.get("allocation_id", ""))) or not ID_RE.fullmatch(str(bundle.get("global_lease_id", ""))):
+        die("IDs da allocation inválidos.", 64)
+    if bundle.get("grant_device") != "alloc-" + bundle.get("allocation_id", ""):
+        die("grant_device não corresponde à allocation.", 64)
+    for field in ("node_epoch", "global_epoch", "session_epoch", "max_sessions_global", "issued_at", "expires_epoch"):
+        value = bundle.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            die(f"{field} inválido na allocation.", 64)
+    if contract == CLAIM_CONTRACT:
+        if not re.fullmatch(r"[a-f0-9]{64}", str(bundle.get("claim_token_hash", ""))):
+            die("claim_token_hash inválido na allocation.", 64)
+        parse_public_endpoint(bundle.get("claim_endpoint", ""))
+        normalize_fp(bundle.get("claim_tls_fingerprint", ""))
+    now = int(time.time())
+    if bundle["issued_at"] > now + 120 or bundle["expires_epoch"] <= now or bundle["expires_epoch"] <= bundle["issued_at"]:
+        die("Allocation expirada ou com timestamp inválido.", 67)
+    if not verify(NODE_CONTROLLER_PUB, canonical(bundle), bundle.get("signature", "")):
+        die("Assinatura da allocation não confere.", 67)
     return bundle
 
 
@@ -584,8 +779,35 @@ def receipt_matches(receipt,bundle):
             receipt.get("protocol")==bundle.get("protocol"))
 
 
+def recover_ssh_password(bundle, ssh_user):
+    if not ssh_user:
+        return ""
+    candidates = []
+    for candidate in Path(NODE_PROVISION_DIR).glob("*.conf"):
+        try:
+            st = os.lstat(candidate)
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or stat.S_IMODE(st.st_mode) & 0o077:
+            continue
+        receipt = read_conf(str(candidate))
+        if (receipt.get("status") == "ok" and receipt.get("identity_id") == bundle.get("identity_id") and
+                receipt.get("product_id") == bundle.get("product_id") and receipt.get("protocol") == "ssh" and
+                receipt.get("ssh_user") == ssh_user and receipt.get("ssh_password")):
+            try:
+                epoch = int(receipt.get("provisioned_epoch", "0"))
+            except ValueError:
+                epoch = 0
+            candidates.append((epoch, receipt.get("ssh_password", "")))
+    if not candidates:
+        return ""
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
 def provision_bundle(bundle):
-    init_dirs(); path=provision_receipt_path(bundle["allocation_id"]); receipt=read_conf(path)
+    init_dirs(); validate_local_claim_endpoint(bundle)
+    path=provision_receipt_path(bundle["allocation_id"]); receipt=read_conf(path)
     if receipt:
         if not receipt_matches(receipt,bundle): die("Receipt local de provisionamento colidiu com outra allocation.",65)
         return receipt,True
@@ -602,6 +824,11 @@ def provision_bundle(bundle):
         die("Provisionamento local retornou identidade/produto inesperado.",70)
     provisioned_protocols=result.get("protocols","").split(",")
     if bundle["protocol"] not in provisioned_protocols: die("Provisionamento local não confirmou o protocolo da allocation.",70)
+    if bundle["protocol"] == "ssh" and not result.get("ssh_password"):
+        recovered_password = recover_ssh_password(bundle, result.get("ssh_user", ""))
+        if recovered_password:
+            result["ssh_password"] = recovered_password
+            result["credential_recovered"] = "1"
     lines=["version=1","status=ok",f"allocation_id={bundle['allocation_id']}",f"identity_id={bundle['identity_id']}",
            f"product_id={bundle['product_id']}",f"protocol={bundle['protocol']}",
            f"resource_created={result.get('resource_created','0')}",f"provision_action={result.get('provision_action','')}",
@@ -618,6 +845,84 @@ def provision_bundle(bundle):
           allocation_id=bundle.get("allocation_id"),resource_created=result.get("resource_created","0"))
     return receipt,False
 
+
+
+def claim_state_path(allocation_id):
+    if not ID_RE.fullmatch(str(allocation_id)):
+        die("allocation_id inválido para claim.", 64)
+    return os.path.join(NODE_CLAIM_DIR, allocation_id + ".conf")
+
+
+def strict_profile(path):
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        die("Profile provisionado não está disponível no nó.", 69)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or stat.S_IMODE(st.st_mode) & 0o077 or st.st_size > MAX_PROFILE:
+        die("Profile provisionado possui ownership, permissões ou tamanho inválidos.", 67)
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        die("Profile provisionado não pôde ser lido com segurança.", 70)
+
+
+def claim(allocation_id):
+    init_dirs()
+    if not ID_RE.fullmatch(str(allocation_id)):
+        die("allocation_id inválido.", 64)
+    token = sys.stdin.readline(256).strip()
+    if not CLAIM_TOKEN_RE.fullmatch(token):
+        die("Claim inválido.", 67)
+    with open(LOCK_FILE, "r+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX); cleanup_node_locked()
+        bundle = read_json(bundle_path(allocation_id))
+        if not bundle or bundle.get("contract") != CLAIM_CONTRACT:
+            die("Public login não está disponível para esta allocation.", 69)
+        now = int(time.time())
+        if int(bundle.get("expires_epoch", 0)) <= now:
+            die("Public login expirou.", 69)
+        seen = read_epoch(NODE_EPOCH_DIR, bundle.get("identity_id", ""))
+        if int(bundle.get("session_epoch", 0)) != seen:
+            die("Public login foi fenced por uma geração mais nova.", 67)
+        expected = str(bundle.get("claim_token_hash", ""))
+        actual = hashlib.sha256(token.encode("ascii")).hexdigest()
+        if not hmac.compare_digest(expected, actual):
+            audit("claim-denied", identity_id=bundle.get("identity_id"), protocol=bundle.get("protocol"),
+                  allocation_id=allocation_id, reason="token")
+            die("Claim inválido.", 67)
+        claim_state = read_conf(claim_state_path(allocation_id))
+        if claim_state.get("status") == "consumed":
+            audit("claim-denied", identity_id=bundle.get("identity_id"), protocol=bundle.get("protocol"),
+                  allocation_id=allocation_id, reason="consumed")
+            die("Public login já foi consumido.", 67)
+        receipt = read_conf(provision_receipt_path(allocation_id))
+        if not receipt_matches(receipt, bundle):
+            die("Credencial ainda não foi provisionada no nó selecionado.", 69)
+        protocol = bundle["protocol"]
+        result = {"contract": CLAIM_RESULT_CONTRACT, "version": VERSION, "allocation_id": allocation_id,
+                  "identity_id": bundle["identity_id"], "product_id": bundle["product_id"], "protocol": protocol,
+                  "selected_node": bundle["selected_node"], "expires_epoch": bundle["expires_epoch"]}
+        if protocol == "ssh":
+            username, password = receipt.get("ssh_user", ""), receipt.get("ssh_password", "")
+            if not username or not password:
+                die("Esta allocation SSH reutilizou uma credencial sem senha recuperável; claim recusado sem rotação implícita.", 69)
+            result.update({"username": username, "password": password})
+        elif protocol == "wireguard":
+            profile_path = receipt.get("wireguard_profile", "")
+            result.update({"profile_format": "wireguard", "profile": strict_profile(profile_path),
+                           "address": receipt.get("wireguard_ip", ""), "address_ipv6": receipt.get("wireguard_ipv6", "")})
+        elif protocol == "openvpn":
+            profile_path = receipt.get("openvpn_profile", "")
+            result.update({"profile_format": "openvpn", "profile": strict_profile(profile_path),
+                           "address_ipv6": receipt.get("openvpn_ipv6", "")})
+        else:
+            die("Protocolo do public login não é suportado.", 64)
+        atomic_write(claim_state_path(allocation_id),
+                     f"version=1\nallocation_id={allocation_id}\nstatus=consumed\nconsumed_epoch={now}\n")
+        audit("claim-ok", identity_id=bundle.get("identity_id"), product_id=bundle.get("product_id"),
+              protocol=protocol, allocation_id=allocation_id, result="one-shot")
+        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    print(json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
 
 
 def sync_node(limit=8):
@@ -744,6 +1049,7 @@ def node_status():
     print("exact_global_grant_required_when_enabled=1"); print("automatic_distribution=1"); print("sync_interval_seconds=3")
     print(f"sync_timer_active={1 if systemctl('is-active','--quiet','manager-hive-allocation-sync.timer')==0 else 0}")
     print("delivery_transport=lease-control-pull"); print("automatic_remote_provisioning=1"); print("controller_in_user_vpn_path=0")
+    print("public_login_claim=1"); print("public_login_transport=direct-node-tls1.3"); print("claim_one_shot=1")
     print(f"provision_receipts={sum(1 for path in Path(NODE_PROVISION_DIR).glob('*.conf') if read_conf(str(path)).get('status')=='ok')}")
     ready=pending=consumed=0
     for path in Path(NODE_STATE_DIR).glob("*.conf"):
@@ -760,7 +1066,8 @@ def controller_status():
     print(f"contract={STATUS_CONTRACT}"); print("role=controller"); print(f"controller_id={ctrl.get('controller_id','')}")
     print("signed_allocation_bundle=1"); print("global_grant_binding=1"); print("session_epoch_fencing=1")
     print("automatic_distribution=1"); print("delivery_transport=lease-control-pull"); print(f"queued_allocations={queued}")
-    print("protocols=ssh,wireguard,openvpn"); print("controller_in_user_vpn_path=0")
+    print("protocols=ssh,wireguard,openvpn"); print("public_login_contract=manager-hive-public-login-v1")
+    print("vpn_secret_on_controller=0"); print("controller_in_user_vpn_path=0")
 
 
 def audit(event,**fields):
@@ -788,8 +1095,10 @@ def purge():
 
 
 def usage():
-    print("Uso: hive_allocations.sh {--status|--node-enable|--node-disable|--accept BUNDLE|--sync [LIMIT]|--controller-status|"
-          "--controller-create ID PROTO OUT [REGION] [POOL] [STICKY] [SCOPE] [TTL]|--controller-revoke ID [REASON]|"
+    print("Uso: hive_allocations.sh {--status|--node-enable|--node-disable|--accept BUNDLE|--sync [LIMIT]|--claim ALLOCATION_ID|"
+          "--controller-status|--controller-endpoint NODE_ID HOST PORT TLS_FP|"
+          "--controller-create ID PROTO OUT [REGION] [POOL] [STICKY] [SCOPE] [TTL]|"
+          "--controller-login ID PROTO OUT [REGION] [POOL] [STICKY] [SCOPE] [TTL]|--controller-revoke ID [REASON]|"
           "--reserve ID PROTO|--commit ALLOCATION_ID TOKEN SESSION|--abort ALLOCATION_ID TOKEN|--install|--detach|--purge}",
           file=sys.stderr)
     raise SystemExit(64)
@@ -802,11 +1111,17 @@ def main(argv):
     if cmd=="--node-disable": node_disable(); return
     if cmd=="--accept" and len(argv)==2: accept_bundle(argv[1]); return
     if cmd=="--sync" and len(argv) in {1,2}: sync_node(argv[1] if len(argv)==2 else 8); return
+    if cmd=="--claim" and len(argv)==2: claim(argv[1]); return
     if cmd=="--controller-status": controller_status(); return
+    if cmd=="--controller-endpoint" and len(argv)==5: controller_endpoint_set(argv[1],argv[2],argv[3],argv[4]); return
     if cmd=="--controller-create" and 4<=len(argv)<=9:
         controller_create(argv[1],argv[2],argv[3],argv[4] if len(argv)>4 else "",argv[5] if len(argv)>5 else "",
                           argv[6] if len(argv)>6 else "",argv[7] if len(argv)>7 else "*",
                           argv[8] if len(argv)>8 else DEFAULT_TTL); return
+    if cmd=="--controller-login" and 4<=len(argv)<=9:
+        controller_login(argv[1],argv[2],argv[3],argv[4] if len(argv)>4 else "",argv[5] if len(argv)>5 else "",
+                         argv[6] if len(argv)>6 else "",argv[7] if len(argv)>7 else "*",
+                         argv[8] if len(argv)>8 else DEFAULT_LOGIN_TTL); return
     if cmd=="--controller-revoke" and len(argv) in {2,3}:
         controller_revoke(argv[1],argv[2] if len(argv)==3 else "admin"); return
     if cmd=="--reserve" and len(argv)==3: reserve(argv[1],argv[2]); return
