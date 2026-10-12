@@ -1,0 +1,61 @@
+name: Temporary 0.8.4 Documentation Patch
+
+on:
+  push:
+    branches: ['fix/0.8.4-release-validation']
+
+permissions:
+  contents: write
+
+jobs:
+  patch-docs:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/0.8.4-release-validation
+          fetch-depth: 0
+
+      - name: Patch only the reviewed 0.8.4 wording
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('docs/HIVE.md')
+          text = p.read_text()
+          text = text.replace(
+              'Accounting global continua fora da 0.8.3.',
+              'Accounting global continua fora da 0.8.4.',
+          )
+          old = ('SSH, WireGuard e OpenVPN continuam entrando pelo `modules/protocol_leases.sh`. '
+                 'Quando enforcement global está configurado, uma admissão só conclui depois do acquire global; '
+                 'negativa ou indisponibilidade em uma **nova** sessão falha fechado e a lease local é revertida.')
+          new = ('SSH e OpenVPN continuam entrando pelo `modules/protocol_leases.sh` com admissão síncrona: '
+                 'o PAM `open_session` e o `client-connect` do OpenVPN só concluem a nova sessão depois do acquire global. '
+                 'Negativa ou indisponibilidade da autoridade em uma nova sessão falha fechado e a lease local é revertida.\n\n'
+                 'WireGuard não possui um hook de login equivalente na 0.8.4. O bridge observa handshakes recentes e aplica '
+                 'a autoridade global no ciclo de reconciliação. Se o acquire global for recusado ou não puder ser obtido, '
+                 'a lease local é revertida e o tráfego do cliente é bloqueado por regra DROP gerenciada em `wg0`; se a regra '
+                 'não puder ser aplicada, o peer runtime é removido. Portanto, o enforcement WireGuard da 0.8.4 é fail-closed '
+                 'por reconciliação, não uma admissão pré-handshake. Grant/login antes da primeira sessão WireGuard pertence à 0.8.5.')
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif 'enforcement WireGuard da 0.8.4 é fail-closed por reconciliação' not in text:
+              raise SystemExit('reviewed Protocol Lease Bridge paragraph not found')
+          p.write_text(text)
+          PY
+
+          grep -q 'Accounting global continua fora da 0.8.4' docs/HIVE.md
+          ! grep -q 'Accounting global continua fora da 0.8.3' docs/HIVE.md
+          grep -q 'enforcement WireGuard da 0.8.4 é fail-closed por reconciliação' docs/HIVE.md
+
+          if git diff --quiet -- docs/HIVE.md; then
+            exit 0
+          fi
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add docs/HIVE.md
+          git commit -m 'docs: clarify 0.8.4 WireGuard lease enforcement'
+          git push origin HEAD:fix/0.8.4-release-validation
