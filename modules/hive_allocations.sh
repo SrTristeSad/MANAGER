@@ -364,8 +364,7 @@ def queue_bundle(bundle):
         current = read_json(path)
         if current != bundle: die("allocation_id colidiu no outbox do controlador.", 65)
         return path
-    atomic_write(path, json.dumps(bundle, sort_keys=True, separators=(",", ":")) + "
-")
+    atomic_write(path, json.dumps(bundle, sort_keys=True, separators=(",", ":")) + "\n")
     return path
 
 
