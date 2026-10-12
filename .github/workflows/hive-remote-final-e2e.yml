@@ -1,0 +1,208 @@
+name: Hive Remote 0.8.8 Final E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hive-remote-final-e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="file://${GITHUB_WORKSPACE}" bash install.sh
+          test "$(sudo cat /opt/manager/VERSION)" = 0.8.7
+          sudo test -x /opt/manager/modules/hive_remote.sh
+          sudo manager hive remote status | grep -q '^arbitrary_target=0$'
+          sudo manager automation v2 status | grep -q '^remote_scoped_rbac=1$'
+
+      - name: Initialize controller and first real remote node
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager hive controller init >/dev/null
+          controller_fp="$(sudo manager hive controller fingerprint)"
+          printf '%s\n' "$controller_fp" >/tmp/controller.fp
+
+          sudo manager hive request /tmp/node1.request.json >/dev/null
+          sudo manager hive controller approve /tmp/node1.request.json /tmp/node1.bundle.json >/dev/null
+          sudo manager hive accept /tmp/node1.bundle.json "$controller_fp" >/dev/null
+          node1="$(sudo manager hive status | awk -F= '$1=="node_id"{print $2}')"
+          test -n "$node1"
+          printf '%s\n' "$node1" >/tmp/node1.id
+          sudo manager --node-set pool PREMIUM >/dev/null
+          sudo manager hive node placement "$node1" BR-SP-A BR BR-SP PREMIUM >/dev/null
+
+          sudo manager automation v2 remote enable 127.0.0.1 19443 >/dev/null
+          for _ in $(seq 1 50); do
+            sudo ss -ltnH | awk '$4 ~ /:19443$/ {found=1} END {exit(found ? 0 : 1)}' && break
+            sleep 0.1
+          done
+          sudo ss -ltnH | grep -q ':19443'
+          sudo manager hive remote node enable 127.0.0.1:19443 'system.describe,node.usage' /tmp/node1.route.json >/dev/null
+          sudo manager hive remote controller accept /tmp/node1.route.json >/dev/null
+
+      - name: Build a second enrolled node with its own TLS gateway
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node2_etc=/tmp/manager-node2/etc/manager
+          sudo mkdir -p "$node2_etc"
+          sudo env MANAGER_ETC="$node2_etc" /opt/manager/modules/hive_identity.sh --install >/dev/null
+          sudo env MANAGER_ETC="$node2_etc" /opt/manager/modules/hive_identity.sh --request /tmp/node2.request.json >/dev/null
+          sudo manager hive controller approve /tmp/node2.request.json /tmp/node2.bundle.json >/dev/null
+          sudo env MANAGER_ETC="$node2_etc" /opt/manager/modules/hive_identity.sh --accept /tmp/node2.bundle.json "$(cat /tmp/controller.fp)" >/dev/null
+          node2="$(sudo env MANAGER_ETC="$node2_etc" /opt/manager/modules/hive_identity.sh --status | awk -F= '$1=="node_id"{print $2}')"
+          test -n "$node2"
+          test "$node2" != "$(cat /tmp/node1.id)"
+          printf '%s\n' "$node2" >/tmp/node2.id
+          sudo manager hive node placement "$node2" BR-SP-B BR BR-SP PREMIUM >/dev/null
+
+          sudo mkdir -p "$node2_etc/automation/v2/tls"
+          sudo openssl genpkey -algorithm ED25519 -out "$node2_etc/automation/v2/tls/server.key" >/dev/null 2>&1
+          sudo openssl req -new -x509 -key "$node2_etc/automation/v2/tls/server.key" -out "$node2_etc/automation/v2/tls/server.crt" -days 2 -subj '/CN=manager-node2-ci' >/dev/null 2>&1
+          fp="$(sudo openssl x509 -in "$node2_etc/automation/v2/tls/server.crt" -outform DER | sha256sum | awk '{print "SHA256:" $1}')"
+          sudo tee "$node2_etc/automation/v2/remote.conf" >/dev/null <<EOF
+          version=1
+          enabled=1
+          bind=127.0.0.1
+          port=19444
+          tls=TLSv1.3
+          pinning=sha256
+          server_fingerprint=$fp
+          EOF
+          sudo chmod 600 "$node2_etc/automation/v2/remote.conf" "$node2_etc/automation/v2/tls/server.key" "$node2_etc/automation/v2/tls/server.crt"
+
+          sudo env MANAGER_ETC="$node2_etc" /opt/manager/modules/hive_remote.sh --node-enable 127.0.0.1:19444 'system.describe' /tmp/node2.route.json >/dev/null
+          sudo manager hive remote controller accept /tmp/node2.route.json >/dev/null
+
+          sudo bash -c "MANAGER_ETC='$node2_etc' exec /opt/manager/modules/automation_v2.sh --serve-remote >/tmp/node2.remote.log 2>&1" &
+          echo $! >/tmp/node2.gateway.pid
+          for _ in $(seq 1 50); do
+            sudo ss -ltnH | awk '$4 ~ /:19444$/ {found=1} END {exit(found ? 0 : 1)}' && break
+            sleep 0.1
+          done
+          if ! sudo ss -ltnH | grep -q ':19444'; then
+            cat /tmp/node2.remote.log >&2 || true
+            exit 1
+          fi
+          test "$(sudo manager hive remote controller list | grep -c '^node-')" = 2
+
+      - name: Publish deterministic health for both routed nodes
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo mkdir -p /etc/manager/hive/controller/health /var/lib/manager/hive-health/nodes
+          printf 'version=1\ndegraded_after_seconds=180\noffline_after_seconds=300\n' | sudo tee /etc/manager/hive/controller/health/controller.conf >/dev/null
+          now="$(date +%s)"
+          sudo python3 - "$now" "$(cat /tmp/node1.id)" "$(cat /tmp/node2.id)" <<'PY'
+          import json,sys
+          now=int(sys.argv[1])
+          for idx,node in enumerate(sys.argv[2:]):
+              conf={}
+              for line in open(f'/etc/manager/hive/controller/nodes/{node}.conf'):
+                  if '=' in line:
+                      k,v=line.rstrip().split('=',1); conf[k]=v
+              obs={'version':1,'node_id':node,'node_epoch':int(conf['node_epoch']),'issued_at':now,'received_at':now,'source':'ci',
+                   'base_state':'HEALTHY','base_reason':'ok','metrics':{'sessions':0 if idx==0 else 50,'max_sessions':100,
+                   'capacity':10,'weight':1,'previous_rtt_ms':10 if idx==0 else 20,
+                   'protocols':['ssh','wireguard','openvpn'],'service_ssh':'active','service_wireguard':'active','service_openvpn':'active'}}
+              open(f'/var/lib/manager/hive-health/nodes/{node}.json','w').write(json.dumps(obs,sort_keys=True,separators=(',',':')))
+          PY
+          sudo chmod 600 /var/lib/manager/hive-health/nodes/*.json
+
+      - name: Reach both nodes through their signed routes
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node1="$(cat /tmp/node1.id)"
+          node2="$(cat /tmp/node2.id)"
+          sudo manager hive remote controller call "$node1" system.describe --request-id e2e-node1-0001 >/tmp/node1.json
+          sudo manager hive remote controller call "$node2" system.describe --request-id e2e-node2-0001 >/tmp/node2.json
+          sudo python3 - <<'PY'
+          import json
+          for path in ('/tmp/node1.json','/tmp/node2.json'):
+              r=json.load(open(path))
+              assert r['ok'] is True and r['code']==0
+              assert r['principal_id']=='hive-controller'
+              assert r['principal_role']=='admin'
+              assert r['cached'] is False
+          PY
+          sudo manager hive remote controller call "$node2" system.describe --request-id e2e-node2-0001 >/tmp/node2.replay.json
+          python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/node2.replay.json'))
+          assert r['ok'] is True and r['cached'] is True
+          PY
+
+      - name: Execute pool selection and real failover to the second gateway
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node1="$(cat /tmp/node1.id)"
+          node2="$(cat /tmp/node2.id)"
+          selected="$(sudo manager hive remote controller select PREMIUM ssh system.describe e2e-stick)"
+          grep -q "^selected_node=${node1}$" <<<"$selected"
+          first="$(sudo manager hive remote controller call-pool PREMIUM ssh system.describe --sticky e2e-stick --request-id e2e-pool-0001)"
+          python3 -c 'import json,sys; r=json.loads(sys.stdin.read()); assert r["ok"] is True' <<<"$first"
+
+          sudo manager hive node drain "$node1" maintenance >/dev/null
+          failover="$(sudo manager hive remote controller select PREMIUM ssh system.describe e2e-stick)"
+          grep -q "^selected_node=${node2}$" <<<"$failover"
+          grep -q '^selection_reason=sticky-failover$' <<<"$failover"
+          second="$(sudo manager hive remote controller call-pool PREMIUM ssh system.describe --sticky e2e-stick --request-id e2e-pool-0002)"
+          python3 -c 'import json,sys; r=json.loads(sys.stdin.read()); assert r["ok"] is True and r["principal_id"]=="hive-controller"' <<<"$second"
+
+          if sudo manager hive remote controller select PREMIUM ssh node.usage >/tmp/action.out 2>/tmp/action.err; then
+            echo 'node without signed node.usage scope entered routed candidate set' >&2
+            exit 1
+          fi
+          grep -q 'Nenhum nó HEALTHY/elegível' /tmp/action.err
+          sudo manager hive node undrain "$node1" >/dev/null
+
+      - name: Fence revoked node and verify audits
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node2="$(cat /tmp/node2.id)"
+          sudo manager hive controller revoke "$node2" e2e-final-fence >/dev/null
+          if sudo manager hive remote controller call "$node2" system.describe >/tmp/revoked.out 2>/tmp/revoked.err; then
+            echo 'revoked second node remained remotely callable' >&2
+            exit 1
+          fi
+          grep -q 'revogado/desabilitado' /tmp/revoked.err
+          sudo python3 - "$node2" <<'PY'
+          import json,sys
+          node2=sys.argv[1]
+          direct=pool=False
+          for line in open('/var/log/manager/hive-remote-audit.jsonl'):
+              e=json.loads(line)
+              if e.get('event')=='controller-route-call' and e.get('node_id')==node2: direct=True
+              if e.get('event')=='controller-pool-call' and e.get('node_id')==node2: pool=True
+          assert direct and pool
+          PY
+
+      - name: Keep release boundary intact
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "$(sudo cat /opt/manager/VERSION)" = 0.8.7
+          sudo manager hive remote controller status | grep -q '^pool_routing=1$'
+          sudo manager hive remote controller status | grep -q '^arbitrary_target=0$'
+          ! grep -q '^## \[0.8.8\]' CHANGELOG.md
+
+      - name: Stop second gateway
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f /tmp/node2.gateway.pid ]]; then
+            sudo kill "$(cat /tmp/node2.gateway.pid)" 2>/dev/null || true
+          fi
