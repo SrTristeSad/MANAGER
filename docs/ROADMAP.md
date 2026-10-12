@@ -280,9 +280,9 @@ Critérios da fase:
 - drain/failover sem expulsar sessão saudável desnecessariamente;
 - sticky session preservada quando possível.
 
-### 0.8.8 — comandos remotos controlados
+### 0.8.8 — comandos remotos controlados ✅
 
-Fundação implementada nesta fase:
+Implementado:
 
 - operações remotas continuam usando exclusivamente os contratos tipados já allowlisted da Automation v2; não existe shell/comando/caminho arbitrário;
 - principals não-locais passam a ter escopos persistentes `node_scope`, `pool_scope` e `action_scope`, com `*` como compatibilidade para registros antigos;
@@ -308,11 +308,11 @@ Roteamento por pool implementado:
 - `manager hive remote controller call-pool POOL PROTOCOL ACTION ...` seleciona e executa a mesma operação tipada, revalidando rota/node_epoch após a seleção;
 - nós sem rota ou sem permissão para a ação nunca entram no conjunto de candidatos.
 
-Ainda pendente para fechar 0.8.8:
+Fechamento da fase:
 
-- gate end-to-end final de múltiplos nós/pool + regressão completa;
-- fechamento formal da release 0.8.8;
-- integração futura com Telegram sem criar uma segunda autoridade paralela.
+- gate end-to-end com dois gateways TLS distintos, múltiplos nós e pool validado;
+- regressão completa de 33 workflows concluída antes do bump formal;
+- integração com Telegram permanece futura e consumirá estes contratos sem criar uma segunda autoridade paralela.
 
 ### 0.8.9 — rotação de chaves e anti-replay distribuído
 

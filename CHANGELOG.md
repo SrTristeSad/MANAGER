@@ -4,6 +4,28 @@ Todas as mudanças relevantes do MANAGER são registradas aqui. O projeto usa ve
 
 > O histórico detalhado das revisões antigas continua disponível no histórico Git. A partir da série 0.7, este arquivo prioriza mudanças de arquitetura e segurança que afetam contratos públicos/operacionais.
 
+## [0.8.8] - 2026-10-12
+
+### Colmeia — comandos remotos controlados
+
+- Automation v2 continua sendo a única superfície de execução remota e aceita somente ações estruturadas allowlisted; não existe shell, comando ou caminho arbitrário.
+- Principals não-locais possuem escopos persistentes `node_scope`, `pool_scope` e `action_scope`; RBAC é reavaliado antes de servir retry idempotente.
+- Nós enrolled publicam anúncios de rota assinados por Ed25519 contendo endpoint IP literal, fingerprint TLS, `action_scope`, `node_epoch` e `route_epoch`.
+- O controlador aceita somente rotas de nós registrados e ativos e cerca replay/rollback de rota por `route_epoch`.
+- `manager hive remote controller call NODE_ID ACTION ...` resolve endpoint e fingerprint exclusivamente pelo registro assinado.
+- A identidade Ed25519 do próprio controlador é reutilizada como principal reservado `hive-controller`; a chave privada do controlador não é distribuída aos nós.
+- Cada nó revalida `controller_id`, `node_epoch`, escopo de ação, escopo de nó e pool antes do dispatcher da Automation v2.
+- `manager hive remote controller select POOL PROTOCOL ACTION [STICKY]` reutiliza o scheduler 0.8.3, sem criar uma segunda autoridade de saúde/carga.
+- `manager hive remote controller call-pool ...` seleciona e executa a operação tipada, revalidando rota e geração depois da seleção.
+- Seleção por pool respeita HEALTHY, drain, protocolo/serviço, capacidade, weighted least-loaded, RTT secundário e sticky/failover.
+- O gate final usa dois gateways TLS distintos e duas identidades enrolled; valida chamadas reais aos dois nós, replay idempotente e failover real para o segundo gateway após drain.
+- Revogação de nó remove sua autoridade de roteamento antes de nova chamada, e decisões entram no audit remoto.
+- O HEAD funcional da 0.8.8 passou **33/33 workflows** antes do bump formal da release.
+
+### Próxima etapa
+
+- 0.8.9: rotação de chaves e anti-replay distribuído, com transição e fencing explícitos.
+
 ## [0.8.7] - 2026-10-12
 
 ### Colmeia — failover e resiliência operacional

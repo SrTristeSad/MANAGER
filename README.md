@@ -4,7 +4,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 > O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva capacidades úteis, substitui implementações inseguras/obsoletas e evolui para uma arquitetura própria de identidade, automação, VPN, revenda e operação multi-servidor.
 
-Versão atual: **0.8.7**.
+Versão atual: **0.8.8**.
 
 ## Princípios
 
@@ -235,7 +235,7 @@ Não existe shell/comando/caminho arbitrário.
 
 Documentação: [`docs/AUTOMATION_V2.md`](docs/AUTOMATION_V2.md).
 
-## Colmeia — 0.8.0 a 0.8.7
+## Colmeia — 0.8.0 a 0.8.8
 
 A Colmeia coordena múltiplas VPS sem transformar o controlador em relay do tráfego dos usuários:
 
@@ -247,6 +247,7 @@ A Colmeia coordena múltiplas VPS sem transformar o controlador em relay do trá
 - **0.8.5** — VPN allocation / login global, entrega/provisionamento automático no nó selecionado e retorno seguro de credenciais/perfis.
 - **0.8.6** — accounting global idempotente por nó, deduplicação de deltas e franquia global separada de `max_sessions_global`.
 - **0.8.7** — resiliência operacional: estado de outage/recovery da autoridade, probe autenticado, fencing de geração e drain sem expulsão desnecessária.
+- **0.8.8** — operações administrativas remotas tipadas, escopos por nó/pool/ação e roteamento assinado por nó ou pool, sem shell arbitrário.
 
 Cada VPS possui uma identidade Ed25519 de controle ligada ao `node_id` e uma chave WireGuard própria para a malha. A chave WireGuard privada nasce e permanece no próprio nó; o controlador recebe somente chave pública, endpoint e metadados de rede.
 

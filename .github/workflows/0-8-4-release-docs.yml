@@ -1,4 +1,4 @@
-name: Validate MANAGER 0.8.7 Release Metadata
+name: Validate MANAGER 0.8.8 Release Metadata
 
 on:
   push:
@@ -14,24 +14,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Verify 0.8.7 version and release documentation
+      - name: Verify 0.8.8 version and release documentation
         shell: bash
         run: |
           set -euxo pipefail
-          test "$(cat VERSION)" = "0.8.7"
-          grep -q 'Versão atual: \*\*0.8.7\*\*' README.md
-          grep -q '0.8.7.*resiliência operacional' README.md
-          grep -q '^## \[0.8.7\] - 2026-10-12$' CHANGELOG.md
-          grep -q '^### 0\.8\.7 — failover e resiliência operacional ✅$' docs/ROADMAP.md
-          grep -q '^## 22\. Resiliência operacional — fundação 0\.8\.7$' docs/HIVE.md
-          grep -q 'manager hive lease node probe' docs/HIVE.md
-          grep -q 'node-authority-recovered' modules/hive_leases.sh
-          grep -q 'node-authority-fenced' modules/hive_leases.sh
+          test "$(cat VERSION)" = "0.8.8"
+          grep -q 'Versão atual: \*\*0.8.8\*\*' README.md
+          grep -q '0.8.8.*operações administrativas remotas tipadas' README.md
+          grep -q '^## \[0.8.8\] - 2026-10-12$' CHANGELOG.md
+          grep -q '^### 0\.8\.8 — comandos remotos controlados ✅$' docs/ROADMAP.md
+          grep -q '^## 23\. Roteamento remoto tipado — fundação 0\.8\.8$' docs/HIVE.md
+          grep -q 'manager hive remote controller call-pool' docs/HIVE.md
+          grep -q 'hive_controller_remote_auth=1' modules/automation_v2.sh
+          grep -q 'controller-call-pool' modules/hive_remote.sh
 
-      - name: Keep 0.8.8 outside the 0.8.7 release
+      - name: Keep 0.8.9 outside the 0.8.8 release
         shell: bash
         run: |
           set -euxo pipefail
-          grep -q '^### 0\.8\.8 — comandos remotos controlados$' docs/ROADMAP.md
-          ! grep -q '^## \[0.8.8\]' CHANGELOG.md
-          test "$(cat VERSION)" = "0.8.7"
+          grep -q '^### 0\.8\.9 — rotação de chaves e anti-replay distribuído$' docs/ROADMAP.md
+          ! grep -q '^## \[0.8.9\]' CHANGELOG.md
+          test "$(cat VERSION)" = "0.8.8"
