@@ -1,0 +1,51 @@
+name: Temporary Fix 0.8.6 Accounting Sandbox
+
+on:
+  push:
+    branches: [feature/0.8.6-global-accounting]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feature/0.8.6-global-accounting
+      - name: Keep accounting paths writable inside hardened lease authority
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('modules/hive_leases.sh')
+          s=p.read_text()
+          old='ReadWritePaths={LEASE_ETC}\n'
+          new='ReadWritePaths={LEASE_ETC} {ACCOUNTING_ETC}\n'
+          if new not in s:
+              if old not in s:
+                  raise SystemExit('ReadWritePaths anchor missing')
+              s=s.replace(old,new,1)
+              p.write_text(s)
+          PY
+          bash -n modules/hive_leases.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          text=Path('modules/hive_leases.sh').read_text()
+          start=text.index("python3 - \"$@\" <<'PY'\n")+len("python3 - \"$@\" <<'PY'\n")
+          end=text.rindex("\nPY\n")
+          compile(text[start:end], 'hive_leases_embedded.py', 'exec')
+          PY
+          git diff --check
+      - name: Commit fix
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add modules/hive_leases.sh
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'fix: permit accounting state in hardened lease authority'
+          git push origin HEAD:feature/0.8.6-global-accounting
