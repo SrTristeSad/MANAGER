@@ -43,8 +43,37 @@ normalize_products() {
   printf '%s\n' "$out"
 }
 
+normalize_remote_scope() {
+  local input="${1:-*}" kind="${2:-label}" item out="" seen=""
+  input="${input// /}"
+  [[ -z "$input" || "$input" == "*" ]] && { printf '*\n'; return 0; }
+  IFS=',' read -r -a items <<< "$input"
+  for item in "${items[@]}"; do
+    case "$kind" in
+      node|pool)
+        [[ "$item" =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$ ]] || return 1
+        ;;
+      action)
+        case "$item" in
+          system.describe|node.usage|connection.preflight|connection.create|connection.status|connection.revoke) ;;
+          *) return 1 ;;
+        esac
+        ;;
+      *) return 1 ;;
+    esac
+    if [[ ",$seen," != *",$item,"* ]]; then
+      [[ -n "$out" ]] && out+=","
+      out+="$item"
+      [[ -n "$seen" ]] && seen+=","
+      seen+="$item"
+    fi
+  done
+  [[ -n "$out" ]] || return 1
+  printf '%s\n' "$out"
+}
+
 write_principal() {
-  local id="$1" role="$2" subject="$3" products="$4" enabled="$5" created="$6" updated="$7" tmp
+  local id="$1" role="$2" subject="$3" products="$4" node_scope="$5" pool_scope="$6" action_scope="$7" enabled="$8" created="$9" updated="${10}" tmp
   tmp="$(mktemp "$STATE_DIR/.principal.XXXXXX")"
   {
     printf 'version=1\n'
@@ -52,6 +81,9 @@ write_principal() {
     printf 'role=%s\n' "$role"
     printf 'subject=%s\n' "$subject"
     printf 'products=%s\n' "$products"
+    printf 'node_scope=%s\n' "$node_scope"
+    printf 'pool_scope=%s\n' "$pool_scope"
+    printf 'action_scope=%s\n' "$action_scope"
     printf 'enabled=%s\n' "$enabled"
     printf 'created_epoch=%s\n' "$created"
     printf 'updated_epoch=%s\n' "$updated"
@@ -90,7 +122,7 @@ init_state() {
   file="$(principal_file "$LOCAL_ROOT_ID")"
   if [[ ! -f "$file" ]]; then
     now="$(date +%s)"
-    write_principal "$LOCAL_ROOT_ID" admin '*' '*' 1 "$now" "$now"
+    write_principal "$LOCAL_ROOT_ID" admin '*' '*' '*' '*' '*' 1 "$now" "$now"
   else
     role="$(read_field "$file" role)"
     subject="$(read_field "$file" subject)"
@@ -133,12 +165,12 @@ create_principal() {
 
   validate_bound_subject "$role" "$subject" || return $?
   now="$(date +%s)"
-  write_principal "$id" "$role" "$subject" "$products" 1 "$now" "$now"
+  write_principal "$id" "$role" "$subject" "$products" '*' '*' '*' 1 "$now" "$now"
   printf 'principal_id=%s\nrole=%s\nsubject=%s\nproducts=%s\nenabled=1\n' "$id" "$role" "$subject" "$products"
 }
 
 set_enabled() {
-  local id="${1:-}" enabled="$2" file role subject products created now
+  local id="${1:-}" enabled="$2" file role subject products node_scope pool_scope action_scope created now
   init_state
   valid_principal_id "$id" || return 64
   [[ "$enabled" == 0 || "$enabled" == 1 ]] || return 64
@@ -151,16 +183,19 @@ set_enabled() {
   role="$(read_field "$file" role)"
   subject="$(read_field "$file" subject)"
   products="$(read_field "$file" products)"
+  node_scope="$(read_field "$file" node_scope)"; node_scope="${node_scope:-*}"
+  pool_scope="$(read_field "$file" pool_scope)"; pool_scope="${pool_scope:-*}"
+  action_scope="$(read_field "$file" action_scope)"; action_scope="${action_scope:-*}"
   created="$(read_field "$file" created_epoch)"
   [[ "$created" =~ ^[0-9]+$ ]] || created="$(date +%s)"
   validate_bound_subject "$role" "$subject" || return $?
   now="$(date +%s)"
-  write_principal "$id" "$role" "$subject" "$products" "$enabled" "$created" "$now"
+  write_principal "$id" "$role" "$subject" "$products" "$node_scope" "$pool_scope" "$action_scope" "$enabled" "$created" "$now"
   printf 'principal_id=%s\nenabled=%s\n' "$id" "$enabled"
 }
 
 set_products() {
-  local id="${1:-}" input="${2:-}" file role subject enabled created products now
+  local id="${1:-}" input="${2:-}" file role subject enabled created products node_scope pool_scope action_scope now
   init_state
   valid_principal_id "$id" || return 64
   file="$(principal_file "$id")"
@@ -171,12 +206,38 @@ set_products() {
   [[ "$products" != '-' ]] || { err "Use * ou uma lista CSV de produtos"; return 64; }
   subject="$(read_field "$file" subject)"
   enabled="$(read_field "$file" enabled)"
+  node_scope="$(read_field "$file" node_scope)"; node_scope="${node_scope:-*}"
+  pool_scope="$(read_field "$file" pool_scope)"; pool_scope="${pool_scope:-*}"
+  action_scope="$(read_field "$file" action_scope)"; action_scope="${action_scope:-*}"
   created="$(read_field "$file" created_epoch)"
   [[ "$created" =~ ^[0-9]+$ ]] || created="$(date +%s)"
   validate_bound_subject "$role" "$subject" || return $?
   now="$(date +%s)"
-  write_principal "$id" "$role" "$subject" "$products" "$enabled" "$created" "$now"
+  write_principal "$id" "$role" "$subject" "$products" "$node_scope" "$pool_scope" "$action_scope" "$enabled" "$created" "$now"
   printf 'principal_id=%s\nproducts=%s\n' "$id" "$products"
+}
+
+set_remote_scope() {
+  local id="${1:-}" nodes="${2:-*}" pools="${3:-*}" actions="${4:-*}"
+  local file role subject products enabled created now node_scope pool_scope action_scope
+  init_state
+  valid_principal_id "$id" || { err "principal_id inválido"; return 64; }
+  file="$(principal_file "$id")"
+  [[ -f "$file" ]] || { err "Principal não existe: $id"; return 66; }
+  [[ "$id" != "$LOCAL_ROOT_ID" ]] || { err "$LOCAL_ROOT_ID mantém escopo local irrestrito"; return 73; }
+  node_scope="$(normalize_remote_scope "$nodes" node)" || { err "Escopo de nós inválido"; return 64; }
+  pool_scope="$(normalize_remote_scope "$pools" pool)" || { err "Escopo de pools inválido"; return 64; }
+  action_scope="$(normalize_remote_scope "$actions" action)" || { err "Escopo de ações inválido"; return 64; }
+  role="$(read_field "$file" role)"
+  subject="$(read_field "$file" subject)"
+  products="$(read_field "$file" products)"
+  enabled="$(read_field "$file" enabled)"
+  created="$(read_field "$file" created_epoch)"
+  [[ "$created" =~ ^[0-9]+$ ]] || created="$(date +%s)"
+  validate_bound_subject "$role" "$subject" || return $?
+  now="$(date +%s)"
+  write_principal "$id" "$role" "$subject" "$products" "$node_scope" "$pool_scope" "$action_scope" "$enabled" "$created" "$now"
+  printf 'principal_id=%s\nnode_scope=%s\npool_scope=%s\naction_scope=%s\n' "$id" "$node_scope" "$pool_scope" "$action_scope"
 }
 
 show_principal() {
@@ -247,6 +308,7 @@ case "${1:-}" in
   --enable) set_enabled "${2:-}" 1; exit $? ;;
   --disable) set_enabled "${2:-}" 0; exit $? ;;
   --set-products) set_products "${2:-}" "${3:-}"; exit $? ;;
+  --set-scope) set_remote_scope "${2:-}" "${3:-*}" "${4:-*}" "${5:-*}"; exit $? ;;
 esac
 
 init_state
@@ -258,6 +320,7 @@ while true; do
   say " 3) Criar principal"
   say " 4) Habilitar/desabilitar"
   say " 5) Alterar escopo de produtos"
+  say " 6) Alterar escopo remoto (nó/pool/ação)"
   say " 0) Voltar"
   say ""
   read -r -p "Opção: " opt
@@ -267,6 +330,15 @@ while true; do
     3) interactive_create ;;
     4) interactive_toggle ;;
     5) interactive_products ;;
+    6)
+      header
+      read -r -p "Principal ID: " id
+      read -r -p "Nós permitidos (* ou CSV): " nodes
+      read -r -p "Pools permitidos (* ou CSV): " pools
+      read -r -p "Ações permitidas (* ou CSV): " actions
+      if set_remote_scope "$id" "${nodes:-*}" "${pools:-*}" "${actions:-*}"; then ok "Escopo remoto atualizado"; fi
+      pause
+      ;;
     0) exit 0 ;;
     *) warn "Opção inválida"; sleep 1 ;;
   esac

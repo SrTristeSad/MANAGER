@@ -122,6 +122,10 @@ remote_local_root=0
 idempotency=1
 audit=1
 secret_replay=0
+remote_scoped_rbac=1
+remote_node_scope=1
+remote_pool_scope=1
+remote_action_scope=1
 ```
 
 `remote_transport=1` representa capacidade implementada. Use `manager automation v2 remote status` para saber se o listener está efetivamente habilitado.
@@ -177,6 +181,16 @@ A matriz principal é:
 | `connection.revoke` | sim | escopo | próprio owner | não |
 
 Revendedor atua na própria árvore e em subrevendedores filhos diretos. Subrevendedor não sobe para o pai. Usuário só consulta a identidade vinculada.
+
+### Escopo remoto por nó, pool e ação — fundação 0.8.8
+
+Principals não-locais também podem ser restringidos ao contexto do nó que recebe a chamada. Os campos persistidos são `node_scope`, `pool_scope` e `action_scope`; arquivos antigos sem esses campos mantêm `*` por compatibilidade.
+
+```bash
+manager automation v2 principal scope loja01 'node-a,node-b' 'BR-SP,BR-RJ' 'system.describe,connection.status'
+```
+
+A validação acontece **antes da idempotência e antes do dispatcher**. Assim, um `request_id` anteriormente autorizado não pode servir resultado em cache depois que o principal perde acesso à ação, ao nó ou ao pool. `local-root` continua reservado ao socket Unix local e não recebe escopo remoto configurável.
 
 ## Credenciais Ed25519
 

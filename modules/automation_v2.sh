@@ -304,6 +304,7 @@ show_status() {
   printf 'rate_limit=1\nprincipal_action_rate_limit=1\nremote_source_burst_limit=1\n'
   printf 'tls_server_pinning=sha256\nremote_local_root=0\n'
   printf 'idempotency=1\naudit=1\nsecret_replay=0\n'
+  printf 'remote_scoped_rbac=1\nremote_node_scope=1\nremote_pool_scope=1\nremote_action_scope=1\n'
 }
 
 run_backend() {
@@ -344,6 +345,7 @@ CONNECTION_ACTIONS = os.path.join(MANAGER_HOME, "modules", "connection_actions.s
 NODE_USAGE = os.path.join(MANAGER_HOME, "modules", "node_usage.sh")
 RESELLERS_DIR = os.path.join(MANAGER_ETC, "access", "resellers")
 IDENTITY_DIR = os.path.join(MANAGER_ETC, "connection", "identities")
+NODE_CONF = os.path.join(MANAGER_ETC, "connection", "node", "node.conf")
 CONTRACT = "manager-automation-v2-local-v1"
 VERSION = 1
 MAX_REQUEST = 65536
@@ -399,6 +401,10 @@ def audit(request_id, action_id, uid, response, principal=None, decision="deny",
              "auth_fingerprint": auth.get("fingerprint", ""), "auth_decision": auth.get("decision", "not-evaluated"),
              "freshness_decision": auth.get("freshness", "not-evaluated"), "replay_decision": replay,
              "rate_limit_decision": rate, "rbac_decision": decision, "rbac_reason": str(reason)[:256],
+             "principal_node_scope": principal.get("node_scope", "") if principal else "",
+             "principal_pool_scope": principal.get("pool_scope", "") if principal else "",
+             "principal_action_scope": principal.get("action_scope", "") if principal else "",
+             "local_node_id": local_node_context().get("node_id", ""), "local_pool": local_node_context().get("pool", ""),
              "ok": bool(response.get("ok", False)), "code": int(response.get("code", 70)), "cached": bool(cached)}
     if isinstance(issued_at, int):
         event["request_issued_at"] = issued_at
@@ -475,7 +481,47 @@ def load_principal(principal_id):
         products = "-"
     else:
         raise PermissionError("role de principal inválida")
-    return {"principal_id": principal_id, "role": role, "subject": subject, "products": products}
+    node_scope = data.get("node_scope", "*") or "*"
+    pool_scope = data.get("pool_scope", "*") or "*"
+    action_scope = data.get("action_scope", "*") or "*"
+    validate_scope(node_scope, "node")
+    validate_scope(pool_scope, "pool")
+    validate_scope(action_scope, "action")
+    return {"principal_id": principal_id, "role": role, "subject": subject, "products": products,
+            "node_scope": node_scope, "pool_scope": pool_scope, "action_scope": action_scope}
+
+
+def validate_scope(value, kind):
+    if value == "*":
+        return
+    if not isinstance(value, str) or not value:
+        raise PermissionError(f"escopo {kind} inválido")
+    items = value.split(",")
+    if len(items) > 128 or len(set(items)) != len(items):
+        raise PermissionError(f"escopo {kind} inválido")
+    for item in items:
+        if kind in {"node", "pool"}:
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}", item):
+                raise PermissionError(f"escopo {kind} inválido")
+        elif kind == "action":
+            if item not in ACTIONS:
+                raise PermissionError("escopo action inválido")
+        else:
+            raise PermissionError("tipo de escopo inválido")
+
+
+def local_node_context():
+    try:
+        data = read_conf(NODE_CONF, strict=True)
+    except RuntimeError:
+        data = None
+    if not data or data.get("version") != "1":
+        return {"node_id": "", "pool": ""}
+    return {"node_id": data.get("node_id", ""), "pool": data.get("pool", "")}
+
+
+def scope_allows(scope, value):
+    return scope == "*" or (bool(value) and value in set(scope.split(",")))
 
 
 def canonical_auth_payload(request):
@@ -637,6 +683,14 @@ def identity_allowed(principal, identity_id):
 
 def authorize(principal, action_id, params):
     role, normalized = principal["role"], dict(params)
+    if principal["principal_id"] != LOCAL_ROOT_ID:
+        if not scope_allows(principal.get("action_scope", "*"), action_id):
+            return False, normalized, "action-out-of-scope"
+        ctx = local_node_context()
+        if not scope_allows(principal.get("node_scope", "*"), ctx["node_id"]):
+            return False, normalized, "node-out-of-scope"
+        if not scope_allows(principal.get("pool_scope", "*"), ctx["pool"]):
+            return False, normalized, "pool-out-of-scope"
     if action_id == "system.describe": return True, normalized, "system-describe"
     if action_id == "node.usage": return role == "admin", normalized, "node-usage-admin-only"
     if action_id in {"connection.preflight", "connection.create"}:

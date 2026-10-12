@@ -1,0 +1,174 @@
+name: Automation v2 Remote Scopes
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  remote-scopes:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="file://${GITHUB_WORKSPACE}" bash install.sh
+          test "$(sudo cat /opt/manager/VERSION)" = 0.8.7
+          sudo manager automation v2 status | grep -q '^remote_scoped_rbac=1$'
+          sudo manager automation v2 status | grep -q '^remote_node_scope=1$'
+          sudo manager automation v2 status | grep -q '^remote_pool_scope=1$'
+          sudo manager automation v2 status | grep -q '^remote_action_scope=1$'
+
+      - name: Configure local node context and scoped remote principal
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager --node-set pool BR-SP >/dev/null
+          node="$(sudo manager --node-context | awk -F= '$1=="node"{print $2}')"
+          test -n "$node"
+          printf '%s\n' "$node" >/tmp/node.id
+          sudo manager automation v2 principal create scoped-admin admin >/dev/null
+          sudo manager automation v2 principal scope scoped-admin "$node" BR-SP 'system.describe,connection.status' >/tmp/scope.out
+          grep -q "^node_scope=${node}$" /tmp/scope.out
+          grep -q '^pool_scope=BR-SP$' /tmp/scope.out
+          grep -q '^action_scope=system.describe,connection.status$' /tmp/scope.out
+          sudo manager automation v2 credential enroll scoped-admin /tmp/scoped-admin.credential >/dev/null
+          test "$(sudo stat -c '%a' /tmp/scoped-admin.credential)" = 600
+
+          if sudo manager automation v2 principal scope local-root '*' '*' '*' >/tmp/root-scope.out 2>/tmp/root-scope.err; then
+            echo 'local-root unexpectedly accepted remote scope mutation' >&2
+            exit 1
+          fi
+          if sudo manager automation v2 principal scope scoped-admin '*' '*' 'shell.exec' >/tmp/bad-scope.out 2>/tmp/bad-scope.err; then
+            echo 'arbitrary action unexpectedly entered action_scope' >&2
+            exit 1
+          fi
+
+      - name: Enable pinned TLS 1.3 remote gateway
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager automation v2 remote enable 127.0.0.1 19443 >/tmp/remote-enable
+          sudo manager automation v2 remote status >/tmp/remote-status
+          fp="$(awk -F= '$1=="server_fingerprint"{print $2}' /tmp/remote-status)"
+          test -n "$fp"
+          printf '%s\n' "$fp" >/tmp/server.fp
+          ready=0
+          for _ in $(seq 1 50); do
+            if sudo ss -ltnH | awk '$4 ~ /:19443$/ {found=1} END {exit(found ? 0 : 1)}'; then ready=1; break; fi
+            sleep 0.1
+          done
+          test "$ready" -eq 1
+
+      - name: Allow only actions inside action scope
+        shell: bash
+        run: |
+          set -euxo pipefail
+          fp="$(cat /tmp/server.fp)"
+          sudo managerctl --remote 127.0.0.1:19443 --server-fingerprint "$fp" --credential /tmp/scoped-admin.credential describe --request-id scope-allow-00001 >/tmp/allow.json
+          python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/allow.json'))
+          assert r['ok'] is True and r['code']==0 and r['principal_id']=='scoped-admin'
+          PY
+
+          set +e
+          sudo managerctl --remote 127.0.0.1:19443 --server-fingerprint "$fp" --credential /tmp/scoped-admin.credential node.usage --request-id scope-action-deny01 >/tmp/action-deny.json
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+          python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/action-deny.json'))
+          assert r['ok'] is False and r['code']==67 and 'RBAC' in r['error']
+          PY
+          sudo grep -q '"rbac_reason":"action-out-of-scope"' /var/log/manager/automation-v2-audit.jsonl
+
+      - name: Fence wrong pool and wrong node before dispatcher
+        shell: bash
+        run: |
+          set -euxo pipefail
+          fp="$(cat /tmp/server.fp)"
+          node="$(cat /tmp/node.id)"
+
+          sudo manager --node-set pool BR-RJ >/dev/null
+          set +e
+          sudo managerctl --remote 127.0.0.1:19443 --server-fingerprint "$fp" --credential /tmp/scoped-admin.credential describe --request-id scope-pool-deny-01 >/tmp/pool-deny.json
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+          sudo grep -q '"rbac_reason":"pool-out-of-scope"' /var/log/manager/automation-v2-audit.jsonl
+
+          sudo manager automation v2 principal scope scoped-admin node-not-this BR-RJ system.describe >/dev/null
+          set +e
+          sudo managerctl --remote 127.0.0.1:19443 --server-fingerprint "$fp" --credential /tmp/scoped-admin.credential describe --request-id scope-node-deny-01 >/tmp/node-deny.json
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+          sudo grep -q '"rbac_reason":"node-out-of-scope"' /var/log/manager/automation-v2-audit.jsonl
+
+          sudo manager automation v2 principal scope scoped-admin "$node" BR-RJ system.describe >/dev/null
+          sudo managerctl --remote 127.0.0.1:19443 --server-fingerprint "$fp" --credential /tmp/scoped-admin.credential describe --request-id scope-restored-001 >/tmp/restored.json
+          python3 - <<'PY'
+          import json
+          assert json.load(open('/tmp/restored.json'))['ok'] is True
+          PY
+
+      - name: Re-evaluate scope before idempotent cache replay
+        shell: bash
+        run: |
+          set -euxo pipefail
+          fp="$(cat /tmp/server.fp)"
+          node="$(cat /tmp/node.id)"
+          sudo managerctl --remote 127.0.0.1:19443 --server-fingerprint "$fp" --credential /tmp/scoped-admin.credential describe --request-id scope-cache-00001 >/tmp/cache-first.json
+          python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/cache-first.json'))
+          assert r['ok'] is True and r['cached'] is False
+          PY
+          sudo manager automation v2 principal scope scoped-admin "$node" BR-RJ connection.status >/dev/null
+          set +e
+          sudo managerctl --remote 127.0.0.1:19443 --server-fingerprint "$fp" --credential /tmp/scoped-admin.credential describe --request-id scope-cache-00001 >/tmp/cache-denied.json
+          rc=$?
+          set -e
+          test "$rc" -eq 67
+          python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/cache-denied.json'))
+          assert r['ok'] is False and r['code']==67 and r['cached'] is False
+          PY
+          sudo python3 - <<'PY'
+          import json
+          found=False
+          with open('/var/log/manager/automation-v2-audit.jsonl') as fh:
+              for line in fh:
+                  event=json.loads(line)
+                  if event.get('request_id')=='scope-cache-00001' and event.get('rbac_reason')=='action-out-of-scope':
+                      assert event.get('rbac_decision')=='deny'
+                      assert event.get('cached') is False
+                      found=True
+          assert found
+          PY
+
+      - name: Preserve scopes across detach and reinstall
+        shell: bash
+        run: |
+          set -euxo pipefail
+          before="$(sudo manager automation v2 principal show scoped-admin)"
+          grep -q '^node_scope=' <<<"$before"
+          grep -q '^pool_scope=BR-RJ$' <<<"$before"
+          grep -q '^action_scope=connection.status$' <<<"$before"
+          sudo /opt/manager/modules/automation_v2.sh --detach
+          sudo test -f /etc/manager/automation/v2/principals/scoped-admin.conf
+          sudo /opt/manager/modules/automation_v2.sh --install
+          after="$(sudo manager automation v2 principal show scoped-admin)"
+          grep -q '^pool_scope=BR-RJ$' <<<"$after"
+          grep -q '^action_scope=connection.status$' <<<"$after"
+          sudo grep -q '"principal_node_scope"' /var/log/manager/automation-v2-audit.jsonl
+          sudo grep -q '"local_node_id"' /var/log/manager/automation-v2-audit.jsonl

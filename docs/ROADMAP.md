@@ -282,10 +282,19 @@ Critérios da fase:
 
 ### 0.8.8 — comandos remotos controlados
 
-- operações remotas tipadas sobre contratos existentes;
-- nenhuma execução arbitrária de shell;
-- escopo/RBAC por nó, pool e ação;
-- audit e idempotência;
+Fundação implementada nesta fase:
+
+- operações remotas continuam usando exclusivamente os contratos tipados já allowlisted da Automation v2; não existe shell/comando/caminho arbitrário;
+- principals não-locais passam a ter escopos persistentes `node_scope`, `pool_scope` e `action_scope`, com `*` como compatibilidade para registros antigos;
+- o `managerd` valida ação, `node_id` local e pool local antes da idempotência e antes do dispatcher;
+- alteração de escopo invalida efetivamente retries que antes seriam servidos do cache, pois RBAC é reavaliado primeiro;
+- audit registra os escopos do principal e o contexto local usados na decisão;
+- `local-root` permanece apenas local/Unix e não pode ser convertido em autoridade remota.
+
+Ainda pendente para fechar 0.8.8:
+
+- superfície de roteamento/controlador para selecionar um nó/pool e encaminhar uma operação tipada sem distribuir shell;
+- gate end-to-end de roteamento entre controlador e múltiplos nós;
 - integração futura com Telegram sem criar uma segunda autoridade paralela.
 
 ### 0.8.9 — rotação de chaves e anti-replay distribuído
