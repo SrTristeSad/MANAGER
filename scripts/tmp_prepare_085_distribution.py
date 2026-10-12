@@ -1,6 +1,7 @@
 import ast
 from pathlib import Path
 
+# Normalize only the two legacy anchors that embed Python string escapes.
 src_path = Path('scripts/tmp_patch_085_distribution.py')
 source = src_path.read_text()
 tree = ast.parse(source)
