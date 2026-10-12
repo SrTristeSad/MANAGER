@@ -15,19 +15,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: feature/0.8.5-remote-provisioning
-      - name: Execute embedded patch and commit
+      - name: Apply and validate remote provisioning integration
         shell: bash
         run: |
           set -euxo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          workflow=Path('.github/workflows/tmp-wire-remote-provisioning.yml').read_text()
-          start=workflow.index("          python3 - <<'PY'\n") + len("          python3 - <<'PY'\n")
-          end=workflow.index("\n          PY\n\n          bash -n", start)
-          raw=workflow[start:end]
-          code='\n'.join(line[10:] if line.startswith('          ') else line for line in raw.splitlines())
-          exec(compile(code,'embedded_remote_provision_patch.py','exec'),{})
-          PY
+          python3 scripts/tmp_apply_remote_provisioning.py
           bash -n modules/provision.sh modules/hive_allocations.sh
           python3 - <<'PY'
           from pathlib import Path
