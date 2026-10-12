@@ -58,12 +58,14 @@ set -u
 MANAGER_HOME="${MANAGER_HOME:-/opt/manager}"
 HIVE_MODULE="$MANAGER_HOME/modules/hive_network.sh"
 HEALTH_MODULE="$MANAGER_HOME/modules/hive_health.sh"
+LEASE_MODULE="$MANAGER_HOME/modules/hive_leases.sh"
 DROPIN_FILE="/etc/systemd/system/manager-automation-v2.service.d/90-manager-hive-network.conf"
 SELF="/usr/local/libexec/manager-hive-lifecycle"
 WG_CONF="/etc/wireguard/mgh0.conf"
 WG_OWNER="/etc/manager/hive/network/mgh0.owner"
 WG_MARKER="# MANAGER-HIVE-NETWORK v1"
 HEALTH_MARKER="# MANAGER-HIVE-HEALTH v1"
+LEASE_MARKER="# MANAGER-HIVE-GLOBAL-LEASE v1"
 
 owned_runtime() {
   local first="" owner="" iface=""
@@ -106,6 +108,16 @@ fallback_health_detach() {
   systemctl daemon-reload >/dev/null 2>&1 || true
 }
 
+fallback_lease_detach() {
+  local file=/etc/systemd/system/manager-hive-lease-controller.service first=""
+  systemctl disable --now manager-hive-lease-controller.service >/dev/null 2>&1 || true
+  if [[ -f "$file" && ! -L "$file" ]]; then
+    IFS= read -r first < "$file" || true
+    [[ "$first" == "$LEASE_MARKER" ]] && rm -f "$file"
+  fi
+  systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
 case "${1:-}" in
   start)
     if [[ -x "$HIVE_MODULE" ]]; then
@@ -114,8 +126,16 @@ case "${1:-}" in
     if [[ -x "$HEALTH_MODULE" ]]; then
       "$HEALTH_MODULE" --install >/dev/null 2>&1 || true
     fi
+    if [[ -x "$LEASE_MODULE" ]]; then
+      "$LEASE_MODULE" --install >/dev/null 2>&1 || true
+    fi
     ;;
   stop)
+    if [[ -x "$LEASE_MODULE" ]]; then
+      "$LEASE_MODULE" --detach >/dev/null 2>&1 || fallback_lease_detach
+    else
+      fallback_lease_detach
+    fi
     if [[ -x "$HEALTH_MODULE" ]]; then
       "$HEALTH_MODULE" --detach >/dev/null 2>&1 || fallback_health_detach
     else
@@ -189,7 +209,7 @@ detach_lifecycle() {
 }
 
 status_lifecycle() {
-  local dropin="0" helper="0" health="0"
+  local dropin="0" helper="0" health="0" leases="0"
   if [[ -f "$DROPIN_FILE" && ! -L "$DROPIN_FILE" && "$(first_line "$DROPIN_FILE")" == "$DROPIN_MARKER" ]]; then
     dropin="1"
   fi
@@ -199,7 +219,10 @@ status_lifecycle() {
   if [[ -x "$MANAGER_HOME/modules/hive_health.sh" ]]; then
     health="1"
   fi
-  printf 'contract=manager-hive-lifecycle-v1\ndropin=%s\nhelper=%s\nhealth_module=%s\nautomation_service=manager-automation-v2.service\n' "$dropin" "$helper" "$health"
+  if [[ -x "$MANAGER_HOME/modules/hive_leases.sh" ]]; then
+    leases="1"
+  fi
+  printf 'contract=manager-hive-lifecycle-v1\ndropin=%s\nhelper=%s\nhealth_module=%s\nglobal_lease_module=%s\nautomation_service=manager-automation-v2.service\n' "$dropin" "$helper" "$health" "$leases"
 }
 
 case "${1:-}" in

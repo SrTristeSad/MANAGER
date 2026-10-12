@@ -33,6 +33,7 @@ OBS_DIR = os.path.join(HEALTH_DATA, "nodes")
 RUNTIME_DIR = os.environ.get("MANAGER_HIVE_SCHEDULER_DATA_DIR", "/var/lib/manager/hive-scheduler")
 STICKY_DIR = os.path.join(RUNTIME_DIR, "sticky")
 AUDIT_FILE = os.environ.get("MANAGER_HIVE_SCHEDULER_AUDIT_FILE", "/var/log/manager/hive-scheduler-audit.jsonl")
+GLOBAL_LEASE_CONF = os.path.join(CTRL_DIR, "leases", "controller.conf")
 
 STATUS_CONTRACT = "manager-hive-scheduler-v1"
 SELECTION_CONTRACT = "manager-hive-scheduler-selection-v1"
@@ -405,7 +406,7 @@ def choose(protocol, region="", pool="", sticky="", node_scope="*"):
     print(f"sticky={1 if sticky else 0}")
     print(f"sticky_hit={1 if sticky_hit else 0}")
     print("existing_sessions_modified=0")
-    print("global_lease_authority=0")
+    print("global_lease_authority=1")
     print("controller_in_user_vpn_path=0")
 
 
@@ -449,6 +450,10 @@ def list_nodes():
         print("|".join(row))
 
 
+def global_lease_controller_enabled():
+    return 1 if read_conf(GLOBAL_LEASE_CONF).get("enabled") == "1" else 0
+
+
 def status():
     init_scheduler()
     nodes = all_node_ids()
@@ -471,8 +476,9 @@ def status():
     print(f"nodes_registered={len(nodes)}")
     print(f"nodes_healthy={healthy}")
     print(f"nodes_draining={draining}")
-    print("global_lease_authority=0")
-    print("global_max_sessions=0")
+    print("global_lease_authority=1")
+    print(f"global_lease_controller_enabled={global_lease_controller_enabled()}")
+    print("global_max_sessions=1")
     print("controller_in_user_vpn_path=0")
 
 

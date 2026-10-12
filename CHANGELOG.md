@@ -4,6 +4,53 @@ Todas as mudanças relevantes do MANAGER são registradas aqui. O projeto usa ve
 
 > O histórico detalhado das revisões antigas continua disponível no histórico Git. A partir da série 0.7, este arquivo prioriza mudanças de arquitetura e segurança que afetam contratos públicos/operacionais.
 
+## [0.8.4] - 2026-10-12
+
+### Colmeia — autoridade global de leases/sessões
+
+- Adicionado `modules/hive_leases.sh` como autoridade global de sessão entre nós enrolled.
+- Política `max_sessions_global` por identidade, opcionalmente vinculada ao produto/plano atual.
+- Operações `acquire`, `heartbeat` e `release` são serializadas no controlador e contam todos os nós da Colmeia.
+- Uma identidade com acesso a vários países/nós não ganha sessões extras por trocar de VPS.
+- Grants do controlador combinam seleção do scheduler e reserva de slot global; `lease_state=reserved` já consome capacidade antes do claim do nó.
+- Reserva só pode ser reclamada pelo nó/protocolo/device selecionados.
+
+### Autenticação, fencing e transporte
+
+- Requisições usam a identidade Ed25519 enrolled do nó, `node_epoch`, timestamp e nonce single-use.
+- Listener de controle usa TLS 1.3 e pin SHA-256; a porta padrão é 9445 e não é aberta automaticamente no firewall.
+- `authority_epoch` é incrementado na reabilitação da autoridade; nós persistem o maior epoch observado e recusam uma autoridade mais antiga que reapareça.
+- Revogação global por identidade remove grants/leasings ativos e avança `global_epoch`.
+- O controlador continua fora do caminho de dados VPN.
+
+### Protocol Lease Bridge e resiliência
+
+- SSH, WireGuard e OpenVPN usam o mesmo bridge existente para adquirir a lease global após a lease local.
+- Recusa global ou falha ao adquirir uma nova sessão reverte a lease local, evitando sessão fantasma.
+- Novos grants falham fechado quando a autoridade global está indisponível.
+- Sessões já válidas podem usar grace curto/configurável somente durante indisponibilidade de transporte.
+- Deny autoritativo, revogação, fencing ou lease ausente encerram a sessão no próximo heartbeat e não recebem grace.
+
+### Lifecycle e CLI
+
+- Configuração/políticas em `/etc/manager/hive/...`, estado/epochs em `/var/lib/manager/hive-leases` e audit em `/var/log/manager/hive-lease-audit.jsonl`.
+- Uninstall normal destaca o listener e preserva estado durável; purge remove estado/audit da autoridade.
+- Rollback destaca a unit 0.8.4 antes de voltar para código sem `hive_leases.sh`, preservando estado para roll-forward.
+- Nova superfície `manager hive lease ...` cobre status, configuração de nó, controlador, grants, revoke e políticas.
+
+### CI e fronteiras
+
+- Novo workflow `Hive Global Lease Authority`.
+- Gate funcional validou dois nós distintos, `max_sessions_global=1`, fencing de authority epoch, revoke, grant/claim scheduler+lease, bridge real, fail-closed/grace e uninstall/reinstall/purge.
+- Os **21/21 workflows** do HEAD funcional concluíram com sucesso antes do bump de release.
+- `global_accounting=0`: accounting/billing global continua fora da 0.8.4.
+- Login/provisionamento VPN global completo permanece para 0.8.5.
+
+### Próxima etapa
+
+- 0.8.5: VPN allocation / login global consumindo grants globais.
+- 0.8.6: quotas e accounting globais.
+
 ## [0.8.2] - 2026-10-11
 
 ### Colmeia — heartbeat assinado e saúde dos nós

@@ -1,0 +1,247 @@
+name: Hive Global Lease Authority
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hive-global-leases:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo test -x /opt/manager/modules/hive_leases.sh
+          out="$(sudo manager hive lease status)"
+          grep -q '^contract=manager-hive-global-lease-v1$' <<<"$out"
+          grep -q '^global_lease_capability=1$' <<<"$out"
+          grep -q '^global_grant_capability=1$' <<<"$out"
+          grep -q '^authority_epoch_fencing=1$' <<<"$out"
+          grep -q '^bounded_existing_session_grace=1$' <<<"$out"
+          sudo manager hive node status | grep -q '^global_lease_authority=1$'
+          sudo manager hive node status | grep -q '^global_max_sessions=1$'
+
+      - name: Initialize Hive controller and global lease authority
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager hive controller init >/tmp/hive-controller-init
+          sudo manager hive lease controller init >/tmp/lease-controller-init
+          sudo manager hive lease controller enable 127.0.0.1 19445 >/tmp/lease-enable
+          grep -q '^global_lease_authority=1$' /tmp/lease-enable
+          grep -q '^tls=TLSv1.3$' /tmp/lease-enable
+          grep -q '^controller_in_user_vpn_path=0$' /tmp/lease-enable
+          grep -q '^firewall_auto_open=0$' /tmp/lease-enable
+          grep -q '^authority_epoch=' /tmp/lease-enable
+          sudo systemctl is-active --quiet manager-hive-lease-controller.service
+          sudo manager hive lease controller status >/tmp/lease-controller-status
+          grep -q '^tls_fingerprint=SHA256:[a-f0-9]\{64\}$' /tmp/lease-controller-status
+
+      - name: Enroll local node and second simulated node
+        shell: bash
+        run: |
+          set -euxo pipefail
+          controller_fp="$(sudo manager hive controller fingerprint)"
+          lease_fp="$(sudo manager hive lease controller status | awk -F= '$1=="tls_fingerprint"{print $2}')"
+          printf '%s\n' "$lease_fp" | grep -q '^SHA256:[a-f0-9]\{64\}$'
+
+          sudo manager hive request /tmp/node-a.request.json >/tmp/node-a-request.log
+          sudo manager hive controller approve /tmp/node-a.request.json /tmp/node-a.bundle.json >/tmp/node-a-approve.log
+          sudo manager hive accept /tmp/node-a.bundle.json "$controller_fp" >/tmp/node-a-accept.log
+          grep -q '^enrolled=1$' /tmp/node-a-accept.log
+          node_a="$(sudo manager hive status | awk -F= '$1=="node_id"{print $2}')"
+          test -n "$node_a"
+          sudo manager hive lease node configure 127.0.0.1 19445 "$lease_fp" 30 >/tmp/node-a-lease-config
+          grep -q '^grace_seconds=30$' /tmp/node-a-lease-config
+
+          sudo rm -rf /tmp/hive-lease-node-b
+          sudo mkdir -m 700 /tmp/hive-lease-node-b
+          sudo env MANAGER_ETC=/tmp/hive-lease-node-b /opt/manager/modules/node_metadata.sh --init >/dev/null
+          sudo env MANAGER_ETC=/tmp/hive-lease-node-b /opt/manager/modules/node_metadata.sh --set country BR >/dev/null
+          sudo env MANAGER_ETC=/tmp/hive-lease-node-b /opt/manager/modules/node_metadata.sh --set region BR-SP >/dev/null
+          sudo env MANAGER_ETC=/tmp/hive-lease-node-b /opt/manager/modules/node_metadata.sh --set pool PREMIUM >/dev/null
+          sudo env MANAGER_ETC=/tmp/hive-lease-node-b /opt/manager/modules/hive_identity.sh --request /tmp/node-b.request.json >/tmp/node-b-request.log
+          sudo manager hive controller approve /tmp/node-b.request.json /tmp/node-b.bundle.json >/tmp/node-b-approve.log
+          sudo env MANAGER_ETC=/tmp/hive-lease-node-b /opt/manager/modules/hive_identity.sh --accept /tmp/node-b.bundle.json "$controller_fp" >/tmp/node-b-accept.log
+          grep -q '^enrolled=1$' /tmp/node-b-accept.log
+          node_b="$(sudo env MANAGER_ETC=/tmp/hive-lease-node-b /opt/manager/modules/hive_identity.sh --status | awk -F= '$1=="node_id"{print $2}')"
+          test -n "$node_b"
+          test "$node_a" != "$node_b"
+          sudo env MANAGER_ETC=/tmp/hive-lease-node-b /opt/manager/modules/hive_leases.sh --node-configure 127.0.0.1 19445 "$lease_fp" 30 >/tmp/node-b-lease-config
+          grep -q '^global_lease_enforcement=1$' /tmp/node-b-lease-config
+          printf '%s\n' "$node_a" >/tmp/node-a.id
+          printf '%s\n' "$node_b" >/tmp/node-b.id
+          printf '%s\n' "$lease_fp" >/tmp/lease.fp
+
+      - name: Enforce Maria max_sessions_global=1 across two nodes
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager hive lease limit set maria 1 PREMIUM >/tmp/maria-limit
+          grep -q '^product_id=PREMIUM$' /tmp/maria-limit
+          grep -q '^max_sessions_global=1$' /tmp/maria-limit
+          sudo manager hive lease limit show maria | grep -q '^product_id=PREMIUM$'
+
+          sudo /opt/manager/modules/hive_leases.sh --acquire-node maria wireguard maria-a device-a aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 60 >/tmp/a-acquire
+          grep -q '^max_sessions_global=1$' /tmp/a-acquire
+          if sudo env MANAGER_ETC=/tmp/hive-lease-node-b /opt/manager/modules/hive_leases.sh --acquire-node maria wireguard maria-b device-b bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 60; then
+            echo 'second node bypassed global session limit' >&2
+            exit 1
+          fi
+          list="$(sudo manager hive lease controller list maria)"
+          test "$(grep -c '^maria|' <<<"$list")" = 1
+          grep -q "|$(cat /tmp/node-a.id)|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|wireguard|" <<<"$list"
+          sudo /opt/manager/modules/hive_leases.sh --heartbeat-node maria aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 60 >/tmp/a-heartbeat
+          sudo /opt/manager/modules/hive_leases.sh --release-node maria aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/tmp/a-release
+          sudo env MANAGER_ETC=/tmp/hive-lease-node-b /opt/manager/modules/hive_leases.sh --acquire-node maria wireguard maria-b device-b bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 60 >/tmp/b-acquire
+          test "$(sudo manager hive lease controller list maria | grep -c '^maria|')" = 1
+
+      - name: Fence an older returning authority epoch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          current="$(sudo manager hive lease controller status | awk -F= '$1=="authority_epoch"{print $2}')"
+          test "$current" -ge 2
+          old=$((current-1))
+          sudo sed -i "s/^authority_epoch=.*/authority_epoch=$old/" /etc/manager/hive/controller/leases/controller.conf
+          if sudo env MANAGER_ETC=/tmp/hive-lease-node-b /opt/manager/modules/hive_leases.sh --heartbeat-node maria bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 60; then
+            echo 'node accepted an older authority epoch' >&2
+            exit 1
+          fi
+          sudo sed -i "s/^authority_epoch=.*/authority_epoch=$current/" /etc/manager/hive/controller/leases/controller.conf
+          sudo env MANAGER_ETC=/tmp/hive-lease-node-b /opt/manager/modules/hive_leases.sh --heartbeat-node maria bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 60 >/dev/null
+
+      - name: Revoke globally and invalidate existing grant
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager hive lease controller revoke maria test-revoke >/tmp/maria-revoke
+          grep -q '^leases_revoked=1$' /tmp/maria-revoke
+          grep -q '^global_epoch=' /tmp/maria-revoke
+          if sudo env MANAGER_ETC=/tmp/hive-lease-node-b /opt/manager/modules/hive_leases.sh --heartbeat-node maria bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 60; then
+            echo 'revoked global lease still heartbeats' >&2
+            exit 1
+          fi
+          test "$(sudo manager hive lease controller list maria | grep -c '^maria|' || true)" = 0
+
+      - name: Build scheduler health and reserve node plus lease atomically
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node_a="$(cat /tmp/node-a.id)"
+          node_b="$(cat /tmp/node-b.id)"
+          sudo mkdir -p /etc/manager/hive/controller/health /var/lib/manager/hive-health/nodes
+          cat <<'EOF' | sudo tee /etc/manager/hive/controller/health/controller.conf >/dev/null
+          version=1
+          degraded_after_seconds=75
+          offline_after_seconds=180
+          EOF
+          now="$(date +%s)"
+          sudo python3 - "$now" "$node_a" "$node_b" <<'PY'
+          import json, os, sys
+          now=int(sys.argv[1]); a=sys.argv[2]; b=sys.argv[3]
+          os.makedirs('/var/lib/manager/hive-health/nodes',exist_ok=True)
+          for node,sessions in ((a,5),(b,0)):
+              conf={}
+              with open(f'/etc/manager/hive/controller/nodes/{node}.conf') as f:
+                  for line in f:
+                      if '=' in line:
+                          k,v=line.rstrip().split('=',1); conf[k]=v
+              obs={'version':1,'node_id':node,'node_epoch':int(conf['node_epoch']),'issued_at':now,'received_at':now,
+                   'source':'ci','base_state':'HEALTHY','base_reason':'ok',
+                   'metrics':{'sessions':sessions,'max_sessions':100,'capacity':10,'weight':1,'previous_rtt_ms':10,
+                              'protocols':['wireguard','ssh'],'service_wireguard':'active','service_ssh':'active','service_openvpn':'unavailable'}}
+              with open(f'/var/lib/manager/hive-health/nodes/{node}.json','w') as f: json.dump(obs,f,sort_keys=True,separators=(',',':'))
+          PY
+          sudo chmod 600 /var/lib/manager/hive-health/nodes/*.json
+          sudo manager hive node placement "$node_a" BR-SP-A BR BR-SP PREMIUM >/dev/null
+          sudo manager hive node placement "$node_b" BR-SP-B BR BR-SP PREMIUM >/dev/null
+          sudo manager hive lease limit set maria 1 PREMIUM >/dev/null
+          grant="$(sudo manager hive lease controller grant maria wireguard BR-SP PREMIUM maria-sticky '*' device-grant 60)"
+          grep -q '^contract=manager-hive-global-grant-v1$' <<<"$grant"
+          grep -q '^lease_state=reserved$' <<<"$grant"
+          selected="$(awk -F= '$1=="selected_node"{print $2}' <<<"$grant")"
+          global_id="$(awk -F= '$1=="global_lease_id"{print $2}' <<<"$grant")"
+          test -n "$selected"
+          test -n "$global_id"
+          if [[ "$selected" == "$node_a" ]]; then
+            claim="$(sudo /opt/manager/modules/hive_leases.sh --acquire-node maria wireguard maria-grant device-grant cccccccccccccccccccccccccccccccc 60)"
+          elif [[ "$selected" == "$node_b" ]]; then
+            claim="$(sudo env MANAGER_ETC=/tmp/hive-lease-node-b /opt/manager/modules/hive_leases.sh --acquire-node maria wireguard maria-grant device-grant cccccccccccccccccccccccccccccccc 60)"
+          else
+            echo "unexpected selected node: $selected" >&2; exit 1
+          fi
+          grep -q "^global_lease_id=$global_id$" <<<"$claim"
+          if sudo manager hive lease controller grant maria wireguard BR-SP PREMIUM second-sticky '*' second-device 60; then
+            echo 'second atomic reservation bypassed max_sessions_global=1' >&2
+            exit 1
+          fi
+          sudo manager hive lease controller revoke maria grant-cleanup >/dev/null
+
+      - name: Enforce global lease through real protocol bridge
+        shell: bash
+        run: |
+          set -euxo pipefail
+          id lease-ci >/dev/null 2>&1 || sudo useradd -M -s /usr/sbin/nologin lease-ci
+          sudo /opt/manager/modules/connection_engine.sh --create bridgeci '' 0 10 ssh >/dev/null
+          sudo /opt/manager/modules/connection_engine.sh --bind bridgeci ssh lease-ci >/dev/null
+          sudo manager hive lease limit set bridgeci 1 TEST >/dev/null
+          sudo /opt/manager/modules/protocol_leases.sh --observe-connect ssh lease-ci device-bridge-a 0 ci notty
+          test "$(sudo /opt/manager/modules/session_engine.sh --list bridgeci | grep -c '^bridgeci' || true)" = 1
+          test "$(sudo manager hive lease controller list bridgeci | grep -c '^bridgeci|' || true)" = 1
+          if sudo /opt/manager/modules/protocol_leases.sh --observe-connect ssh lease-ci device-bridge-b 0 ci notty; then
+            echo 'protocol bridge bypassed global limit' >&2
+            exit 1
+          fi
+          test "$(sudo /opt/manager/modules/session_engine.sh --list bridgeci | grep -c '^bridgeci' || true)" = 1
+          sudo /opt/manager/modules/protocol_leases.sh --observe-disconnect ssh device-bridge-a
+          sudo /opt/manager/modules/protocol_leases.sh --observe-connect ssh lease-ci device-bridge-b 0 ci notty
+          sudo /opt/manager/modules/protocol_leases.sh --observe-disconnect ssh device-bridge-b
+
+      - name: Keep existing session for bounded outage grace but fail new grants closed
+        shell: bash
+        run: |
+          set -euxo pipefail
+          lease_fp="$(cat /tmp/lease.fp)"
+          sudo manager hive lease node configure 127.0.0.1 19445 "$lease_fp" 30 >/dev/null
+          sudo /opt/manager/modules/protocol_leases.sh --observe-connect ssh lease-ci device-grace 0 ci notty
+          sudo manager hive lease controller disable >/dev/null
+          if sudo /opt/manager/modules/protocol_leases.sh --observe-connect ssh lease-ci device-new-while-down 0 ci notty; then
+            echo 'new grant did not fail closed while authority was down' >&2
+            exit 1
+          fi
+          sudo /opt/manager/modules/protocol_leases.sh --reconcile
+          sudo test -n "$(sudo find /run/manager-protocol-leases/maps -maxdepth 1 -type f -name '*.map' -print -quit)"
+          sudo manager hive lease node configure 127.0.0.1 19445 "$lease_fp" 0 >/dev/null
+          sudo /opt/manager/modules/protocol_leases.sh --reconcile || true
+          test -z "$(sudo find /run/manager-protocol-leases/maps -maxdepth 1 -type f -name '*.map' -print -quit)"
+          sudo manager hive lease controller enable 127.0.0.1 19445 >/tmp/lease-reenable
+          grep -q '^authority_epoch=' /tmp/lease-reenable
+
+      - name: Preserve global policy across uninstall and reinstall
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo manager hive lease limit set persist-ci 2 PERSIST >/dev/null
+          sudo test -f /etc/manager/hive/controller/leases/limits/persist-ci.conf
+          sudo /opt/manager/uninstall.sh
+          sudo test -f /etc/manager/hive/controller/leases/limits/persist-ci.conf
+          sudo test -d /var/lib/manager/hive-leases
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          sudo manager hive lease limit show persist-ci | grep -q '^max_sessions_global=2$'
+          sudo manager hive lease limit show persist-ci | grep -q '^product_id=PERSIST$'
+          sudo /opt/manager/modules/hive_leases.sh --purge
+          sudo test ! -e /etc/manager/hive/controller/leases
+          sudo test ! -e /etc/manager/hive/leases
+          sudo test ! -e /var/lib/manager/hive-leases
+          sudo test ! -e /var/log/manager/hive-lease-audit.jsonl

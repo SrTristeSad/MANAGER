@@ -188,25 +188,38 @@ global_accounting=0
 
 Documentação: `docs/HIVE.md`.
 
-### 0.8.4 — autoridade de sessões globais — PRÓXIMO
+### 0.8.4 — autoridade de sessões globais ✅
 
-- lease global por identidade/plano;
-- `max_sessions` global atômico;
-- seleção de nó + aquisição de lease na mesma autoridade;
-- fencing distribuído;
-- `session_epoch` contra retorno de autoridade antiga;
-- troca de servidor sem sessão fantasma;
-- grace controlado em indisponibilidade temporária do controlador.
+Implementado:
 
-Exemplo obrigatório:
+- lease global por identidade com política vinculável a produto/plano;
+- `max_sessions_global` atômico sob lock único da autoridade;
+- acquire/heartbeat/release autenticados pela identidade Ed25519 enrolled do nó;
+- transporte TLS 1.3 com pin SHA-256 e listener opt-in;
+- timestamp, nonce single-use e `node_epoch` no envelope assinado;
+- scheduler + reserva global no comando de grant;
+- reserva já conta para o limite e só pode ser reclamada pelo nó/protocolo/device selecionados;
+- `authority_epoch` persistido no nó impede retorno de controlador antigo;
+- revogação por identidade remove leases e incrementa `global_epoch`;
+- Protocol Lease Bridge aplica a autoridade global a SSH, WireGuard e OpenVPN;
+- novas admissões falham fechado sem autoridade;
+- sessões existentes têm grace limitado somente em outage de transporte; deny/revoke/fencing continuam imediatos;
+- controlador permanece fora do caminho de dados VPN;
+- uninstall/reinstall preservam política/epochs/estado; purge remove; rollback destaca unit sem apagar estado durável;
+- CI `Hive Global Lease Authority` cobre dois nós, limite global, grant/claim, fencing, revoke, bridge real, grace e lifecycle.
+
+Exemplo validado em CI:
 
 ```text
-Maria possui acesso a 10 países/nós
-max_sessions global = 1
-→ pode estar conectada em apenas um deles por vez
+Maria possui acesso a múltiplos nós
+max_sessions_global = 1
+→ uma sessão ocupa o slot global
+→ tentativa simultânea em outro nó é recusada
 ```
 
-### 0.8.5 — VPN allocation / login global
+`global_accounting=0` permanece intencional; billing global não faz parte desta etapa.
+
+### 0.8.5 — VPN allocation / login global — PRÓXIMO
 
 - login/provisionamento capaz de escolher um nó elegível;
 - vínculo entre produto, região/pool, protocolo e lease global;

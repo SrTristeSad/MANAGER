@@ -4,7 +4,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 > O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva capacidades úteis, substitui implementações inseguras/obsoletas e evolui para uma arquitetura própria de identidade, automação, VPN, revenda e operação multi-servidor.
 
-Versão atual: **0.8.3**.
+Versão atual: **0.8.4**.
 
 ## Princípios
 
@@ -235,14 +235,15 @@ Não existe shell/comando/caminho arbitrário.
 
 Documentação: [`docs/AUTOMATION_V2.md`](docs/AUTOMATION_V2.md).
 
-## Colmeia — 0.8.0 a 0.8.3
+## Colmeia — 0.8.0 a 0.8.4
 
 A Colmeia coordena múltiplas VPS sem transformar o controlador em relay do tráfego dos usuários:
 
 - **0.8.0** — identidade Ed25519, enrollment e `node_epoch`;
 - **0.8.1** — rede privada WireGuard `mgh0` e `config_epoch`;
 - **0.8.2** — heartbeat assinado e saúde verificável;
-- **0.8.3** — scheduler weighted least-loaded, placement, sticky, drain e failover de seleção.
+- **0.8.3** — scheduler weighted least-loaded, placement, sticky, drain e failover de seleção;
+- **0.8.4** — autoridade global de leases, `max_sessions_global`, fencing e grace controlado.
 
 Cada VPS possui uma identidade Ed25519 de controle ligada ao `node_id` e uma chave WireGuard própria para a malha. A chave WireGuard privada nasce e permanece no próprio nó; o controlador recebe somente chave pública, endpoint e metadados de rede.
 
@@ -252,9 +253,13 @@ Cada VPS possui uma identidade Ed25519 de controle ligada ao `node_id` e uma cha
 /etc/manager/hive/health/                      configuração durável de heartbeat do nó
 /etc/manager/hive/controller/                  autoridade, registry, health e scheduler
 /etc/manager/hive/controller/scheduler/nodes/  placement/drain por nó
+/etc/manager/hive/controller/leases/           autoridade/políticas globais + TLS
+/etc/manager/hive/leases/                      pin/config de lease global do nó
 /var/lib/manager/hive-health/                  observações/replay/runtime de saúde
 /var/lib/manager/hive-scheduler/sticky/        afinidade sticky
+/var/lib/manager/hive-leases/                  leases, epochs e anti-replay globais
 /var/log/manager/hive-scheduler-audit.jsonl    decisões do scheduler
+/var/log/manager/hive-lease-audit.jsonl        decisões de lease global
 /etc/wireguard/mgh0.conf                       runtime WireGuard gerenciado
 ```
 
@@ -377,7 +382,7 @@ manager-hive-scheduler-node-v1
 manager-hive-scheduler-selection-v1
 ```
 
-Estado da 0.8.3:
+Estado da 0.8.4:
 
 ```text
 cryptographic_node_identity=1
@@ -402,14 +407,27 @@ sticky_session=1
 drain_runtime=1
 selection_failover=1
 controller_in_user_vpn_path=0
-global_lease_authority=0
-global_max_sessions=0
+global_lease_authority=1
+global_max_sessions=1
+global_grant_capability=1
+authority_epoch_fencing=1
+bounded_existing_session_grace=1
 global_accounting=0
 ```
 
-**Importante:** 0.8.3 escolhe nó para nova alocação, mas ainda não concede lease global. Limite global de sessões, `session_epoch` distribuído e autoridade global entram na 0.8.4.
+A 0.8.4 adiciona uma autoridade global separada do scheduler local. O controlador mantém a política `max_sessions_global`, emite grants/reservas e recebe acquire/heartbeat/release assinados pelos nós enrolled. Uma identidade com acesso a vários nós continua obedecendo ao mesmo limite global.
 
-O estado durável da Colmeia entra no backup protegido do MANAGER e pode conter chaves privadas de nó/controlador; trate o backup como segredo operacional. Uninstall normal preserva confiança, topologia, configuração de saúde e estado de placement/sticky; runtime e listeners MANAGER-owned são destacados. `--purge` remove também scheduler state/audit server-side.
+```text
+Maria → nós/países: 10
+max_sessions_global=1
+resultado: no máximo uma sessão global ativa/reservada
+```
+
+O canal de lease usa TLS 1.3 com pin SHA-256 e a identidade Ed25519 enrolled do nó. `authority_epoch` impede aceitar uma autoridade antiga que reapareça. Grants novos falham fechado quando a autoridade não pode ser alcançada; sessões já válidas podem usar apenas um grace curto e configurado durante indisponibilidade de transporte. Negativa válida, revogação ou fencing não recebem grace. SSH, WireGuard e OpenVPN passam pelo mesmo Protocol Lease Bridge.
+
+O controlador continua fora do caminho de dados VPN. A 0.8.4 também **não** transforma o accounting local em billing global: `global_accounting=0` permanece intencional até a etapa própria.
+
+O estado durável da Colmeia entra no backup protegido do MANAGER e pode conter chaves privadas de nó/controlador; trate o backup como segredo operacional. Uninstall normal preserva confiança, topologia, configuração de saúde, placement/sticky e política/estado global de lease; runtime e listeners MANAGER-owned são destacados. `--purge` remove também scheduler/lease state e audits server-side.
 
 Documentação: [`docs/HIVE.md`](docs/HIVE.md).
 
@@ -421,7 +439,7 @@ manager-uninstall
 manager-uninstall --purge
 ```
 
-Uninstall normal fecha listeners/socket e remove código, mas preserva estado durável necessário para reinstalação, incluindo Automation v2 e a Colmeia. O runtime `mgh0` e os units de heartbeat/health gerenciados são destacados antes da remoção. O scheduler não possui daemon próprio; seu placement/sticky é estado persistente. O purge remove estado server-side. Arquivos privados externos de credencial da Automation não são apagados automaticamente.
+Uninstall normal fecha listeners/socket e remove código, mas preserva estado durável necessário para reinstalação, incluindo Automation v2 e a Colmeia. O runtime `mgh0` e os units de heartbeat/health gerenciados são destacados antes da remoção. O scheduler não possui daemon próprio; seu placement/sticky é estado persistente. A autoridade global possui listener próprio opt-in e mantém política/epochs/leases fora de `/opt/manager`; uninstall normal destaca a unit sem destruir esse estado. O purge remove estado server-side. Arquivos privados externos de credencial da Automation não são apagados automaticamente.
 
 ## Segurança
 
@@ -446,7 +464,9 @@ Uninstall normal fecha listeners/socket e remove código, mas preserva estado du
 - scheduler somente seleciona nós `HEALTHY` e elegíveis;
 - drain não encerra sessões existentes;
 - controlador não fica no caminho do tráfego VPN dos usuários;
-- autoridade global de leases ainda não existe na 0.8.3;
+- autoridade global de leases usa limite atômico, Ed25519 enrolled, TLS 1.3 pinado e `authority_epoch`;
+- outage grace é limitado a sessões existentes e nunca transforma uma recusa autoritativa em aceite;
+- accounting global ainda não é autoritativo na 0.8.4;
 - nenhuma ação estruturada aceita shell/comando/caminho arbitrário.
 
 ## CLI principal
@@ -498,6 +518,14 @@ manager hive node placement NODE NAME COUNTRY REGION POOL
 manager hive node drain NODE [REASON]
 manager hive node undrain NODE
 manager hive node select PROTOCOL [REGION] [POOL] [STICKY] [NODE_SCOPE]
+manager hive lease status
+manager hive lease node status|configure HOST PORT TLS_FP [GRACE]|disable
+manager hive lease controller init|status|enable BIND_IP [PORT]|disable|rotate-tls
+manager hive lease controller grant ID PROTO [REGION] [POOL] [STICKY] [SCOPE] [DEVICE] [TTL]
+manager hive lease controller list [ID]
+manager hive lease controller revoke ID [REASON]
+manager hive lease limit set ID MAX [PRODUCT]
+manager hive lease limit import-local ID|sync-local|show ID|list|unset ID
 manager automation legacy status
 manager automation v2 status
 manager automation v2 principals

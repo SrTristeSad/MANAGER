@@ -52,6 +52,16 @@ fi
 if [[ -x "$INSTALL_DIR/modules/ipv6_guard.sh" ]]; then
   "$INSTALL_DIR/modules/ipv6_guard.sh" --detach >/dev/null 2>&1 || true
 fi
+if [[ -x "$INSTALL_DIR/modules/hive_leases.sh" ]]; then
+  "$INSTALL_DIR/modules/hive_leases.sh" --detach >/dev/null 2>&1 || true
+else
+  systemctl disable --now manager-hive-lease-controller.service >/dev/null 2>&1 || true
+  if [[ -f /etc/systemd/system/manager-hive-lease-controller.service ]] && \
+     [[ "$(head -n1 /etc/systemd/system/manager-hive-lease-controller.service 2>/dev/null || true)" == '# MANAGER-HIVE-GLOBAL-LEASE v1' ]]; then
+    rm -f /etc/systemd/system/manager-hive-lease-controller.service
+    systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
+fi
 if [[ -x "$INSTALL_DIR/modules/protocol_leases.sh" ]]; then
   "$INSTALL_DIR/modules/protocol_leases.sh" --detach >/dev/null 2>&1 || true
 fi
@@ -97,6 +107,16 @@ if [[ -x "$INSTALL_DIR/modules/session_engine.sh" ]]; then
 fi
 if [[ -x "$INSTALL_DIR/modules/policy_engine.sh" ]]; then
   "$INSTALL_DIR/modules/policy_engine.sh" --install >/dev/null 2>&1 || true
+fi
+if [[ -x "$INSTALL_DIR/modules/hive_leases.sh" ]]; then
+  "$INSTALL_DIR/modules/hive_leases.sh" --install >/dev/null 2>&1 || true
+else
+  systemctl disable --now manager-hive-lease-controller.service >/dev/null 2>&1 || true
+  if [[ -f /etc/systemd/system/manager-hive-lease-controller.service ]] && \
+     [[ "$(head -n1 /etc/systemd/system/manager-hive-lease-controller.service 2>/dev/null || true)" == '# MANAGER-HIVE-GLOBAL-LEASE v1' ]]; then
+    rm -f /etc/systemd/system/manager-hive-lease-controller.service
+  fi
+  systemctl daemon-reload >/dev/null 2>&1 || true
 fi
 if [[ -x "$INSTALL_DIR/modules/protocol_leases.sh" ]]; then
   "$INSTALL_DIR/modules/protocol_leases.sh" --install >/dev/null 2>&1 || true
