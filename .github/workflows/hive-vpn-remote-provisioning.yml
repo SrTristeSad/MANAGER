@@ -109,7 +109,13 @@ jobs:
             echo 'sync unexpectedly succeeded while ACK was forced to fail' >&2
             exit 1
           fi
-          grep -q 'ci simulated allocation ACK loss' /tmp/first-sync.err
+          if ! grep -q 'ci simulated allocation ACK loss' /tmp/first-sync.err; then
+            echo 'allocation sync failed before the simulated ACK; safe diagnostics follow' >&2
+            cat /tmp/first-sync.err >&2 || true
+            sudo tail -n 50 /var/log/manager/provision-events.log >&2 || true
+            sudo manager hive lease node status >&2 || true
+            exit 1
+          fi
           sudo test -f "$outbox"
           sudo test -f "$receipt"
           test "$(sudo stat -c '%a' "$receipt")" = 600
