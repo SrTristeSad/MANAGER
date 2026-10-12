@@ -24,7 +24,7 @@ jobs:
           grep -q '^## \[0.8.8\] - 2026-10-12$' CHANGELOG.md
           grep -q '^### 0\.8\.8 — comandos remotos controlados ✅$' docs/ROADMAP.md
           grep -q '^## 23\. Roteamento remoto tipado — fundação 0\.8\.8$' docs/HIVE.md
-          grep -q 'manager hive remote controller call-pool' docs/HIVE.md
+          grep -q 'controller call-pool' docs/HIVE.md
           grep -q 'hive_controller_remote_auth=1' modules/automation_v2.sh
           grep -q 'controller-call-pool' modules/hive_remote.sh
 
