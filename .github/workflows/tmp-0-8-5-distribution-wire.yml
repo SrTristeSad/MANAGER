@@ -6,7 +6,7 @@ on:
       - feature/0.8.5-allocation-distribution
     paths:
       - scripts/tmp_patch_085_distribution.py
-      - scripts/tmp_diagnose_085_distribution.py
+      - scripts/tmp_prepare_085_distribution.py
       - .github/workflows/tmp-0-8-5-distribution-wire.yml
 
 permissions:
@@ -21,17 +21,17 @@ jobs:
           ref: feature/0.8.5-allocation-distribution
           fetch-depth: 0
 
-      - name: Diagnose patch anchors
+      - name: Prepare and validate patch anchors
         shell: bash
         run: |
           set -euxo pipefail
-          python3 scripts/tmp_diagnose_085_distribution.py
+          python3 scripts/tmp_prepare_085_distribution.py
 
       - name: Apply distribution patch
         shell: bash
         run: |
           set -euxo pipefail
-          python3 scripts/tmp_patch_085_distribution.py
+          python3 /tmp/fixed_patch_085_distribution.py
           bash -n modules/hive_leases.sh
           bash -n modules/hive_allocations.sh
           bash -n manager
