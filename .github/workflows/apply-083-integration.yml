@@ -1,6 +1,7 @@
 name: Apply 0.8.3 scheduler integration
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
@@ -13,7 +14,7 @@ jobs:
   apply:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -34,12 +35,8 @@ jobs:
                   raise SystemExit('manager usage anchor not found')
               s = s.replace(usage_anchor, usage_anchor + usage_add, 1)
 
-          case_anchor = '''      controller)\n        case "${3:-status}" in\n'''
           node_block = '''      node)\n        case "${3:-status}" in\n          status) exec "$MANAGER_HOME/modules/hive_scheduler.sh" --status ;;\n          list) exec "$MANAGER_HOME/modules/hive_scheduler.sh" --list ;;\n          show) [[ -n "${4:-}" ]] || { err "Uso: manager hive node show NODE"; exit 64; }; exec "$MANAGER_HOME/modules/hive_scheduler.sh" --show "$4" ;;\n          placement)\n            [[ -n "${4:-}" && -n "${5:-}" && -n "${6:-}" && -n "${7:-}" && -n "${8:-}" ]] || { err "Uso: manager hive node placement NODE NAME COUNTRY REGION POOL"; exit 64; }\n            exec "$MANAGER_HOME/modules/hive_scheduler.sh" --placement "$4" "$5" "$6" "$7" "$8"\n            ;;\n          drain) [[ -n "${4:-}" ]] || { err "Uso: manager hive node drain NODE [REASON]"; exit 64; }; exec "$MANAGER_HOME/modules/hive_scheduler.sh" --drain "$4" "${5:-admin-drain}" ;;\n          undrain) [[ -n "${4:-}" ]] || { err "Uso: manager hive node undrain NODE"; exit 64; }; exec "$MANAGER_HOME/modules/hive_scheduler.sh" --undrain "$4" ;;\n          select)\n            [[ -n "${4:-}" ]] || { err "Uso: manager hive node select PROTOCOL [REGION] [POOL] [STICKY] [NODE_SCOPE]"; exit 64; }\n            exec "$MANAGER_HOME/modules/hive_scheduler.sh" --select "$4" "${5:-}" "${6:-}" "${7:-}" "${8:-*}"\n            ;;\n          *) err "Uso: manager hive node {status|list|show|placement|drain|undrain|select} ..."; exit 64 ;;\n        esac\n        ;;\n'''
           if '      node)\n        case "${3:-status}" in' not in s:
-              if case_anchor not in s:
-                  raise SystemExit('manager hive controller anchor not found')
-              # Insert before the Hive controller branch, not Automation controller branches.
               health_end = '          *) err "Uso: manager hive health {status|configure|disable|send|controller ...}"; exit 64 ;;\n        esac\n        ;;\n'
               idx = s.find(health_end)
               if idx < 0:
