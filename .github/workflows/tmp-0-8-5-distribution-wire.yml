@@ -48,7 +48,7 @@ jobs:
           set -euxo pipefail
           git config user.name 'SrTristeSad'
           git config user.email '48489740+SrTristeSad@users.noreply.github.com'
-          git add modules/hive_leases.sh modules/hive_allocations.sh manager docs/HIVE.md docs/ROADMAP.md .github/workflows/hive-vpn-allocation-distribution.yml
+          git add modules/hive_leases.sh modules/hive_allocations.sh manager docs/HIVE.md docs/ROADMAP.md
           git diff --cached --check
           git commit -m 'feat: distribute signed VPN allocations to selected nodes'
           git push origin HEAD:feature/0.8.5-allocation-distribution
