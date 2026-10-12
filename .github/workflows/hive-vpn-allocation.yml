@@ -49,7 +49,7 @@ jobs:
           EOF
           now="$(date +%s)"
           sudo python3 - "$now" "$node" <<'PY'
-          import json, os, sys
+          import json, sys
           now=int(sys.argv[1]); node=sys.argv[2]
           conf={}
           with open(f'/etc/manager/hive/controller/nodes/{node}.conf') as f:
@@ -73,6 +73,12 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          sudo useradd -M -s /usr/sbin/nologin alloc-ssh
+          sudo mkdir -p /etc/manager/openvpn/meta /etc/manager/wireguard/clients
+          printf 'client=ovpn-alloc-ci\n' | sudo tee /etc/manager/openvpn/meta/ovpn-alloc-ci.meta >/dev/null
+          printf 'client=wg-alloc-ci\n' | sudo tee /etc/manager/wireguard/clients/wg-alloc-ci.meta >/dev/null
+          printf '[Interface]\nPrivateKey=ci-placeholder\n' | sudo tee /etc/manager/wireguard/clients/wg-alloc-ci.conf >/dev/null
+
           sudo /opt/manager/modules/connection_engine.sh --create allocci '' 0 10 ssh,wireguard,openvpn >/dev/null
           sudo /opt/manager/modules/connection_engine.sh --bind allocci ssh alloc-ssh >/dev/null
           sudo /opt/manager/modules/connection_engine.sh --bind allocci openvpn ovpn-alloc-ci >/dev/null
