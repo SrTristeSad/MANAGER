@@ -424,7 +424,7 @@ ProtectControlGroups=true
 PrivateDevices=true
 RestrictSUIDSGID=true
 ProtectSystem=full
-ReadWritePaths={LEASE_ETC}
+ReadWritePaths={LEASE_ETC} {ACCOUNTING_ETC}
 
 [Install]
 WantedBy=multi-user.target
