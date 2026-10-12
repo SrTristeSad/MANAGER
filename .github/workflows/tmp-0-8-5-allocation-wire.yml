@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   patch:
-    if: github.event.head_commit.message == 'chore: simplify temporary 0.8.5 wiring workflow'
+    if: github.event.head_commit.message == 'run-patch'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -28,5 +28,5 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add manager install.sh uninstall.sh rollback.sh modules/hive_leases.sh modules/protocol_leases.sh
-          git commit -m 'apply: wire 0.8.5 allocation foundation'
+          git commit -m 'apply 0.8.5 allocation wiring'
           git push origin HEAD:feature/0.8.5-vpn-allocation-foundation
