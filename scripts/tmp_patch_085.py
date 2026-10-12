@@ -1,0 +1,309 @@
+from pathlib import Path
+
+
+def replace_once(path, old, new):
+    p = Path(path)
+    text = p.read_text()
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(f"{path}: expected exactly one match, got {count}")
+    p.write_text(text.replace(old, new, 1))
+
+
+replace_once("modules/hive_leases.sh", '''def acquire_locked(node_id, node_epoch, params):
+    identity_id, local_session_id, protocol, resource, device, ttl = parse_params(params, True)
+    maximum, policy = get_limit(identity_id)
+''', '''def acquire_locked(node_id, node_epoch, params):
+    identity_id, local_session_id, protocol, resource, device, ttl = parse_params(params, True)
+    exact_global_id = params.get("global_lease_id", "") if isinstance(params, dict) else ""
+    if exact_global_id and not SESSION_RE.fullmatch(str(exact_global_id)):
+        raise LeaseError(64, "invalid-global-lease-id")
+    maximum, policy = get_limit(identity_id)
+''')
+
+replace_once("modules/hive_leases.sh", '''        if actual != expected:
+            raise LeaseError(65, "local-session-conflict")
+        existing["heartbeat_epoch"] = now
+''', '''        if actual != expected:
+            raise LeaseError(65, "local-session-conflict")
+        if exact_global_id and existing.get("global_lease_id") != exact_global_id:
+            raise LeaseError(65, "exact-grant-session-conflict")
+        existing["heartbeat_epoch"] = now
+''')
+
+replace_once("modules/hive_leases.sh", '''    # A grant reserved by this controller can be claimed only by its selected node/protocol/device.
+    for reserved_path in Path(ACTIVE_DIR).glob("*.json"):
+''', '''    # 0.8.5 can require one exact controller-issued grant. In that mode there is no
+    # fallback to another reservation or to generic free global capacity.
+    if exact_global_id:
+        reserved_path = lease_path(exact_global_id)
+        reserved = read_json(reserved_path)
+        if not reserved or reserved.get("lease_state") != "reserved":
+            raise LeaseError(69, "exact-global-grant-not-reserved")
+        expected = (identity_id, node_id, int(node_epoch), protocol, device, current_epoch(identity_id))
+        actual = (reserved.get("identity_id"), reserved.get("node_id"), int(reserved.get("node_epoch", 0)),
+                  reserved.get("protocol"), reserved.get("device_id"), int(reserved.get("global_epoch", 0)))
+        if actual != expected:
+            raise LeaseError(67, "exact-global-grant-mismatch")
+        reserved["lease_state"] = "active"
+        reserved["local_session_id"] = local_session_id
+        reserved["resource"] = resource
+        reserved["heartbeat_epoch"] = now
+        reserved["expires_epoch"] = now + ttl
+        atomic_write(reserved_path, json.dumps(reserved, sort_keys=True, separators=(",", ":")) + "\\n")
+        audit("grant-claim-exact", identity_id=identity_id, node_id=node_id,
+              global_lease_id=reserved.get("global_lease_id"), local_session_id=local_session_id)
+        return reserved
+
+    # Compatibility path for 0.8.4 callers that did not receive an exact allocation ticket.
+    for reserved_path in Path(ACTIVE_DIR).glob("*.json"):
+''')
+
+replace_once("modules/hive_leases.sh", '''def node_acquire(identity_id, protocol, resource, device, local_session_id, ttl):
+    params = {"identity_id": validate_identity(identity_id), "protocol": protocol, "resource": resource,
+              "device_id": device, "local_session_id": validate_session(local_session_id), "ttl": int(ttl)}
+    result = node_request("acquire", params)
+''', '''def node_acquire(identity_id, protocol, resource, device, local_session_id, ttl, global_lease_id=""):
+    params = {"identity_id": validate_identity(identity_id), "protocol": protocol, "resource": resource,
+              "device_id": device, "local_session_id": validate_session(local_session_id), "ttl": int(ttl)}
+    if global_lease_id:
+        if not SESSION_RE.fullmatch(str(global_lease_id)):
+            die("global_lease_id inválido.", 64)
+        params["global_lease_id"] = global_lease_id
+    result = node_request("acquire", params)
+''')
+
+replace_once("modules/hive_leases.sh", "--acquire-node ID PROTO RESOURCE DEVICE SESSION [TTL]|--heartbeat-node ID SESSION [TTL]", "--acquire-node ID PROTO RESOURCE DEVICE SESSION [TTL] [GLOBAL_LEASE_ID]|--heartbeat-node ID SESSION [TTL]")
+
+replace_once("modules/hive_leases.sh", '''    if cmd == "--acquire-node" and len(argv) in {6,7}: node_acquire(argv[1], argv[2], argv[3], argv[4], argv[5], argv[6] if len(argv) == 7 else DEFAULT_TTL); return
+''', '''    if cmd == "--acquire-node" and len(argv) in {6,7,8}:
+        node_acquire(argv[1], argv[2], argv[3], argv[4], argv[5],
+                     argv[6] if len(argv) >= 7 else DEFAULT_TTL,
+                     argv[7] if len(argv) == 8 else ""); return
+''')
+
+replace_once("modules/protocol_leases.sh", '''GLOBAL_LEASE_MODULE="$MANAGER_HOME/modules/hive_leases.sh"
+GLOBAL_LEASE_CONF="$MANAGER_ETC/hive/leases/node.conf"
+''', '''GLOBAL_LEASE_MODULE="$MANAGER_HOME/modules/hive_leases.sh"
+GLOBAL_LEASE_CONF="$MANAGER_ETC/hive/leases/node.conf"
+ALLOCATION_MODULE="$MANAGER_HOME/modules/hive_allocations.sh"
+ALLOCATION_CONF="$MANAGER_ETC/hive/allocations/node.conf"
+''')
+
+replace_once("modules/protocol_leases.sh", '''global_lease_enabled() {
+  [[ -f "$GLOBAL_LEASE_CONF" ]] || return 1
+  [[ "$(awk -F= '$1=="enabled" {print $2; exit}' "$GLOBAL_LEASE_CONF" 2>/dev/null || true)" == 1 ]]
+}
+
+global_lease_acquire() {
+  local identity="$1" protocol="$2" resource="$3" device="$4" session_id="$5"
+  global_lease_enabled || return 0
+  [[ -x "$GLOBAL_LEASE_MODULE" ]] || { err "Enforcement global está habilitado, mas hive_leases.sh não existe."; return 69; }
+  "$GLOBAL_LEASE_MODULE" --acquire-node "$identity" "$protocol" "$resource" "$device" "$session_id" "$LEASE_TTL" >/dev/null
+}
+''', '''global_lease_enabled() {
+  [[ -f "$GLOBAL_LEASE_CONF" ]] || return 1
+  [[ "$(awk -F= '$1=="enabled" {print $2; exit}' "$GLOBAL_LEASE_CONF" 2>/dev/null || true)" == 1 ]]
+}
+
+allocation_enabled() {
+  [[ -f "$ALLOCATION_CONF" ]] || return 1
+  [[ "$(awk -F= '$1=="enabled" {print $2; exit}' "$ALLOCATION_CONF" 2>/dev/null || true)" == 1 ]]
+}
+
+allocation_reserve() {
+  local identity="$1" protocol="$2"
+  [[ -x "$ALLOCATION_MODULE" ]] || { err "Allocation 0.8.5 está habilitada, mas hive_allocations.sh não existe."; return 69; }
+  "$ALLOCATION_MODULE" --reserve "$identity" "$protocol"
+}
+
+allocation_commit() {
+  local allocation_id="$1" token="$2" session_id="$3"
+  "$ALLOCATION_MODULE" --commit "$allocation_id" "$token" "$session_id" >/dev/null
+}
+
+allocation_abort() {
+  local allocation_id="$1" token="$2"
+  "$ALLOCATION_MODULE" --abort "$allocation_id" "$token" >/dev/null 2>&1 || true
+}
+
+global_lease_acquire() {
+  local identity="$1" protocol="$2" resource="$3" device="$4" session_id="$5" grant_id="${6:-}" grant_device="${7:-}"
+  if allocation_enabled && ! global_lease_enabled; then
+    err "Allocation 0.8.5 exige enforcement global de leases ativo neste nó."
+    return 69
+  fi
+  global_lease_enabled || return 0
+  [[ -x "$GLOBAL_LEASE_MODULE" ]] || { err "Enforcement global está habilitado, mas hive_leases.sh não existe."; return 69; }
+  if [[ -n "$grant_id" ]]; then
+    "$GLOBAL_LEASE_MODULE" --acquire-node "$identity" "$protocol" "$resource" "${grant_device:-$device}" "$session_id" "$LEASE_TTL" "$grant_id" >/dev/null
+  else
+    "$GLOBAL_LEASE_MODULE" --acquire-node "$identity" "$protocol" "$resource" "$device" "$session_id" "$LEASE_TTL" >/dev/null
+  fi
+}
+''')
+
+replace_once("modules/protocol_leases.sh", '''acquire_managed() {
+  local protocol="$1" resource="$2" device="$3" source_pid="${4:-0}" remote="${5:--}" tty="${6:--}" identity token session_id epoch rc=0
+  valid_protocol "$protocol" || return 64
+  valid_resource "$resource" || return 64
+  valid_device "$device" || return 64
+  identity="$(find_identity_by_binding "$protocol" "$resource" 2>/dev/null || true)"
+  [[ -n "$identity" ]] || return 0
+  token="$("$SESSION_ENGINE" --acquire "$identity" "$protocol" "$resource" "$device" "$LEASE_TTL")" || return $?
+  session_id="$(token_value "$token" session_id)"
+  epoch="$(token_value "$token" epoch)"
+  [[ "$session_id" =~ ^[a-f0-9]{32}$ && "$epoch" =~ ^[1-9][0-9]*$ ]] || return 70
+  global_lease_acquire "$identity" "$protocol" "$resource" "$device" "$session_id" || rc=$?
+  if (( rc != 0 )); then
+    "$SESSION_ENGINE" --release "$session_id" "$epoch" >/dev/null 2>&1 || true
+    return "$rc"
+  fi
+  write_map "$protocol" "$resource" "$device" "$identity" "$session_id" "$epoch" "$source_pid" "$remote" "$tty"
+}
+''', '''acquire_managed() {
+  local protocol="$1" resource="$2" device="$3" source_pid="${4:-0}" remote="${5:--}" tty="${6:--}"
+  local identity token session_id epoch rc=0 allocation="" allocation_id="" allocation_token="" grant_id="" grant_device=""
+  valid_protocol "$protocol" || return 64
+  valid_resource "$resource" || return 64
+  valid_device "$device" || return 64
+  identity="$(find_identity_by_binding "$protocol" "$resource" 2>/dev/null || true)"
+  [[ -n "$identity" ]] || return 0
+
+  if allocation_enabled; then
+    allocation="$(allocation_reserve "$identity" "$protocol")" || return $?
+    allocation_id="$(token_value "$allocation" allocation_id)"
+    allocation_token="$(token_value "$allocation" reservation_token)"
+    grant_id="$(token_value "$allocation" global_lease_id)"
+    grant_device="$(token_value "$allocation" grant_device)"
+    if [[ ! "$allocation_id" =~ ^[a-f0-9]{32}$ || ! "$allocation_token" =~ ^[a-f0-9]{32,64}$ || ! "$grant_id" =~ ^[a-f0-9]{32}$ ]]; then
+      err "Allocation local retornou contrato inválido."
+      return 70
+    fi
+  fi
+
+  token="$("$SESSION_ENGINE" --acquire "$identity" "$protocol" "$resource" "$device" "$LEASE_TTL")" || {
+    rc=$?
+    [[ -z "$allocation_id" ]] || allocation_abort "$allocation_id" "$allocation_token"
+    return "$rc"
+  }
+  session_id="$(token_value "$token" session_id)"
+  epoch="$(token_value "$token" epoch)"
+  if [[ ! "$session_id" =~ ^[a-f0-9]{32}$ || ! "$epoch" =~ ^[1-9][0-9]*$ ]]; then
+    [[ -z "$allocation_id" ]] || allocation_abort "$allocation_id" "$allocation_token"
+    return 70
+  fi
+  global_lease_acquire "$identity" "$protocol" "$resource" "$device" "$session_id" "$grant_id" "$grant_device" || rc=$?
+  if (( rc != 0 )); then
+    "$SESSION_ENGINE" --release "$session_id" "$epoch" >/dev/null 2>&1 || true
+    [[ -z "$allocation_id" ]] || allocation_abort "$allocation_id" "$allocation_token"
+    return "$rc"
+  fi
+  if [[ -n "$allocation_id" ]] && ! allocation_commit "$allocation_id" "$allocation_token" "$session_id"; then
+    global_lease_release "$identity" "$session_id" >/dev/null 2>&1 || true
+    "$SESSION_ENGINE" --release "$session_id" "$epoch" >/dev/null 2>&1 || true
+    allocation_abort "$allocation_id" "$allocation_token"
+    return 70
+  fi
+  write_map "$protocol" "$resource" "$device" "$identity" "$session_id" "$epoch" "$source_pid" "$remote" "$tty"
+}
+''')
+
+replace_once("manager", '''  manager hive lease limit set ID MAX [PRODUCT]|import-local ID|sync-local|show ID|list|unset ID
+                                  autoridade global de sessões entre nós da Colmeia
+''', '''  manager hive lease limit set ID MAX [PRODUCT]|import-local ID|sync-local|show ID|list|unset ID
+                                  autoridade global de sessões entre nós da Colmeia
+  manager hive allocation status|enable|disable
+  manager hive allocation accept BUNDLE
+  manager hive allocation controller status
+  manager hive allocation controller create ID PROTO OUT [REGION] [POOL] [STICKY] [SCOPE] [TTL]
+  manager hive allocation controller revoke ID [REASON]
+                                  allocation/login global assinado da Colmeia (0.8.5)
+''')
+
+replace_once("manager", '''      node)
+        case "${3:-status}" in
+''', '''      allocation)
+        case "${3:-status}" in
+          status) exec "$MANAGER_HOME/modules/hive_allocations.sh" --status ;;
+          enable) exec "$MANAGER_HOME/modules/hive_allocations.sh" --node-enable ;;
+          disable) exec "$MANAGER_HOME/modules/hive_allocations.sh" --node-disable ;;
+          accept) [[ -n "${4:-}" ]] || { err "Uso: manager hive allocation accept BUNDLE"; exit 64; }; exec "$MANAGER_HOME/modules/hive_allocations.sh" --accept "$4" ;;
+          controller)
+            case "${4:-status}" in
+              status) exec "$MANAGER_HOME/modules/hive_allocations.sh" --controller-status ;;
+              create)
+                [[ -n "${5:-}" && -n "${6:-}" && -n "${7:-}" ]] || { err "Uso: manager hive allocation controller create ID PROTO OUT [REGION] [POOL] [STICKY] [SCOPE] [TTL]"; exit 64; }
+                exec "$MANAGER_HOME/modules/hive_allocations.sh" --controller-create "$5" "$6" "$7" "${8:-}" "${9:-}" "${10:-}" "${11:-*}" "${12:-60}"
+                ;;
+              revoke) [[ -n "${5:-}" ]] || { err "Uso: manager hive allocation controller revoke ID [REASON]"; exit 64; }; exec "$MANAGER_HOME/modules/hive_allocations.sh" --controller-revoke "$5" "${6:-admin}" ;;
+              *) err "Uso: manager hive allocation controller {status|create|revoke} ..."; exit 64 ;;
+            esac
+            ;;
+          *) err "Uso: manager hive allocation {status|enable|disable|accept|controller ...}"; exit 64 ;;
+        esac
+        ;;
+      node)
+        case "${3:-status}" in
+''')
+
+replace_once("manager", '''      *) err "Uso: manager hive {status|request|accept|network ...|health ...|node ...|lease ...|controller ...}"; exit 64 ;;
+''', '''      *) err "Uso: manager hive {status|request|accept|network ...|health ...|node ...|lease ...|allocation ...|controller ...}"; exit 64 ;;
+''')
+
+replace_once("install.sh", '''  "modules/hive_leases.sh"
+  "modules/hive_lifecycle.sh"
+''', '''  "modules/hive_leases.sh"
+  "modules/hive_allocations.sh"
+  "modules/hive_lifecycle.sh"
+''')
+
+replace_once("install.sh", '''"$INSTALL_DIR/modules/hive_leases.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] A autoridade global de leases não pôde ser reanexada. Use: manager hive lease status" >&2
+}
+''', '''"$INSTALL_DIR/modules/hive_leases.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] A autoridade global de leases não pôde ser reanexada. Use: manager hive lease status" >&2
+}
+"$INSTALL_DIR/modules/hive_allocations.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] O estado de allocation 0.8.5 não pôde ser inicializado. Use: manager hive allocation status" >&2
+}
+''')
+
+replace_once("uninstall.sh", '''# A autoridade global de leases sai antes dos bridges de protocolo. Configuração,
+# limites e leases persistentes sobrevivem ao uninstall normal; --purge remove tudo.
+''', '''# Allocation 0.8.5 não possui daemon. Tickets/epochs sobrevivem ao uninstall normal
+# e são removidos apenas no purge, junto da autoridade global que os sustenta.
+if [[ -x /opt/manager/modules/hive_allocations.sh ]]; then
+  if $PURGE; then
+    /opt/manager/modules/hive_allocations.sh --purge >/dev/null 2>&1 || true
+  else
+    /opt/manager/modules/hive_allocations.sh --detach >/dev/null 2>&1 || true
+  fi
+elif $PURGE; then
+  rm -rf /etc/manager/hive/allocations /var/lib/manager/hive-allocations
+  rm -f /var/log/manager/hive-allocation-audit.jsonl
+fi
+
+# A autoridade global de leases sai antes dos bridges de protocolo. Configuração,
+# limites e leases persistentes sobrevivem ao uninstall normal; --purge remove tudo.
+''')
+
+replace_once("rollback.sh", '''if [[ -x "$INSTALL_DIR/modules/hive_leases.sh" ]]; then
+  "$INSTALL_DIR/modules/hive_leases.sh" --detach >/dev/null 2>&1 || true
+''', '''if [[ -x "$INSTALL_DIR/modules/hive_allocations.sh" ]]; then
+  "$INSTALL_DIR/modules/hive_allocations.sh" --detach >/dev/null 2>&1 || true
+fi
+if [[ -x "$INSTALL_DIR/modules/hive_leases.sh" ]]; then
+  "$INSTALL_DIR/modules/hive_leases.sh" --detach >/dev/null 2>&1 || true
+''')
+
+replace_once("rollback.sh", '''if [[ -x "$INSTALL_DIR/modules/protocol_leases.sh" ]]; then
+  "$INSTALL_DIR/modules/protocol_leases.sh" --install >/dev/null 2>&1 || true
+fi
+''', '''if [[ -x "$INSTALL_DIR/modules/hive_allocations.sh" ]]; then
+  "$INSTALL_DIR/modules/hive_allocations.sh" --install >/dev/null 2>&1 || true
+fi
+if [[ -x "$INSTALL_DIR/modules/protocol_leases.sh" ]]; then
+  "$INSTALL_DIR/modules/protocol_leases.sh" --install >/dev/null 2>&1 || true
+fi
+''')
