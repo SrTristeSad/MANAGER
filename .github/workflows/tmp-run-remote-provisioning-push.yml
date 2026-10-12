@@ -15,11 +15,25 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: feature/0.8.5-remote-provisioning
-      - name: Apply and validate remote provisioning integration
+      - name: Execute patch and capture failure
         shell: bash
         run: |
-          set -euxo pipefail
-          python3 scripts/tmp_apply_remote_provisioning.py
+          set -uo pipefail
+          log=.tmp-remote-provisioning-error.txt
+          rm -f "$log"
+          set +e
+          python3 scripts/tmp_apply_remote_provisioning.py >"$log" 2>&1
+          code=$?
+          set -e
+          git config user.name 'SrTristeSad'
+          git config user.email '48489740+SrTristeSad@users.noreply.github.com'
+          if [ "$code" -ne 0 ]; then
+            git add "$log"
+            git commit -m 'ci: capture remote provisioning patch error'
+            git push origin HEAD:feature/0.8.5-remote-provisioning
+            exit "$code"
+          fi
+          rm -f "$log"
           bash -n modules/provision.sh modules/hive_allocations.sh
           python3 - <<'PY'
           from pathlib import Path
@@ -27,8 +41,6 @@ jobs:
           code=text.split("python3 - \"$@\" <<'PY'\n",1)[1].rsplit('\nPY',1)[0]
           compile(code,'hive_allocations_embedded.py','exec')
           PY
-          git config user.name 'SrTristeSad'
-          git config user.email '48489740+SrTristeSad@users.noreply.github.com'
           git add modules/provision.sh modules/hive_allocations.sh docs/ROADMAP.md docs/HIVE.md
           if git diff --cached --quiet; then exit 0; fi
           git commit -m 'feat: provision Hive allocation resources on selected node'
