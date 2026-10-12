@@ -186,11 +186,13 @@ jobs:
           sudo manager hive accounting quota set syncacct PREMIUM 1000 lifetime warn >/dev/null
           first="$(sudo manager hive accounting sync syncacct)"
           grep -q '^accounting_synced=1$' <<<"$first"
-          sudo manager hive accounting controller show syncacct | grep -q '^total_bytes=0$'
+          show_first="$(sudo manager hive accounting controller show syncacct)"
+          grep -q '^total_bytes=0$' <<<"$show_first"
           sudo /opt/manager/modules/identity_usage.sh --ingest-counter syncacct wireguard syncacct ci-counter 400 700
           second="$(sudo manager hive accounting sync syncacct)"
           grep -q '^accounting_synced=1$' <<<"$second"
-          sudo manager hive accounting controller show syncacct | grep -q '^total_bytes=300$'
+          show_second="$(sudo manager hive accounting controller show syncacct)"
+          grep -q '^total_bytes=300$' <<<"$show_second"
 
       - name: Preserve accounting state across detach and reinstall
         shell: bash
