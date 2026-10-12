@@ -779,6 +779,32 @@ def receipt_matches(receipt,bundle):
             receipt.get("protocol")==bundle.get("protocol"))
 
 
+def recover_ssh_password(bundle, ssh_user):
+    if not ssh_user:
+        return ""
+    candidates = []
+    for candidate in Path(NODE_PROVISION_DIR).glob("*.conf"):
+        try:
+            st = os.lstat(candidate)
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or stat.S_IMODE(st.st_mode) & 0o077:
+            continue
+        receipt = read_conf(str(candidate))
+        if (receipt.get("status") == "ok" and receipt.get("identity_id") == bundle.get("identity_id") and
+                receipt.get("product_id") == bundle.get("product_id") and receipt.get("protocol") == "ssh" and
+                receipt.get("ssh_user") == ssh_user and receipt.get("ssh_password")):
+            try:
+                epoch = int(receipt.get("provisioned_epoch", "0"))
+            except ValueError:
+                epoch = 0
+            candidates.append((epoch, receipt.get("ssh_password", "")))
+    if not candidates:
+        return ""
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
 def provision_bundle(bundle):
     init_dirs(); validate_local_claim_endpoint(bundle)
     path=provision_receipt_path(bundle["allocation_id"]); receipt=read_conf(path)
@@ -798,6 +824,11 @@ def provision_bundle(bundle):
         die("Provisionamento local retornou identidade/produto inesperado.",70)
     provisioned_protocols=result.get("protocols","").split(",")
     if bundle["protocol"] not in provisioned_protocols: die("Provisionamento local não confirmou o protocolo da allocation.",70)
+    if bundle["protocol"] == "ssh" and not result.get("ssh_password"):
+        recovered_password = recover_ssh_password(bundle, result.get("ssh_user", ""))
+        if recovered_password:
+            result["ssh_password"] = recovered_password
+            result["credential_recovered"] = "1"
     lines=["version=1","status=ok",f"allocation_id={bundle['allocation_id']}",f"identity_id={bundle['identity_id']}",
            f"product_id={bundle['product_id']}",f"protocol={bundle['protocol']}",
            f"resource_created={result.get('resource_created','0')}",f"provision_action={result.get('provision_action','')}",

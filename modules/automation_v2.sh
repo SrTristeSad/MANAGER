@@ -816,7 +816,7 @@ def execute_claim(request, uid, transport):
               auth=auth_meta, transport=transport); return result
     auth_meta["decision"] = "allow"
     try:
-        proc = subprocess.run([HIVE_ALLOCATIONS, "--claim", allocation_id], input=token + "\n", stdin=subprocess.PIPE,
+        proc = subprocess.run([HIVE_ALLOCATIONS, "--claim", allocation_id], input=token + "\n",
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30, shell=False)
     except subprocess.TimeoutExpired:
         result = response_error(request_id, action_id, 70, "tempo limite do claim excedido", principal=principal)
