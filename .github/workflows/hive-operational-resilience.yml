@@ -76,7 +76,14 @@ jobs:
         run: |
           set -euxo pipefail
           sudo systemctl start manager-hive-lease-controller.service
-          probe="$(sudo manager hive lease node probe)"
+          probe=""
+          for _ in {1..20}; do
+            if probe="$(sudo manager hive lease node probe 2>/tmp/recover.err)"; then
+              break
+            fi
+            sleep 0.25
+          done
+          test -n "$probe"
           grep -q '^authority_state=healthy$' <<<"$probe"
           grep -q '^recovery_count=1$' <<<"$probe"
           grep -Eq '^last_recovery_epoch=[1-9][0-9]*$' <<<"$probe"
@@ -105,10 +112,23 @@ jobs:
           path.write_text('\n'.join(lines)+'\n')
           PY
           sudo systemctl start manager-hive-lease-controller.service
-          if sudo manager hive lease node probe >/tmp/stale.out 2>/tmp/stale.err; then
-            echo 'stale authority generation was accepted' >&2
-            exit 1
-          fi
+          stale_rc=0
+          for _ in {1..20}; do
+            set +e
+            sudo manager hive lease node probe >/tmp/stale.out 2>/tmp/stale.err
+            stale_rc=$?
+            set -e
+            if (( stale_rc == 70 )); then
+              break
+            fi
+            if (( stale_rc != 69 )); then
+              cat /tmp/stale.err >&2
+              echo "unexpected stale probe rc=$stale_rc" >&2
+              exit 1
+            fi
+            sleep 0.25
+          done
+          test "$stale_rc" -eq 70
           grep -q 'antiga/fenced' /tmp/stale.err
           status="$(sudo manager hive lease node status)"
           grep -q '^authority_state=fenced$' <<<"$status"
@@ -128,7 +148,14 @@ jobs:
           path.write_text('\n'.join(lines)+'\n')
           PY
           sudo systemctl start manager-hive-lease-controller.service
-          probe="$(sudo manager hive lease node probe)"
+          probe=""
+          for _ in {1..20}; do
+            if probe="$(sudo manager hive lease node probe 2>/tmp/restore.err)"; then
+              break
+            fi
+            sleep 0.25
+          done
+          test -n "$probe"
           grep -q '^authority_state=healthy$' <<<"$probe"
           grep -q '^recovery_count=2$' <<<"$probe"
           sid1=11111111111111111111111111111111
