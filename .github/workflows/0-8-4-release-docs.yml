@@ -1,0 +1,127 @@
+name: Finalize MANAGER 0.8.4 Release Docs
+
+on:
+  pull_request:
+    types: [reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  release-docs:
+    if: github.head_ref == 'release/0.8.4' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Update version and release documentation
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new, count=1):
+              p=Path(path); t=p.read_text()
+              if old not in t:
+                  raise SystemExit(f'missing release-doc target in {path}: {old[:120]!r}')
+              p.write_text(t.replace(old,new,count))
+
+          Path('VERSION').write_text('0.8.4\n')
+
+          # README — current release, state and public surface.
+          replace('README.md','Versão atual: **0.8.3**.','Versão atual: **0.8.4**.')
+          replace('README.md','## Colmeia — 0.8.0 a 0.8.3','## Colmeia — 0.8.0 a 0.8.4')
+          replace('README.md',
+                  '- **0.8.3** — scheduler weighted least-loaded, placement, sticky, drain e failover de seleção.',
+                  '- **0.8.3** — scheduler weighted least-loaded, placement, sticky, drain e failover de seleção;\n- **0.8.4** — autoridade global de leases, `max_sessions_global`, fencing e grace controlado.')
+          replace('README.md',
+                  '/etc/manager/hive/controller/scheduler/nodes/  placement/drain por nó\n/var/lib/manager/hive-health/                  observações/replay/runtime de saúde\n/var/lib/manager/hive-scheduler/sticky/        afinidade sticky\n/var/log/manager/hive-scheduler-audit.jsonl    decisões do scheduler',
+                  '/etc/manager/hive/controller/scheduler/nodes/  placement/drain por nó\n/etc/manager/hive/controller/leases/           autoridade/políticas globais + TLS\n/etc/manager/hive/leases/                      pin/config de lease global do nó\n/var/lib/manager/hive-health/                  observações/replay/runtime de saúde\n/var/lib/manager/hive-scheduler/sticky/        afinidade sticky\n/var/lib/manager/hive-leases/                  leases, epochs e anti-replay globais\n/var/log/manager/hive-scheduler-audit.jsonl    decisões do scheduler\n/var/log/manager/hive-lease-audit.jsonl        decisões de lease global')
+          replace('README.md','Estado da 0.8.3:','Estado da 0.8.4:')
+          replace('README.md',
+                  'global_lease_authority=0\nglobal_max_sessions=0\nglobal_accounting=0',
+                  'global_lease_authority=1\nglobal_max_sessions=1\nglobal_grant_capability=1\nauthority_epoch_fencing=1\nbounded_existing_session_grace=1\nglobal_accounting=0')
+          replace('README.md',
+                  '**Importante:** 0.8.3 escolhe nó para nova alocação, mas ainda não concede lease global. Limite global de sessões, `session_epoch` distribuído e autoridade global entram na 0.8.4.\n\nO estado durável da Colmeia entra no backup protegido do MANAGER e pode conter chaves privadas de nó/controlador; trate o backup como segredo operacional. Uninstall normal preserva confiança, topologia, configuração de saúde e estado de placement/sticky; runtime e listeners MANAGER-owned são destacados. `--purge` remove também scheduler state/audit server-side.',
+                  '''A 0.8.4 adiciona uma autoridade global separada do scheduler local. O controlador mantém a política `max_sessions_global`, emite grants/reservas e recebe acquire/heartbeat/release assinados pelos nós enrolled. Uma identidade com acesso a vários nós continua obedecendo ao mesmo limite global.\n\n```text\nMaria → nós/países: 10\nmax_sessions_global=1\nresultado: no máximo uma sessão global ativa/reservada\n```\n\nO canal de lease usa TLS 1.3 com pin SHA-256 e a identidade Ed25519 enrolled do nó. `authority_epoch` impede aceitar uma autoridade antiga que reapareça. Grants novos falham fechado quando a autoridade não pode ser alcançada; sessões já válidas podem usar apenas um grace curto e configurado durante indisponibilidade de transporte. Negativa válida, revogação ou fencing não recebem grace. SSH, WireGuard e OpenVPN passam pelo mesmo Protocol Lease Bridge.\n\nO controlador continua fora do caminho de dados VPN. A 0.8.4 também **não** transforma o accounting local em billing global: `global_accounting=0` permanece intencional até a etapa própria.\n\nO estado durável da Colmeia entra no backup protegido do MANAGER e pode conter chaves privadas de nó/controlador; trate o backup como segredo operacional. Uninstall normal preserva confiança, topologia, configuração de saúde, placement/sticky e política/estado global de lease; runtime e listeners MANAGER-owned são destacados. `--purge` remove também scheduler/lease state e audits server-side.''')
+          replace('README.md',
+                  '- autoridade global de leases ainda não existe na 0.8.3;',
+                  '- autoridade global de leases usa limite atômico, Ed25519 enrolled, TLS 1.3 pinado e `authority_epoch`;\n- outage grace é limitado a sessões existentes e nunca transforma uma recusa autoritativa em aceite;\n- accounting global ainda não é autoritativo na 0.8.4;')
+          replace('README.md',
+                  'manager hive node select PROTOCOL [REGION] [POOL] [STICKY] [NODE_SCOPE]\nmanager automation legacy status',
+                  '''manager hive node select PROTOCOL [REGION] [POOL] [STICKY] [NODE_SCOPE]\nmanager hive lease status\nmanager hive lease node status|configure HOST PORT TLS_FP [GRACE]|disable\nmanager hive lease controller init|status|enable BIND_IP [PORT]|disable|rotate-tls\nmanager hive lease controller grant ID PROTO [REGION] [POOL] [STICKY] [SCOPE] [DEVICE] [TTL]\nmanager hive lease controller list [ID]\nmanager hive lease controller revoke ID [REASON]\nmanager hive lease limit set ID MAX [PRODUCT]\nmanager hive lease limit import-local ID|sync-local|show ID|list|unset ID\nmanager automation legacy status''')
+          replace('README.md',
+                  'O scheduler não possui daemon próprio; seu placement/sticky é estado persistente. O purge remove estado server-side.',
+                  'O scheduler não possui daemon próprio; seu placement/sticky é estado persistente. A autoridade global possui listener próprio opt-in e mantém política/epochs/leases fora de `/opt/manager`; uninstall normal destaca a unit sem destruir esse estado. O purge remove estado server-side.')
+
+          # HIVE — promote 0.8.4 to current architecture while keeping 0.8.3 history accurate.
+          replace('docs/HIVE.md','# MANAGER Colmeia — confiança, rede privada, saúde e scheduler','# MANAGER Colmeia — confiança, rede privada, saúde, scheduler e leases globais')
+          replace('docs/HIVE.md',
+                  '0.8.3  scheduler weighted least-loaded + placement + sticky + drain + failover de seleção\n```\n\nA 0.8.3 **não** implementa autoridade global de leases, `max_sessions` global ou accounting global. O scheduler escolhe um nó elegível para nova alocação; a autoridade distribuída de sessão começa na 0.8.4.',
+                  '0.8.3  scheduler weighted least-loaded + placement + sticky + drain + failover de seleção\n0.8.4  autoridade global de leases + max_sessions_global + fencing + grace controlado\n```\n\nA 0.8.4 adiciona autoridade global de sessão e grants vinculados ao scheduler. Accounting global e login/provisionamento VPN global continuam fora desta etapa e permanecem planejados separadamente.')
+          replace('docs/HIVE.md',
+                  '└── scheduler/\n    └── nodes/\n        └── node-....conf',
+                  '''├── scheduler/\n│   └── nodes/\n│       └── node-....conf\n└── leases/\n    ├── controller.conf\n    ├── limits/\n    └── tls/\n        ├── server.key\n        └── server.crt''')
+          replace('docs/HIVE.md',
+                  'Sticky state do scheduler:\n\n```text\n/var/lib/manager/hive-scheduler/sticky/\n```',
+                  '''Configuração de lease no nó:\n\n```text\n/etc/manager/hive/leases/node.conf\n```\n\nSticky state do scheduler:\n\n```text\n/var/lib/manager/hive-scheduler/sticky/\n```\n\nEstado da autoridade global:\n\n```text\n/var/lib/manager/hive-leases/\n├── active/\n├── epochs/\n├── replay/\n└── node-authority.state\n```''')
+          replace('docs/HIVE.md',
+                  'Auditoria do scheduler:\n\n```text\n/var/log/manager/hive-scheduler-audit.jsonl\n```',
+                  'Auditoria do scheduler:\n\n```text\n/var/log/manager/hive-scheduler-audit.jsonl\n/var/log/manager/hive-lease-audit.jsonl\n```')
+          replace('docs/HIVE.md',
+                  'Scheduler 0.8.3:\n\n```text\nmanager-hive-scheduler-v1\nmanager-hive-scheduler-node-v1\nmanager-hive-scheduler-selection-v1\n```',
+                  '''Scheduler 0.8.3:\n\n```text\nmanager-hive-scheduler-v1\nmanager-hive-scheduler-node-v1\nmanager-hive-scheduler-selection-v1\n```\n\nLeases globais 0.8.4:\n\n```text\nmanager-hive-global-lease-v1\nmanager-hive-global-lease-controller-v1\nmanager-hive-global-lease-node-v1\nmanager-hive-global-lease-request-v1\nmanager-hive-global-lease-response-v1\nmanager-hive-global-grant-v1\n```''')
+          replace('docs/HIVE.md',
+                  'global_lease_authority=0\nglobal_max_sessions=0\ncontroller_in_user_vpn_path=0',
+                  'global_lease_authority=1\nglobal_lease_controller_enabled=0|1\nglobal_max_sessions=1\ncontroller_in_user_vpn_path=0',1)
+          insert_before='''## 15. Lifecycle'''
+          lease_section='''## 15. Autoridade global de leases — 0.8.4\n\nA autoridade global controla quantas sessões uma identidade pode manter **somando todos os nós enrolled**. O scheduler continua escolhendo elegibilidade/capacidade; o grant do controlador reserva um slot global no mesmo plano de controle antes de a sessão ser reclamada pelo nó selecionado.\n\nExemplo:\n\n```text\nMaria possui acesso a 10 países/nós\nmax_sessions_global=1\n→ uma conexão em qualquer nó ocupa o único slot global\n→ tentativa simultânea em outro nó é recusada\n```\n\nPolítica:\n\n```bash\nmanager hive lease limit set maria 1 PREMIUM\nmanager hive lease limit show maria\nmanager hive lease limit list\n```\n\nO import opcional reutiliza `max_sessions` e o produto já atribuídos localmente:\n\n```bash\nmanager hive lease limit import-local maria\nmanager hive lease limit sync-local\n```\n\n### Transporte e autenticação\n\nO listener é opt-in, usa TLS 1.3 e não abre firewall automaticamente:\n\n```bash\nmanager hive lease controller init\nmanager hive lease controller enable 203.0.113.10 9445\nmanager hive lease controller status\n```\n\nNo nó enrolled:\n\n```bash\nmanager hive lease node configure controller.example.com 9445 SHA256:<fingerprint> 30\n```\n\nCada requisição `acquire`/`heartbeat`/`release` é assinada com a identidade Ed25519 do nó. O controlador exige `node_epoch` exato, timestamp fresco, nonce single-use e chave pública registrada. O TLS é pinado pelo SHA-256 do certificado do controlador.\n\n### Grant atômico scheduler + lease\n\n```bash\nmanager hive lease controller grant \\\n  maria wireguard BR-SP PREMIUM maria '*' device-01 60\n```\n\nO grant chama o scheduler, escolhe um nó elegível e cria uma reserva `lease_state=reserved` dentro do mesmo lock da autoridade global. A reserva já conta para `max_sessions_global`; somente o nó/protocolo/device do grant pode reclamá-la. Isso fecha a janela em que duas novas alocações poderiam observar capacidade global livre ao mesmo tempo.\n\n### Fencing e revogação\n\nA autoridade mantém dois fences distintos:\n\n- `node_epoch`: impede nó revogado/re-enrolled antigo de adquirir lease;\n- `authority_epoch`: cresce quando a autoridade do controlador é reabilitada; o nó guarda o maior epoch visto e recusa uma autoridade mais antiga que reapareça.\n\nRevogação por identidade remove grants/leasings ativos e incrementa `global_epoch`:\n\n```bash\nmanager hive lease controller revoke maria compromised\n```\n\n### Protocol Lease Bridge e grace\n\nSSH, WireGuard e OpenVPN continuam entrando pelo `modules/protocol_leases.sh`. Quando enforcement global está configurado, uma admissão só conclui depois do acquire global; negativa ou indisponibilidade em uma **nova** sessão falha fechado e a lease local é revertida.\n\nSessões já aceitas podem receber um grace curto (`0..120 s`, default `30`) somente quando o transporte da autoridade fica indisponível. Uma resposta autoritativa de deny, revogação, epoch antigo ou lease ausente encerra o mapa no próximo heartbeat e **não** recebe grace.\n\nO controlador continua fora do caminho de dados do usuário: ele autoriza/renova a sessão, mas os pacotes VPN não atravessam o listener de lease.\n\n## 16. Audit global\n\n```text\n/var/log/manager/hive-lease-audit.jsonl\n```\n\nO audit registra limite, acquire, heartbeat, release, grant/claim, deny, expiry, fencing e revogação, sem persistir chave privada ou segredo de VPN.\n\n## 17. Limites desta etapa\n\nA 0.8.4 **não** implementa accounting/billing global (`global_accounting=0`) e não transforma o login/provisionamento VPN em uma API global completa. Essas responsabilidades continuam nas próximas etapas.\n\n## 18. Lifecycle'''
+          replace('docs/HIVE.md', insert_before, lease_section)
+          replace('docs/HIVE.md','## 16. Backup','## 19. Backup')
+          replace('docs/HIVE.md','- placement do scheduler.','- placement do scheduler;\n- chave TLS/políticas/epochs da autoridade global de lease.')
+          replace('docs/HIVE.md','## Estado da 0.8.3','## Estado da 0.8.4')
+          replace('docs/HIVE.md',
+                  'global_lease_authority=0\nglobal_max_sessions=0\nglobal_accounting=0',
+                  'global_lease_authority=1\nglobal_max_sessions=1\nglobal_grant_capability=1\nauthority_epoch_fencing=1\nbounded_existing_session_grace=1\nglobal_accounting=0')
+          replace('docs/HIVE.md',
+                  'A Colmeia agora possui confiança, canal privado, saúde verificável e seleção de nó com drain/failover. Ela **ainda não concede autoridade global de sessão**.\n\n## Próxima etapa — 0.8.4\n\nA 0.8.4 implementará a autoridade de sessões/leases globais:\n\n- lease global por identidade/plano;\n- `max_sessions` global atômico;\n- seleção de nó + aquisição de lease na mesma autoridade;\n- fencing distribuído;\n- `session_epoch` contra retorno de autoridade antiga;\n- troca de servidor sem sessão fantasma;\n- grace controlado quando a autoridade estiver temporariamente indisponível.\n\nExemplo obrigatório:\n\n```text\nMaria possui acesso a 10 países/nós\nmax_sessions global = 1\n→ pode estar conectada em apenas um deles por vez\n```',
+                  '''A Colmeia agora possui confiança, canal privado, saúde verificável, scheduler e autoridade global de sessão com limite atômico entre nós. O accounting continua local/não autoritativo para billing global.\n\n## Próxima etapa — 0.8.5\n\nA 0.8.5 leva o grant global para o fluxo de login/provisionamento VPN:\n\n- login/provisionamento escolhe nó elegível e obtém grant atual;\n- produto, região/pool, protocolo e lease global ficam vinculados na alocação;\n- sessão só nasce no nó autorizado pelo grant;\n- fencing impede nó stale de aceitar retorno antigo;\n- SSH, WireGuard e OpenVPN seguem as capacidades do nó.''')
+
+          # ROADMAP — mark milestone complete and preserve future responsibilities.
+          p=Path('docs/ROADMAP.md'); t=p.read_text()
+          t=t.replace('## 0.8.x — Modo Colmeia 🚧','## 0.8.x — Modo Colmeia 🚧',1)
+          t=t.replace('global_lease_authority=0\nglobal_max_sessions=0\nglobal_accounting=0',
+                      'global_lease_authority=1\nglobal_max_sessions=1\nglobal_accounting=0',1)
+          old='''### 0.8.4 — autoridade de sessões globais — PRÓXIMO\n\n- lease global por identidade/plano;\n- `max_sessions` global atômico;\n- seleção de nó + aquisição de lease na mesma autoridade;\n- fencing distribuído;\n- `session_epoch` contra retorno de autoridade antiga;\n- troca de servidor sem sessão fantasma;\n- grace controlado em indisponibilidade temporária do controlador.\n\nExemplo obrigatório:\n\n```text\nMaria possui acesso a 10 países/nós\nmax_sessions global = 1\n→ pode estar conectada em apenas um deles por vez\n```'''
+          new='''### 0.8.4 — autoridade de sessões globais ✅\n\nImplementado:\n\n- lease global por identidade com política vinculável a produto/plano;\n- `max_sessions_global` atômico sob lock único da autoridade;\n- acquire/heartbeat/release autenticados pela identidade Ed25519 enrolled do nó;\n- transporte TLS 1.3 com pin SHA-256 e listener opt-in;\n- timestamp, nonce single-use e `node_epoch` no envelope assinado;\n- scheduler + reserva global no comando de grant;\n- reserva já conta para o limite e só pode ser reclamada pelo nó/protocolo/device selecionados;\n- `authority_epoch` persistido no nó impede retorno de controlador antigo;\n- revogação por identidade remove leases e incrementa `global_epoch`;\n- Protocol Lease Bridge aplica a autoridade global a SSH, WireGuard e OpenVPN;\n- novas admissões falham fechado sem autoridade;\n- sessões existentes têm grace limitado somente em outage de transporte; deny/revoke/fencing continuam imediatos;\n- controlador permanece fora do caminho de dados VPN;\n- uninstall/reinstall preservam política/epochs/estado; purge remove; rollback destaca unit sem apagar estado durável;\n- CI `Hive Global Lease Authority` cobre dois nós, limite global, grant/claim, fencing, revoke, bridge real, grace e lifecycle.\n\nExemplo validado em CI:\n\n```text\nMaria possui acesso a múltiplos nós\nmax_sessions_global = 1\n→ uma sessão ocupa o slot global\n→ tentativa simultânea em outro nó é recusada\n```\n\n`global_accounting=0` permanece intencional; billing global não faz parte desta etapa.'''
+          if old not in t: raise SystemExit('roadmap 0.8.4 block missing')
+          t=t.replace(old,new,1)
+          t=t.replace('### 0.8.5 — VPN allocation / login global','### 0.8.5 — VPN allocation / login global — PRÓXIMO',1)
+          p.write_text(t)
+
+          # CHANGELOG — prepend release section without rewriting history.
+          p=Path('CHANGELOG.md'); t=p.read_text()
+          marker='> O histórico detalhado das revisões antigas continua disponível no histórico Git. A partir da série 0.7, este arquivo prioriza mudanças de arquitetura e segurança que afetam contratos públicos/operacionais.\n'
+          if marker not in t: raise SystemExit('changelog marker missing')
+          section='''\n## [0.8.4] - 2026-10-12\n\n### Colmeia — autoridade global de leases/sessões\n\n- Adicionado `modules/hive_leases.sh` como autoridade global de sessão entre nós enrolled.\n- Política `max_sessions_global` por identidade, opcionalmente vinculada ao produto/plano atual.\n- Operações `acquire`, `heartbeat` e `release` são serializadas no controlador e contam todos os nós da Colmeia.\n- Uma identidade com acesso a vários países/nós não ganha sessões extras por trocar de VPS.\n- Grants do controlador combinam seleção do scheduler e reserva de slot global; `lease_state=reserved` já consome capacidade antes do claim do nó.\n- Reserva só pode ser reclamada pelo nó/protocolo/device selecionados.\n\n### Autenticação, fencing e transporte\n\n- Requisições usam a identidade Ed25519 enrolled do nó, `node_epoch`, timestamp e nonce single-use.\n- Listener de controle usa TLS 1.3 e pin SHA-256; a porta padrão é 9445 e não é aberta automaticamente no firewall.\n- `authority_epoch` é incrementado na reabilitação da autoridade; nós persistem o maior epoch observado e recusam uma autoridade mais antiga que reapareça.\n- Revogação global por identidade remove grants/leasings ativos e avança `global_epoch`.\n- O controlador continua fora do caminho de dados VPN.\n\n### Protocol Lease Bridge e resiliência\n\n- SSH, WireGuard e OpenVPN usam o mesmo bridge existente para adquirir a lease global após a lease local.\n- Recusa global ou falha ao adquirir uma nova sessão reverte a lease local, evitando sessão fantasma.\n- Novos grants falham fechado quando a autoridade global está indisponível.\n- Sessões já válidas podem usar grace curto/configurável somente durante indisponibilidade de transporte.\n- Deny autoritativo, revogação, fencing ou lease ausente encerram a sessão no próximo heartbeat e não recebem grace.\n\n### Lifecycle e CLI\n\n- Configuração/políticas em `/etc/manager/hive/...`, estado/epochs em `/var/lib/manager/hive-leases` e audit em `/var/log/manager/hive-lease-audit.jsonl`.\n- Uninstall normal destaca o listener e preserva estado durável; purge remove estado/audit da autoridade.\n- Rollback destaca a unit 0.8.4 antes de voltar para código sem `hive_leases.sh`, preservando estado para roll-forward.\n- Nova superfície `manager hive lease ...` cobre status, configuração de nó, controlador, grants, revoke e políticas.\n\n### CI e fronteiras\n\n- Novo workflow `Hive Global Lease Authority`.\n- Gate funcional validou dois nós distintos, `max_sessions_global=1`, fencing de authority epoch, revoke, grant/claim scheduler+lease, bridge real, fail-closed/grace e uninstall/reinstall/purge.\n- Os **21/21 workflows** do HEAD funcional concluíram com sucesso antes do bump de release.\n- `global_accounting=0`: accounting/billing global continua fora da 0.8.4.\n- Login/provisionamento VPN global completo permanece para 0.8.5.\n\n### Próxima etapa\n\n- 0.8.5: VPN allocation / login global consumindo grants globais.\n- 0.8.6: quotas e accounting globais.\n'''
+          t=t.replace(marker,marker+section,1)
+          p.write_text(t)
+          PY
+
+          grep -q '^0.8.4$' VERSION
+          grep -q 'Versão atual: \*\*0.8.4\*\*' README.md
+          grep -q '### 0.8.4 — autoridade de sessões globais ✅' docs/ROADMAP.md
+          grep -q '## Estado da 0.8.4' docs/HIVE.md
+          grep -q '## \[0.8.4\] - 2026-10-12' CHANGELOG.md
+      - name: Commit release metadata
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add VERSION README.md docs/HIVE.md docs/ROADMAP.md CHANGELOG.md
+          git commit -m 'release: document MANAGER 0.8.4 global lease authority'
+          git push origin HEAD:${{ github.head_ref }}
