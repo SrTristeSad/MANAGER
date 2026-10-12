@@ -115,6 +115,8 @@ Uso:
   manager hive remote controller show NODE_ID
   manager hive remote controller accept ADVERTISEMENT
   manager hive remote controller call NODE_ID ACTION [KEY=VALUE ...] [--request-id ID]
+  manager hive remote controller select POOL PROTOCOL ACTION [STICKY]
+  manager hive remote controller call-pool POOL PROTOCOL ACTION [--sticky KEY] [KEY=VALUE ...] [--request-id ID]
                                   roteamento remoto tipado e assinado da Colmeia (0.8.8)
   manager automation legacy status
   manager automation legacy enable [PORT]
@@ -458,7 +460,16 @@ case "${1:-}" in
                 remote_node="$5"; remote_action="$6"; shift 6
                 exec "$MANAGER_HOME/modules/hive_remote.sh" --controller-call "$remote_node" "$remote_action" "$@"
                 ;;
-              *) err "Uso: manager hive remote controller {status|list|show|accept|call} ..."; exit 64 ;;
+              select)
+                [[ -n "${5:-}" && -n "${6:-}" && -n "${7:-}" ]] || { err "Uso: manager hive remote controller select POOL PROTOCOL ACTION [STICKY]"; exit 64; }
+                exec "$MANAGER_HOME/modules/hive_remote.sh" --controller-select-pool "$5" "$6" "$7" "${8:-}"
+                ;;
+              call-pool)
+                [[ -n "${5:-}" && -n "${6:-}" && -n "${7:-}" ]] || { err "Uso: manager hive remote controller call-pool POOL PROTOCOL ACTION [ARGS...]"; exit 64; }
+                remote_pool="$5"; remote_protocol="$6"; remote_action="$7"; shift 7
+                exec "$MANAGER_HOME/modules/hive_remote.sh" --controller-call-pool "$remote_pool" "$remote_protocol" "$remote_action" "$@"
+                ;;
+              *) err "Uso: manager hive remote controller {status|list|show|accept|call|select|call-pool} ..."; exit 64 ;;
             esac
             ;;
           *) err "Uso: manager hive remote {status|node ...|controller ...}"; exit 64 ;;

@@ -43,8 +43,10 @@ AUTOMATION_DIR = os.path.join(MANAGER_ETC, "automation", "v2")
 AUTOMATION_REMOTE = os.path.join(AUTOMATION_DIR, "remote.conf")
 NODE_POLICY = os.path.join(AUTOMATION_DIR, "hive-controller.conf")
 AUTOMATION = os.path.join(MANAGER_HOME, "modules", "automation_v2.sh")
+SCHEDULER = os.path.join(MANAGER_HOME, "modules", "hive_scheduler.sh")
 AUDIT = "/var/log/manager/hive-remote-audit.jsonl"
 CONTRACT = "manager-hive-remote-route-v1"
+POOL_RESULT_CONTRACT = "manager-hive-remote-pool-selection-v1"
 VERSION = 1
 MAX_AGE = 300
 NODE_RE = re.compile(r"^node-[a-f0-9]{16}$")
@@ -514,8 +516,127 @@ def controller_status():
     print("arbitrary_target=0")
     print("transport=tls1.3-pinned")
     print("request_auth=hive-controller-ed25519")
+    print("pool_routing=1")
+    print("pool_selector=hive-scheduler-weighted-least-loaded")
+    print("pool_health_required=HEALTHY")
+    print("pool_drain_respected=1")
     print(f"routes_registered={total}")
     print(f"routes_enabled={enabled}")
+
+
+def route_candidates_for_action(action):
+    ensure_dir(CTRL_REMOTE)
+    candidates=[]
+    for path in sorted(Path(CTRL_REMOTE).glob("node-*.conf")):
+        route=read_conf(str(path), True)
+        node_id=route.get("node_id", "")
+        if not NODE_RE.fullmatch(node_id) or route.get("enabled") != "1":
+            continue
+        try:
+            route_epoch=int(route.get("node_epoch", "0"))
+        except ValueError:
+            continue
+        ident=read_conf(os.path.join(CTRL_NODES, node_id + ".conf"), True)
+        if not ident or ident.get("enabled") != "1" or ident.get("revoked_epoch", "0") != "0":
+            continue
+        try:
+            ident_epoch=int(ident.get("node_epoch", "0"))
+        except ValueError:
+            continue
+        if route_epoch < 1 or route_epoch != ident_epoch:
+            continue
+        try:
+            scope=normalize_actions(route.get("action_scope", ""))
+        except SystemExit:
+            continue
+        if action_allowed(scope, action):
+            candidates.append(node_id)
+    return candidates
+
+
+def validate_pool(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}", value):
+        die("Pool remoto inválido; use label simples até 64 caracteres.", 64)
+    return value
+
+
+def scheduler_select(pool, protocol, action, sticky=""):
+    controller_state()
+    pool=validate_pool(pool)
+    if protocol not in {"ssh", "wireguard", "openvpn"}:
+        die("Protocolo de seleção inválido; use ssh, wireguard ou openvpn.", 64)
+    if action not in ACTIONS:
+        die("Ação remota não está na allowlist tipada da Automation v2.", 64)
+    if sticky and (len(sticky) > 128 or any(ord(ch) < 32 for ch in sticky)):
+        die("Sticky key remota inválida.", 64)
+    candidates=route_candidates_for_action(action)
+    if not candidates:
+        audit("controller-pool-deny", pool=pool, protocol=protocol, action_id=action, reason="no-route-candidate")
+        die("Nenhum nó possui rota remota válida para a ação solicitada.", 67)
+    node_scope=",".join(candidates)
+    proc=subprocess.run([SCHEDULER, "--select", protocol, "", pool, sticky, node_scope],
+                        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        timeout=30, check=False, text=True)
+    if proc.returncode != 0:
+        if proc.stderr:
+            sys.stderr.write(proc.stderr)
+        audit("controller-pool-deny", pool=pool, protocol=protocol, action_id=action,
+              reason="scheduler-no-eligible-node", route_candidates=len(candidates))
+        raise SystemExit(proc.returncode)
+    fields={}
+    for line in proc.stdout.splitlines():
+        if "=" in line:
+            k,v=line.split("=",1); fields[k]=v
+    selected=fields.get("selected_node", "")
+    if not NODE_RE.fullmatch(selected) or selected not in set(candidates):
+        die("Scheduler retornou nó fora do escopo de rotas remotas.", 70)
+    # Revalidate route/authority after scheduler selection to close selection races.
+    _ident, _pub, expected_epoch=registered_node(selected)
+    route=read_conf(route_path(selected), True)
+    try:
+        selected_route_epoch=int(route.get("node_epoch", "0"))
+    except ValueError:
+        selected_route_epoch=0
+    if route.get("enabled") != "1" or selected_route_epoch != expected_epoch or not action_allowed(normalize_actions(route.get("action_scope", "")), action):
+        die("Rota selecionada mudou durante a decisão; operação recusada.", 67)
+    audit("controller-pool-select", pool=pool, protocol=protocol, action_id=action,
+          node_id=selected, selection_reason=fields.get("selection_reason", ""), sticky=bool(sticky),
+          route_candidates=len(candidates))
+    return fields
+
+
+def controller_select_pool(argv):
+    if len(argv) not in {3,4}:
+        die("Uso: hive_remote.sh --controller-select-pool POOL PROTOCOL ACTION [STICKY]", 64)
+    fields=scheduler_select(argv[0], argv[1], argv[2], argv[3] if len(argv)==4 else "")
+    print(f"contract={POOL_RESULT_CONTRACT}")
+    for key in ("selected_node","selected_name","state","protocol","country","region","pool","sessions","max_sessions","capacity","weight","rtt_ms","score","selection_reason","sticky","sticky_hit"):
+        print(f"{key}={fields.get(key,'')}")
+    print("routing_source=signed-route-registry+hive-scheduler")
+    print("arbitrary_target=0")
+
+
+def split_pool_call_args(rest):
+    sticky=""; out=[]; i=0
+    while i < len(rest):
+        if rest[i] == "--sticky":
+            if sticky or i+1 >= len(rest):
+                die("--sticky exige uma única chave.", 64)
+            sticky=rest[i+1]; i += 2; continue
+        out.append(rest[i]); i += 1
+    return sticky, out
+
+
+def controller_call_pool(argv):
+    if len(argv) < 3:
+        die("Uso: hive_remote.sh --controller-call-pool POOL PROTOCOL ACTION [--sticky KEY] [KEY=VALUE|--request-id ID]", 64)
+    pool, protocol, action=argv[:3]
+    sticky, passthrough=split_pool_call_args(argv[3:])
+    fields=scheduler_select(pool, protocol, action, sticky)
+    selected=fields["selected_node"]
+    audit("controller-pool-call", pool=pool, protocol=protocol, action_id=action, node_id=selected,
+          selection_reason=fields.get("selection_reason", ""), sticky=bool(sticky))
+    controller_call([selected, action, *passthrough])
 
 
 def controller_call(argv):
@@ -581,7 +702,7 @@ def purge_state():
 
 
 def usage():
-    print("Uso: hive_remote.sh {--status|--node-enable ENDPOINT ACTIONS OUT|--node-disable OUT|--controller-status|--controller-accept AD|--controller-list|--controller-show NODE|--controller-call NODE ACTION [ARGS...]|--install|--detach|--purge}", file=sys.stderr)
+    print("Uso: hive_remote.sh {--status|--node-enable ENDPOINT ACTIONS OUT|--node-disable OUT|--controller-status|--controller-accept AD|--controller-list|--controller-show NODE|--controller-call NODE ACTION [ARGS...]|--controller-select-pool POOL PROTOCOL ACTION [STICKY]|--controller-call-pool POOL PROTOCOL ACTION [ARGS...]|--install|--detach|--purge}", file=sys.stderr)
     raise SystemExit(64)
 
 
@@ -598,6 +719,8 @@ def main(argv):
     if cmd == "--controller-list": controller_list(); return
     if cmd == "--controller-show" and len(argv) == 2: controller_show(argv[1]); return
     if cmd == "--controller-call" and len(argv) >= 3: controller_call(argv[1:]); return
+    if cmd == "--controller-select-pool" and len(argv) in {4,5}: controller_select_pool(argv[1:]); return
+    if cmd == "--controller-call-pool" and len(argv) >= 4: controller_call_pool(argv[1:]); return
     usage()
 
 main(sys.argv[1:])
