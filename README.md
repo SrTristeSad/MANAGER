@@ -4,7 +4,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 > O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva capacidades úteis, substitui implementações inseguras/obsoletas e evolui para uma arquitetura própria de identidade, automação, VPN, revenda e operação multi-servidor.
 
-Versão atual: **0.8.2**.
+Versão atual: **0.8.3**.
 
 ## Princípios
 
@@ -17,7 +17,8 @@ Versão atual: **0.8.2**.
 - integrações novas usam operações estruturadas e nunca shell remoto arbitrário;
 - senhas/chaves privadas não são persistidas pelo servidor para replay posterior;
 - autenticação, freshness, anti-replay, rate limit e autorização são reavaliados antes do replay idempotente;
-- a Colmeia estabelece confiança criptográfica, rede privada e saúde verificável antes de introduzir scheduler ou autoridade global de sessões.
+- o controlador da Colmeia permanece fora do caminho de dados VPN dos usuários;
+- scheduler distribuído e autoridade global de sessões são responsabilidades separadas.
 
 ## Recursos atuais
 
@@ -171,8 +172,6 @@ secret_replay=0
 
 `remote_transport=1` indica capacidade disponível; o listener remoto continua opt-in.
 
-### Principals e credenciais
-
 Papéis: `admin`, `reseller`, `subreseller` e `user`.
 
 ```text
@@ -236,22 +235,30 @@ Não existe shell/comando/caminho arbitrário.
 
 Documentação: [`docs/AUTOMATION_V2.md`](docs/AUTOMATION_V2.md).
 
-## Colmeia — 0.8.0 a 0.8.2
+## Colmeia — 0.8.0 a 0.8.3
 
-A 0.8.0 criou a raiz de confiança entre nós e controlador. A 0.8.1 acrescentou a **rede privada da Colmeia**. A 0.8.2 acrescenta **heartbeat assinado e saúde dos nós**, ainda sem ativar scheduler ou autoridade global de sessões.
+A Colmeia coordena múltiplas VPS sem transformar o controlador em relay do tráfego dos usuários:
+
+- **0.8.0** — identidade Ed25519, enrollment e `node_epoch`;
+- **0.8.1** — rede privada WireGuard `mgh0` e `config_epoch`;
+- **0.8.2** — heartbeat assinado e saúde verificável;
+- **0.8.3** — scheduler weighted least-loaded, placement, sticky, drain e failover de seleção.
 
 Cada VPS possui uma identidade Ed25519 de controle ligada ao `node_id` e uma chave WireGuard própria para a malha. A chave WireGuard privada nasce e permanece no próprio nó; o controlador recebe somente chave pública, endpoint e metadados de rede.
 
 ```text
-/etc/manager/hive/node/                 identidade Ed25519 do nó
-/etc/manager/hive/network/              chave/topologia privada do nó
-/etc/manager/hive/health/               configuração durável de heartbeat do nó
-/etc/manager/hive/controller/           autoridade, registry, saúde e TLS do controlador
-/var/lib/manager/hive-health/           observações/replay/runtime de saúde
-/etc/wireguard/mgh0.conf                runtime WireGuard gerenciado
+/etc/manager/hive/node/                        identidade Ed25519 do nó
+/etc/manager/hive/network/                     chave/topologia privada do nó
+/etc/manager/hive/health/                      configuração durável de heartbeat do nó
+/etc/manager/hive/controller/                  autoridade, registry, health e scheduler
+/etc/manager/hive/controller/scheduler/nodes/  placement/drain por nó
+/var/lib/manager/hive-health/                  observações/replay/runtime de saúde
+/var/lib/manager/hive-scheduler/sticky/        afinidade sticky
+/var/log/manager/hive-scheduler-audit.jsonl    decisões do scheduler
+/etc/wireguard/mgh0.conf                       runtime WireGuard gerenciado
 ```
 
-A interface da Colmeia é `mgh0`, separada do `wg0` usado por clientes. A topologia atual é mesh direto VPS↔VPS: o controlador distribui a topologia e recebe telemetria de controle, mas **não carrega o tráfego VPN dos usuários**.
+A interface da Colmeia é `mgh0`, separada do `wg0` usado por clientes. A topologia atual é mesh direto VPS↔VPS: o controlador distribui autoridade/topologia e recebe telemetria de controle, mas **não carrega o tráfego VPN dos usuários**.
 
 ### Rede privada 0.8.1
 
@@ -281,8 +288,6 @@ manager hive network accept /root/NODE_ID.network.json
 manager hive network reconcile
 manager hive network down
 ```
-
-O controlador também pode `enable`/`disable` nós na topologia e gerar bundles para todos os nós com `bundle-all`.
 
 Fronteiras da malha:
 
@@ -321,16 +326,58 @@ manager hive health send
 manager hive health disable
 ```
 
-Cada heartbeat inclui CPU, RAM, load, contadores de rede, sessões, capacidade/peso, protocolos disponíveis, estado dos serviços SSH/WireGuard/OpenVPN, estado/peers de `mgh0` e RTT anterior. O controlador deriva:
-
-- `HEALTHY`: heartbeat atual e serviços esperados saudáveis;
-- `DEGRADED`: heartbeat atrasado, serviço necessário inativo, pressão extrema de CPU/RAM ou capacidade de sessão esgotada;
-- `DRAINING`: o nó reporta `enabled=0`; na 0.8.2 este estado é informativo e **ainda não executa drain do scheduler**;
-- `OFFLINE`: ausência/timeout de heartbeat, revogação/desabilitação de autoridade ou epoch incompatível.
+Cada heartbeat inclui CPU, RAM, load, contadores de rede, sessões, capacidade/peso, protocolos disponíveis, estado dos serviços SSH/WireGuard/OpenVPN, estado/peers de `mgh0` e RTT anterior. O controlador deriva estados `HEALTHY`, `DEGRADED`, `DRAINING` e `OFFLINE`.
 
 Os thresholds padrão são 75 s para heartbeat atrasado e 180 s para offline, podendo ser alterados no controlador. Aceites/recusas entram em audit JSONL sem persistir chaves privadas.
 
-Estado da 0.8.2:
+### Scheduler, drain e failover — 0.8.3
+
+O scheduler usa os heartbeats do controlador e o placement administrativo para escolher **novas alocações**. Ele não move nem derruba sessões existentes.
+
+A seleção considera:
+
+- nó enrolled e autoridade habilitada;
+- estado `HEALTHY`;
+- drain desligado;
+- protocolo solicitado realmente disponível e serviço ativo;
+- região, pool e escopo explícito de nós;
+- `max_sessions` local;
+- capacidade e peso;
+- RTT como componente secundário;
+- afinidade sticky, desde que o nó anterior continue elegível.
+
+A pontuação principal é weighted least-loaded. Empates possuem desempate determinístico. Se o nó sticky ficar drenado, sem saúde, sem capacidade ou fora dos filtros, o scheduler escolhe outro nó elegível e registra `sticky-failover`.
+
+Placement e operação:
+
+```bash
+manager hive node status
+manager hive node list
+manager hive node placement node-1111111111111111 BR-SP-01 BR BR-SP PREMIUM
+manager hive node show BR-SP-01
+manager hive node drain BR-SP-01 maintenance
+manager hive node undrain BR-SP-01
+manager hive node select wireguard BR-SP PREMIUM maria '*'
+```
+
+Drain possui a seguinte semântica:
+
+```text
+new_allocations_allowed=0
+existing_sessions_terminated=0
+```
+
+Ou seja: novas seleções deixam de apontar para o nó, mas sessões que já estavam nele continuam até seu término normal.
+
+Contratos públicos do scheduler:
+
+```text
+manager-hive-scheduler-v1
+manager-hive-scheduler-node-v1
+manager-hive-scheduler-selection-v1
+```
+
+Estado da 0.8.3:
 
 ```text
 cryptographic_node_identity=1
@@ -350,16 +397,19 @@ freshness=1
 anti_replay=1
 tls_transport=TLS1.3
 tls_server_pinning=sha256
+scheduler=weighted-least-loaded
+sticky_session=1
+drain_runtime=1
+selection_failover=1
 controller_in_user_vpn_path=0
-scheduler=0
-drain_runtime=0
-failover=0
 global_lease_authority=0
 global_max_sessions=0
 global_accounting=0
 ```
 
-O estado durável da Colmeia entra no backup protegido do MANAGER e pode conter chaves privadas de nó/controlador; trate o backup como segredo operacional. Uninstall normal preserva confiança, topologia e configuração durável de saúde; os units/listeners de runtime são destacados. Purge remove o estado server-side.
+**Importante:** 0.8.3 escolhe nó para nova alocação, mas ainda não concede lease global. Limite global de sessões, `session_epoch` distribuído e autoridade global entram na 0.8.4.
+
+O estado durável da Colmeia entra no backup protegido do MANAGER e pode conter chaves privadas de nó/controlador; trate o backup como segredo operacional. Uninstall normal preserva confiança, topologia, configuração de saúde e estado de placement/sticky; runtime e listeners MANAGER-owned são destacados. `--purge` remove também scheduler state/audit server-side.
 
 Documentação: [`docs/HIVE.md`](docs/HIVE.md).
 
@@ -371,7 +421,7 @@ manager-uninstall
 manager-uninstall --purge
 ```
 
-Uninstall normal fecha listeners/socket e remove código, mas preserva estado durável necessário para reinstalação, incluindo Automation v2 e confiança/topologia/configuração de saúde da Colmeia. O runtime `mgh0` e os units de heartbeat/health gerenciados são destacados antes da remoção. O purge remove estado server-side. Arquivos privados externos de credencial da Automation não são apagados automaticamente.
+Uninstall normal fecha listeners/socket e remove código, mas preserva estado durável necessário para reinstalação, incluindo Automation v2 e a Colmeia. O runtime `mgh0` e os units de heartbeat/health gerenciados são destacados antes da remoção. O scheduler não possui daemon próprio; seu placement/sticky é estado persistente. O purge remove estado server-side. Arquivos privados externos de credencial da Automation não são apagados automaticamente.
 
 ## Segurança
 
@@ -393,7 +443,10 @@ Uninstall normal fecha listeners/socket e remove código, mas preserva estado du
 - config externa `mgh0.conf` é preservada;
 - heartbeat é assinado, freshness/nonce são verificados e replay falha fechado;
 - heartbeat usa TLS 1.3 com pin SHA-256 e listener opt-in;
+- scheduler somente seleciona nós `HEALTHY` e elegíveis;
+- drain não encerra sessões existentes;
 - controlador não fica no caminho do tráfego VPN dos usuários;
+- autoridade global de leases ainda não existe na 0.8.3;
 - nenhuma ação estruturada aceita shell/comando/caminho arbitrário.
 
 ## CLI principal
@@ -439,6 +492,12 @@ manager hive health controller enable BIND_IP [PORT]
 manager hive health controller disable
 manager hive health controller thresholds DEGRADED OFFLINE
 manager hive health controller rotate-tls
+manager hive node status|list
+manager hive node show NODE
+manager hive node placement NODE NAME COUNTRY REGION POOL
+manager hive node drain NODE [REASON]
+manager hive node undrain NODE
+manager hive node select PROTOCOL [REGION] [POOL] [STICKY] [NODE_SCOPE]
 manager automation legacy status
 manager automation v2 status
 manager automation v2 principals
@@ -480,8 +539,8 @@ Plano detalhado: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 0.8.0  Colmeia — identidade e enrollment de nós                      ✅
 0.8.1  rede privada WireGuard da Colmeia                             ✅
 0.8.2  heartbeat + saúde de nós                                      ✅
-0.8.3  scheduler / drain / seleção de nó                             próximo
-0.8.4  autoridade de leases globais
+0.8.3  scheduler / drain / seleção de nó                             ✅
+0.8.4  autoridade de leases globais                                  próximo
 0.8.5  VPN allocation / login global
 0.8.6  quotas/accounting globais
 0.8.7  failover e resiliência operacional
@@ -494,19 +553,19 @@ Plano detalhado: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Testes
 
-O CI cobre syntax/ShellCheck, lifecycle, Connection/Session Engine, products/quotas, IPv6, Automation v2 e Colmeia. Além dos testes de enrollment/rede/lifecycle, a 0.8.2 acrescenta o workflow `Hive Heartbeat and Health`, cobrindo:
+O CI cobre syntax/ShellCheck, lifecycle, Connection/Session Engine, products/quotas, IPv6, Automation v2 e Colmeia. A 0.8.3 possui workflow dedicado `Hive Scheduler and Drain`, cobrindo:
 
-- listener TLS 1.3 opt-in e pin SHA-256;
-- fingerprint TLS errado recusado antes do heartbeat;
-- heartbeat Ed25519 válido aceito e métricas registradas;
-- payload adulterado recusado;
-- nonce repetido/replay recusado;
-- heartbeat atrasado derivando `DEGRADED`;
-- timeout derivando `OFFLINE`;
-- `enabled=0` derivando `DRAINING` sem fingir drain de scheduler;
-- revogação/avanço de `node_epoch` cercando heartbeat antigo;
-- lifecycle destacando units de runtime sem apagar configuração durável;
-- regressão dos módulos anteriores no mesmo conjunto de CI.
+- contrato público `manager hive node ...`;
+- placement controller-authoritative e aliases de nó;
+- weighted least-loaded com capacidade/peso;
+- sticky affinity;
+- drain por nome amigável sem alterar sessões existentes;
+- failover quando o sticky deixa de ser elegível;
+- filtro por health, protocolo, região, pool e node scope;
+- audit de seleção/drain/undrain;
+- `global_lease_authority=0` como fronteira explícita;
+- detach preservando placement/sticky;
+- purge removendo estado/auditoria do scheduler.
 
 ## Origem
 

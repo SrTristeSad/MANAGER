@@ -133,7 +133,38 @@ Implementado:
 - lifecycle destaca timer/listener antes da malha no uninstall/rollback;
 - CI `Hive Heartbeat and Health` cobrindo TLS pinning, tamper, replay, timeout, draining e epoch fencing.
 
-Limites atuais após 0.8.2:
+### 0.8.3 — scheduler, drain e seleção de nó ✅
+
+Implementado:
+
+- scheduler `weighted-least-loaded` usando sessões, capacidade, peso e RTT como componente secundário;
+- somente nós enrolled, habilitados, `HEALTHY`, não drenados e com capacidade são elegíveis para novas alocações;
+- filtros por protocolo, região, pool e escopo explícito de `node_id`;
+- placement controller-authoritative com nome amigável por nó;
+- sticky affinity persistente enquanto o nó continua elegível;
+- failover automático de seleção quando o sticky deixa de ser elegível;
+- drain impede novas alocações sem encerrar sessões já existentes;
+- seleção determinística em empates;
+- audit JSONL de placement, seleção, drain/undrain e recusas;
+- CLI pública `manager hive node ...`;
+- estado de placement/sticky preservado em uninstall normal e removido com `--purge`;
+- controlador continua fora do caminho de dados VPN;
+- autoridade global de leases continua explicitamente fora desta etapa;
+- CI dedicado `Hive Scheduler and Drain`.
+
+Comandos:
+
+```bash
+manager hive node status
+manager hive node list
+manager hive node show BR-SP-02
+manager hive node placement NODE_ID BR-SP-02 BR BR-SP PREMIUM
+manager hive node drain BR-SP-02 maintenance
+manager hive node undrain BR-SP-02
+manager hive node select wireguard BR-SP PREMIUM maria '*'
+```
+
+Estado após 0.8.3:
 
 ```text
 private_hive_network=1
@@ -146,9 +177,10 @@ anti_replay=1
 tls_transport=TLS1.3
 tls_server_pinning=sha256
 controller_in_user_vpn_path=0
-scheduler=0
-drain_runtime=0
-failover=0
+scheduler=weighted-least-loaded
+sticky_session=1
+drain_runtime=1
+selection_failover=1
 global_lease_authority=0
 global_max_sessions=0
 global_accounting=0
@@ -156,30 +188,7 @@ global_accounting=0
 
 Documentação: `docs/HIVE.md`.
 
-### 0.8.3 — scheduler, drain e seleção de nó — PRÓXIMO
-
-Planejado:
-
-- weighted least-loaded;
-- capacidade/peso;
-- somente nós `HEALTHY`/elegíveis para novas alocações;
-- protocolo solicitado;
-- região/pool/ACL;
-- latência/health;
-- sticky session;
-- drain real;
-- seleção determinística e auditável;
-- failover de seleção quando um nó deixa de ser elegível, sem transformar o controlador em relay de tráfego.
-
-Comando desejado:
-
-```bash
-manager hive node drain BR-SP-02
-```
-
-Drain deverá impedir novas conexões naquele nó, mas sessões existentes continuam até finalizar.
-
-### 0.8.4 — autoridade de sessões globais
+### 0.8.4 — autoridade de sessões globais — PRÓXIMO
 
 - lease global por identidade/plano;
 - `max_sessions` global atômico;
