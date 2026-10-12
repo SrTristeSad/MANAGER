@@ -19,7 +19,7 @@ jobs:
         run: |
           set -euxo pipefail
           sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="file://${GITHUB_WORKSPACE}" bash install.sh
-          test "$(sudo cat /opt/manager/VERSION)" = 0.8.7
+          test "$(sudo cat /opt/manager/VERSION)" = 0.8.8
 
       - name: Initialize controller, node and scheduler
         shell: bash
