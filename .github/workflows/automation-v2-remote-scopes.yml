@@ -143,7 +143,18 @@ jobs:
           r=json.load(open('/tmp/cache-denied.json'))
           assert r['ok'] is False and r['code']==67 and r['cached'] is False
           PY
-          sudo grep -q '"request_id":"scope-cache-00001".*"rbac_reason":"action-out-of-scope"' /var/log/manager/automation-v2-audit.jsonl
+          sudo python3 - <<'PY'
+          import json
+          found=False
+          with open('/var/log/manager/automation-v2-audit.jsonl') as fh:
+              for line in fh:
+                  event=json.loads(line)
+                  if event.get('request_id')=='scope-cache-00001' and event.get('rbac_reason')=='action-out-of-scope':
+                      assert event.get('rbac_decision')=='deny'
+                      assert event.get('cached') is False
+                      found=True
+          assert found
+          PY
 
       - name: Preserve scopes across detach and reinstall
         shell: bash
