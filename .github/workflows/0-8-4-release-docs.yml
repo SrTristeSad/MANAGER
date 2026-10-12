@@ -1,4 +1,4 @@
-name: Validate MANAGER 0.8.4 Release Metadata
+name: Validate MANAGER 0.8.5 Release Metadata
 
 on:
   push:
@@ -14,23 +14,23 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Verify 0.8.4 version and release documentation
+      - name: Verify 0.8.5 version and release documentation
         shell: bash
         run: |
           set -euxo pipefail
-          test "$(cat VERSION)" = "0.8.4"
-          grep -q 'Versão atual: \*\*0.8.4\*\*' README.md
-          grep -q '0.8.4.*autoridade global de leases' README.md
-          grep -q '^## \[0.8.4\] - 2026-10-12$' CHANGELOG.md
-          grep -q '^## 15\. Autoridade global de leases — 0\.8\.4$' docs/HIVE.md
-          grep -q 'Accounting global continua fora da 0.8.4' docs/HIVE.md
-          ! grep -q 'Accounting global continua fora da 0.8.3' docs/HIVE.md
-          grep -q 'WireGuard.*reconcil' docs/HIVE.md
+          test "$(cat VERSION)" = "0.8.5"
+          grep -q 'Versão atual: \*\*0.8.5\*\*' README.md
+          grep -q '0.8.5.*VPN allocation / login global' README.md
+          grep -q '^## \[0.8.5\] - 2026-10-12$' CHANGELOG.md
+          grep -q '^### 0\.8\.5 — VPN allocation / login global ✅$' docs/ROADMAP.md
+          grep -q 'manager-hive-vpn-login-result-v1' docs/HIVE.md
+          grep -q 'manager hive login create' docs/HIVE.md
+          grep -q 'manager hive login result' docs/HIVE.md
           grep -q 'global_accounting=0' docs/HIVE.md
 
-      - name: Keep 0.8.5 outside the 0.8.4 release gate
+      - name: Keep 0.8.6 outside the 0.8.5 release gate
         shell: bash
         run: |
           set -euxo pipefail
-          grep -q '^## Próxima etapa — 0.8.5$' docs/HIVE.md
-          grep -q '0.8.5.*VPN allocation / login global' CHANGELOG.md
+          grep -q '^### 0\.8\.6 — quotas e accounting globais$' docs/ROADMAP.md
+          grep -q 'global_accounting=0' docs/HIVE.md

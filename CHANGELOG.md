@@ -4,6 +4,21 @@ Todas as mudanças relevantes do MANAGER são registradas aqui. O projeto usa ve
 
 > O histórico detalhado das revisões antigas continua disponível no histórico Git. A partir da série 0.7, este arquivo prioriza mudanças de arquitetura e segurança que afetam contratos públicos/operacionais.
 
+## [0.8.5] - 2026-10-12
+
+### Colmeia — VPN allocation / login global
+
+- Allocation assinada por Ed25519 vinculada a identidade, produto, protocolo, região/pool, nó, `node_epoch`, lease global exata e `session_epoch`.
+- Distribuição automática por pull no mesmo canal TLS 1.3 com fingerprint pinado da autoridade global; ACK somente após aceite local durável.
+- Provisionamento idempotente de SSH, WireGuard e OpenVPN no nó selecionado antes do ACK, com receipt local root-only e redelivery seguro.
+- Exact-grant impede fallback para outra reserva ou capacidade global genérica quando a allocation exige um `global_lease_id` específico.
+- Novo contrato `manager-hive-vpn-login-result-v1` devolve o resultado pelo ACK autenticado sem colocar segredo em argv, stdout ou audit.
+- Resultados sensíveis ficam em arquivo `0600` no controlador e são exportados para arquivo novo `0600` por `manager hive login result`.
+- SSH diferencia credencial recém-emitida de recurso já existente sem tornar senhas antigas recuperáveis; WireGuard/OpenVPN retornam o perfil gerenciado em base64.
+- CLI pública `manager hive login create` + `manager hive login result` fecha o fluxo de provisionamento/login de ponta a ponta.
+- CI permanente cobre allocation foundation, distribuição, provisionamento remoto e resultado público; o HEAD de fechamento passou a regressão completa antes do bump.
+- `global_accounting=0` permanece intencional; quotas/accounting globais ficam para 0.8.6.
+
 ## [0.8.4] - 2026-10-12
 
 ### Colmeia — autoridade global de leases/sessões
