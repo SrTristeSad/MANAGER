@@ -995,3 +995,70 @@ Fronteiras de segurança:
 - `controller call-pool` usa exatamente a seleção `HEALTHY`, weighted least-loaded, drain e sticky do scheduler antes de executar a mesma chamada tipada;
 - o scheduler nunca pode devolver um nó fora do conjunto de rotas válidas para a ação; a rota/node_epoch são revalidados depois da seleção para fechar corridas;
 - nenhum algoritmo paralelo de saúde/carga foi criado para o roteamento remoto.
+
+## 24. Rotação de chaves — fundação 0.8.9
+
+A primeira fatia da 0.8.9 adiciona rotação explícita das identidades Ed25519 do nó e do controlador. A troca nunca é uma sobrescrita silenciosa: cada geração possui epoch, prova criptográfica de continuidade, freshness/nonce e fencing.
+
+### Rotação da identidade do nó
+
+O nó prepara uma nova chave local sem substituir a chave ativa. O request é assinado pela chave atual e também pela nova chave staged, provando posse das duas pontas da transição:
+
+```bash
+# no nó
+manager hive key node prepare /root/node-key-rotation.json
+
+# no controlador
+manager hive key controller accept-node \
+  /root/node-key-rotation.json \
+  /root/node-key-rotation.bundle.json
+
+# novamente no nó
+manager hive key node commit /root/node-key-rotation.bundle.json
+```
+
+O controlador só aceita o request se `node_id`, chave atual e `node_epoch` coincidirem exatamente com o registro ativo. Ao aceitar, ele registra a nova chave e incrementa `node_epoch` antes do commit local. Isso cerca imediatamente mensagens antigas ainda assinadas pela geração anterior. O bundle de confirmação é assinado pelo controlador já confiado pelo nó.
+
+Após o commit, a chave privada anterior não é mantida em histórico. Apenas a chave pública antiga e o documento de rotação ficam em estado root-only para audit/fencing. Um retry idêntico do mesmo `rotation_id` é idempotente; payload divergente é recusado.
+
+Como `node_epoch` muda, anúncios de rota, registros da malha e outros estados explicitamente vinculados à geração antiga precisam ser republicados/reconciliados antes de voltar a ser elegíveis. Heartbeats/leases novos passam a usar automaticamente a nova identidade e o novo epoch.
+
+### Rotação da identidade do controlador
+
+O controlador prepara uma transição que contém chave pública antiga/nova, `controller_epoch` anterior/próximo, timestamp e nonce. O mesmo documento recebe duas assinaturas: uma pela chave atual e outra pela nova chave staged.
+
+```bash
+# no controlador
+manager hive key controller prepare /root/controller-key-transition.json
+manager hive key controller commit /root/controller-key-transition.json
+
+# em cada nó enrolled
+manager hive key node accept-controller /root/controller-key-transition.json
+```
+
+A assinatura antiga prova continuidade da autoridade; a assinatura nova prova posse da chave que passará a assinar o control plane. `controller_epoch` é monotônico e fica persistido separadamente do arquivo de identidade para não ser perdido por update/reinstall.
+
+A transição é deliberadamente fail-closed: depois do commit no controlador, um nó que ainda não aceitou o documento continua pinado na chave anterior e não valida mensagens novas. O operador deve distribuir/aceitar a transição em cada nó. Esta primeira fatia não cria uma janela implícita de dual-trust nem mantém a chave privada antiga para fallback.
+
+### Anti-replay e armazenamento
+
+Os contratos de rotação usam:
+
+- `issued_at` com janela de freshness;
+- nonce de uso único persistido em disco;
+- `rotation_id` estável para retries idempotentes;
+- digest do payload para impedir reutilização divergente do mesmo ID;
+- `node_epoch`/`controller_epoch` como fencing de geração;
+- arquivos `0600` e diretórios `0700`;
+- Ed25519 via OpenSSL, sem criptografia própria.
+
+Estado principal:
+
+```text
+/etc/manager/hive/node/rotation/
+/etc/manager/hive/controller/rotation/
+```
+
+Uninstall/reinstall normal preserva esse estado porque ele faz parte de `/etc/manager/hive`; purge remove junto com o restante da confiança da Colmeia.
+
+A rotação da chave WireGuard privada da malha `mgh0` continua pendente para a próxima fatia da 0.8.9.
