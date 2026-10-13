@@ -1,0 +1,150 @@
+name: Hive Key Rotation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hive-key-rotation:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          test "$(sudo cat /opt/manager/VERSION)" = 0.8.8
+          sudo test -x /opt/manager/modules/hive_key_rotation.sh
+          sudo manager hive key status | grep -q '^contract=manager-hive-key-rotation-v1$'
+          sudo manager hive key status | grep -q '^algorithm=ed25519$'
+          sudo manager hive key status | grep -q '^custom_crypto=0$'
+          sudo manager hive key status | grep -q '^old_private_key_retained=0$'
+          sudo manager hive key status | grep -q '^rotation_fail_closed=1$'
+
+      - name: Enroll a second node
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager hive controller init >/dev/null
+          fp="$(sudo manager hive controller fingerprint)"
+          printf '%s\n' "$fp" >/tmp/controller.fp
+          sudo rm -rf /tmp/hive-rot-node
+          sudo mkdir -m 700 /tmp/hive-rot-node
+          sudo env MANAGER_ETC=/tmp/hive-rot-node /opt/manager/modules/node_metadata.sh --init >/dev/null
+          sudo env MANAGER_ETC=/tmp/hive-rot-node /opt/manager/modules/node_metadata.sh --set country BR >/dev/null
+          sudo env MANAGER_ETC=/tmp/hive-rot-node /opt/manager/modules/node_metadata.sh --set region BR-SP >/dev/null
+          sudo env MANAGER_ETC=/tmp/hive-rot-node /opt/manager/modules/node_metadata.sh --set pool PREMIUM >/dev/null
+          sudo env MANAGER_ETC=/tmp/hive-rot-node /opt/manager/modules/hive_identity.sh --request /tmp/rot-node.request.json >/dev/null
+          sudo manager hive controller approve /tmp/rot-node.request.json /tmp/rot-node.bundle.json >/tmp/rot-approve.log
+          node_id="$(awk -F= '$1=="node_id"{print $2}' /tmp/rot-approve.log)"
+          test -n "$node_id"
+          printf '%s\n' "$node_id" >/tmp/rot-node.id
+          sudo env MANAGER_ETC=/tmp/hive-rot-node /opt/manager/modules/hive_identity.sh --accept /tmp/rot-node.bundle.json "$fp" >/dev/null
+          sudo env MANAGER_ETC=/tmp/hive-rot-node /opt/manager/modules/hive_identity.sh --status | grep -q '^node_epoch=1$'
+
+      - name: Prepare old-generation mesh request
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo env MANAGER_ETC=/tmp/hive-rot-node /opt/manager/modules/hive_network.sh --install >/dev/null
+          sudo env MANAGER_ETC=/tmp/hive-rot-node /opt/manager/modules/hive_network.sh --request 203.0.113.30 /tmp/pre-rotation.network.json 51870 >/dev/null
+          sudo test -f /tmp/pre-rotation.network.json
+
+      - name: Rotate node identity and fence the old generation
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node_id="$(cat /tmp/rot-node.id)"
+          old_fp="$(sudo env MANAGER_ETC=/tmp/hive-rot-node /opt/manager/modules/hive_identity.sh --status | awk -F= '$1=="fingerprint"{print $2}')"
+          sudo env MANAGER_ETC=/tmp/hive-rot-node /opt/manager/modules/hive_key_rotation.sh --node-prepare /tmp/node-key-rotation.json >/tmp/node-prepare.log
+          grep -q '^node_epoch_from=1$' /tmp/node-prepare.log
+
+          sudo python3 - <<'PY'
+          import json
+          src='/tmp/node-key-rotation.json'; dst='/tmp/node-key-rotation.tampered.json'
+          d=json.load(open(src)); d['new_fingerprint']='SHA256:'+'0'*64
+          json.dump(d,open(dst,'w'),sort_keys=True,separators=(',',':'))
+          PY
+          sudo chmod 600 /tmp/node-key-rotation.tampered.json
+          if sudo manager hive key controller accept-node /tmp/node-key-rotation.tampered.json /tmp/tampered-rotation.bundle.json; then exit 1; fi
+          sudo test ! -e /tmp/tampered-rotation.bundle.json
+
+          sudo manager hive key controller accept-node /tmp/node-key-rotation.json /tmp/node-key-rotation.bundle.json >/tmp/node-accept.log
+          grep -q '^node_epoch_to=2$' /tmp/node-accept.log
+          sudo manager hive controller show "$node_id" | grep -q '^node_epoch=2$'
+          if sudo manager hive network controller approve /tmp/pre-rotation.network.json; then
+            echo 'old node generation was accepted after rotation' >&2
+            exit 1
+          fi
+
+          sudo manager hive key controller accept-node /tmp/node-key-rotation.json /tmp/node-key-rotation.cached.bundle.json >/tmp/node-accept-cached.log
+          grep -q '^cached_bundle=1$' /tmp/node-accept-cached.log
+
+          sudo env MANAGER_ETC=/tmp/hive-rot-node /opt/manager/modules/hive_key_rotation.sh --node-commit /tmp/node-key-rotation.bundle.json >/tmp/node-commit.log
+          grep -q '^node_epoch=2$' /tmp/node-commit.log
+          grep -q '^key_epoch=2$' /tmp/node-commit.log
+          new_fp="$(sudo env MANAGER_ETC=/tmp/hive-rot-node /opt/manager/modules/hive_identity.sh --status | awk -F= '$1=="fingerprint"{print $2}')"
+          test "$old_fp" != "$new_fp"
+          sudo env MANAGER_ETC=/tmp/hive-rot-node /opt/manager/modules/hive_key_rotation.sh --node-commit /tmp/node-key-rotation.bundle.json >/tmp/node-commit-cached.log
+          grep -q '^cached=1$' /tmp/node-commit-cached.log
+
+      - name: Rotate controller identity with dual-signed transition
+        shell: bash
+        run: |
+          set -euxo pipefail
+          old_fp="$(sudo manager hive controller fingerprint)"
+          old_hash="$(sudo sha256sum /etc/manager/hive/controller/controller.key | awk '{print $1}')"
+          sudo manager hive key controller prepare /tmp/controller-key-transition.json >/tmp/controller-prepare.log
+          grep -q '^controller_epoch_from=1$' /tmp/controller-prepare.log
+          grep -q '^controller_epoch_to=2$' /tmp/controller-prepare.log
+
+          sudo python3 - <<'PY'
+          import json
+          src='/tmp/controller-key-transition.json'; dst='/tmp/controller-key-transition.tampered.json'
+          d=json.load(open(src)); d['new_fingerprint']='SHA256:'+'f'*64
+          json.dump(d,open(dst,'w'),sort_keys=True,separators=(',',':'))
+          PY
+          sudo chmod 600 /tmp/controller-key-transition.tampered.json
+          if sudo env MANAGER_ETC=/tmp/hive-rot-node /opt/manager/modules/hive_key_rotation.sh --node-accept-controller /tmp/controller-key-transition.tampered.json; then exit 1; fi
+
+          sudo manager hive key controller commit /tmp/controller-key-transition.json >/tmp/controller-commit.log
+          grep -q '^controller_epoch=2$' /tmp/controller-commit.log
+          grep -q '^nodes_require_transition_accept=1$' /tmp/controller-commit.log
+          new_fp="$(sudo manager hive controller fingerprint)"
+          new_hash="$(sudo sha256sum /etc/manager/hive/controller/controller.key | awk '{print $1}')"
+          test "$old_fp" != "$new_fp"
+          test "$old_hash" != "$new_hash"
+          sudo manager hive key controller commit /tmp/controller-key-transition.json >/tmp/controller-commit-cached.log
+          grep -q '^cached=1$' /tmp/controller-commit-cached.log
+
+          sudo env MANAGER_ETC=/tmp/hive-rot-node /opt/manager/modules/hive_key_rotation.sh --node-accept-controller /tmp/controller-key-transition.json >/tmp/controller-node-accept.log
+          grep -q '^controller_epoch=2$' /tmp/controller-node-accept.log
+          grep -q '^cached=0$' /tmp/controller-node-accept.log
+          grep -q "^fingerprint=${new_fp}$" /tmp/hive-rot-node/hive/node/controller.conf
+          sudo env MANAGER_ETC=/tmp/hive-rot-node /opt/manager/modules/hive_key_rotation.sh --node-accept-controller /tmp/controller-key-transition.json >/tmp/controller-node-accept-cached.log
+          grep -q '^cached=1$' /tmp/controller-node-accept-cached.log
+
+      - name: Verify persistent epochs replay state and no old private key archive
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager hive key status | grep -q '^controller_epoch=2$'
+          sudo env MANAGER_ETC=/tmp/hive-rot-node /opt/manager/modules/hive_key_rotation.sh --status | grep -q '^node_key_epoch=2$'
+          sudo env MANAGER_ETC=/tmp/hive-rot-node /opt/manager/modules/hive_key_rotation.sh --status | grep -q '^node_epoch=2$'
+          sudo test -d /etc/manager/hive/controller/rotation/replay
+          sudo test -d /tmp/hive-rot-node/hive/node/rotation/replay
+          if sudo find /etc/manager/hive/controller/rotation /tmp/hive-rot-node/hive/node/rotation -type f -path '*/history/*' -name '*.key' -print -quit | grep -q .; then
+            echo 'old private key leaked into rotation history' >&2
+            exit 1
+          fi
+          sudo test ! -e /etc/manager/hive/controller/rotation/pending/new.key
+          sudo test ! -e /tmp/hive-rot-node/hive/node/rotation/pending/new.key
+          test "$(sudo stat -c '%a' /etc/manager/hive/controller/rotation/state.conf)" = 600
+          test "$(sudo stat -c '%a' /tmp/hive-rot-node/hive/node/rotation/state.conf)" = 600
