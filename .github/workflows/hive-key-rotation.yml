@@ -127,7 +127,7 @@ jobs:
           sudo env MANAGER_ETC=/tmp/hive-rot-node /opt/manager/modules/hive_key_rotation.sh --node-accept-controller /tmp/controller-key-transition.json >/tmp/controller-node-accept.log
           grep -q '^controller_epoch=2$' /tmp/controller-node-accept.log
           grep -q '^cached=0$' /tmp/controller-node-accept.log
-          grep -q "^fingerprint=${new_fp}$" /tmp/hive-rot-node/hive/node/controller.conf
+          sudo grep -q "^fingerprint=${new_fp}$" /tmp/hive-rot-node/hive/node/controller.conf
           sudo env MANAGER_ETC=/tmp/hive-rot-node /opt/manager/modules/hive_key_rotation.sh --node-accept-controller /tmp/controller-key-transition.json >/tmp/controller-node-accept-cached.log
           grep -q '^cached=1$' /tmp/controller-node-accept-cached.log
 
