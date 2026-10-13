@@ -88,6 +88,7 @@ FILES=(
   "modules/node_metadata.sh"
   "modules/node_usage.sh"
   "modules/hive_identity.sh"
+  "modules/hive_key_rotation.sh"
   "modules/hive_network.sh"
   "modules/hive_health.sh"
   "modules/hive_scheduler.sh"
@@ -212,6 +213,9 @@ chmod 0644 "$ETC_DIR/installed-version"
 "$INSTALL_DIR/modules/node_metadata.sh" --init >/dev/null
 "$INSTALL_DIR/modules/hive_identity.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] A identidade criptográfica do nó da Colmeia não pôde ser inicializada." >&2
+}
+"$INSTALL_DIR/modules/hive_key_rotation.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] O estado de rotação de chaves da Colmeia não pôde ser lido. Use: manager hive key status" >&2
 }
 "$INSTALL_DIR/modules/hive_network.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] A rede privada da Colmeia não pôde ser inicializada/reconciliada. Use: manager hive network status" >&2

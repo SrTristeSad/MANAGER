@@ -56,6 +56,14 @@ Uso:
   manager hive controller reenroll REQUEST OUT
   manager hive controller revoke NODE_ID [REASON]
                                   administra a autoridade de enrollment da Colmeia
+  manager hive key status
+  manager hive key node prepare OUT
+  manager hive key node commit BUNDLE
+  manager hive key node accept-controller TRANSITION
+  manager hive key controller accept-node REQUEST OUT
+  manager hive key controller prepare OUT
+  manager hive key controller commit TRANSITION
+                                  rotação Ed25519 com transição explícita (0.8.9)
   manager hive network status|init|up|down|reconcile
                                   controla a interface privada mgh0
   manager hive network request ENDPOINT OUT [PORT]
@@ -268,6 +276,28 @@ case "${1:-}" in
       status) exec "$MANAGER_HOME/modules/hive_identity.sh" --status ;;
       request) [[ -n "${3:-}" ]] || { err "Uso: manager hive request /CAMINHO/request.json"; exit 64; }; exec "$MANAGER_HOME/modules/hive_identity.sh" --request "$3" ;;
       accept) [[ -n "${3:-}" && -n "${4:-}" ]] || { err "Uso: manager hive accept BUNDLE CONTROLLER_FP"; exit 64; }; exec "$MANAGER_HOME/modules/hive_identity.sh" --accept "$3" "$4" ;;
+      key)
+        case "${3:-status}" in
+          status) exec "$MANAGER_HOME/modules/hive_key_rotation.sh" --status ;;
+          node)
+            case "${4:-status}" in
+              prepare) [[ -n "${5:-}" ]] || { err "Uso: manager hive key node prepare OUT"; exit 64; }; exec "$MANAGER_HOME/modules/hive_key_rotation.sh" --node-prepare "$5" ;;
+              commit) [[ -n "${5:-}" ]] || { err "Uso: manager hive key node commit BUNDLE"; exit 64; }; exec "$MANAGER_HOME/modules/hive_key_rotation.sh" --node-commit "$5" ;;
+              accept-controller) [[ -n "${5:-}" ]] || { err "Uso: manager hive key node accept-controller TRANSITION"; exit 64; }; exec "$MANAGER_HOME/modules/hive_key_rotation.sh" --node-accept-controller "$5" ;;
+              *) err "Uso: manager hive key node {prepare|commit|accept-controller} ..."; exit 64 ;;
+            esac
+            ;;
+          controller)
+            case "${4:-status}" in
+              accept-node) [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager hive key controller accept-node REQUEST OUT"; exit 64; }; exec "$MANAGER_HOME/modules/hive_key_rotation.sh" --controller-accept-node "$5" "$6" ;;
+              prepare) [[ -n "${5:-}" ]] || { err "Uso: manager hive key controller prepare OUT"; exit 64; }; exec "$MANAGER_HOME/modules/hive_key_rotation.sh" --controller-prepare "$5" ;;
+              commit) [[ -n "${5:-}" ]] || { err "Uso: manager hive key controller commit TRANSITION"; exit 64; }; exec "$MANAGER_HOME/modules/hive_key_rotation.sh" --controller-commit "$5" ;;
+              *) err "Uso: manager hive key controller {accept-node|prepare|commit} ..."; exit 64 ;;
+            esac
+            ;;
+          *) err "Uso: manager hive key {status|node ...|controller ...}"; exit 64 ;;
+        esac
+        ;;
       network)
         case "${3:-status}" in
           status) exec "$MANAGER_HOME/modules/hive_network.sh" --status ;;
@@ -488,7 +518,7 @@ case "${1:-}" in
           *) err "Ação de controlador da Colmeia inválida: ${3:-}"; exit 64 ;;
         esac
         ;;
-      *) err "Uso: manager hive {status|request|accept|network ...|health ...|node ...|lease ...|allocation ...|login ...|remote ...|controller ...}"; exit 64 ;;
+      *) err "Uso: manager hive {status|request|accept|key ...|network ...|health ...|node ...|lease ...|allocation ...|login ...|remote ...|controller ...}"; exit 64 ;;
     esac
     ;;
   automation)

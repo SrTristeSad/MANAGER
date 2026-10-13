@@ -316,11 +316,23 @@ Fechamento da fase:
 
 ### 0.8.9 — rotação de chaves e anti-replay distribuído
 
-- rotação de identidade do nó/controlador com transição explícita;
-- rotação de material da malha WireGuard;
-- nonce/timestamp/freshness para mensagens distribuídas;
-- revogação e fencing durante rotação;
-- nenhuma criptografia própria.
+Em implementação.
+
+Implementado nesta primeira fatia:
+
+- rotação Ed25519 da identidade do nó por request assinado pela chave atual e prova de posse da nova chave;
+- aceite do controlador incrementa `node_epoch` antes do nó ativar a nova chave, cercando mensagens assinadas pela geração antiga;
+- rotação da identidade do controlador por transição explicitamente assinada pela chave antiga e pela nova;
+- `controller_epoch` monotônico e aceite explícito por nó antes de confiar no novo controlador;
+- timestamp, nonce, freshness e replay cache persistente nos contratos de rotação;
+- retries idempotentes para o mesmo `rotation_id`/payload, sem aceitar payload divergente na mesma geração;
+- chaves privadas antigas não são arquivadas; somente chaves públicas e documentos de transição ficam disponíveis para audit/fencing;
+- OpenSSL Ed25519 continua sendo a única primitiva usada; nenhuma criptografia própria foi criada.
+
+Pendente para fechar a 0.8.9:
+
+- rotação da chave WireGuard da malha `mgh0` com transição staged e redistribuição de topologia;
+- consolidar os gates de anti-replay/fencing entre todos os fluxos distribuídos e executar a regressão final da release.
 
 ### 0.8.10 — observabilidade distribuída
 
