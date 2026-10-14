@@ -25,11 +25,21 @@ Cada heartbeat aceito pode gerar um registro `manager-hive-health-history-v1` co
 
 Não são persistidos nesse histórico endereço de origem, chave, assinatura, nonce, credencial, perfil VPN, token ou segredo de usuário.
 
-## Retenção
+## Retenção e rotação dos audits
 
 O histórico de health usa retenção temporal. O padrão inicial é 7 dias e pode ser ajustado por `MANAGER_HIVE_OBSERVABILITY_RETENTION_SECONDS`, limitado a 90 dias nesta fase.
 
-O scheduler e a autoridade de leases continuam donos dos próprios audits. A observabilidade apenas sanitiza e consulta esses arquivos; não os copia.
+Scheduler e autoridade de leases continuam sendo os escritores dos próprios audits. A observabilidade agora coordena apenas a **rotação operacional** desses dois JSONL:
+
+- o arquivo ativo é movido por `rename` atômico para um segmento root-only;
+- a rotação nunca trunca o audit em lugar;
+- um writer que já abriu o descritor antigo termina de escrever no segmento renomeado;
+- writers seguintes continuam no arquivo ativo recriado;
+- segmentos não são comprimidos nesta fase, evitando corrida entre compressão e writer ainda aberto;
+- consultas `scheduler`, `leases` e `summary` leem segmentos arquivados + arquivo ativo como uma única linha do tempo;
+- retenção remove somente segmentos arquivados fora da janela, nunca o arquivo ativo.
+
+O padrão de retenção dos audits é 14 dias (`MANAGER_HIVE_OBSERVABILITY_AUDIT_RETENTION_SECONDS`) e o limiar padrão de rotação é 4 MiB (`MANAGER_HIVE_OBSERVABILITY_AUDIT_MAX_BYTES`). A janela continua limitada a 90 dias e o limiar a 512 MiB.
 
 ## Comandos
 
@@ -40,6 +50,8 @@ manager hive observe health [NODE_ID|*] [LIMIT]
 manager hive observe scheduler [LIMIT]
 manager hive observe leases [IDENTITY_ID|*] [LIMIT]
 manager hive observe prune [RETENTION_SECONDS]
+manager hive observe audit-status
+manager hive observe audit-maintain [RETENTION_SECONDS] [MAX_BYTES] [force]
 ```
 
 `summary` agrega, dentro da janela solicitada:
@@ -66,4 +78,4 @@ Observabilidade é diagnóstica. Se a gravação do histórico falhar, o heartbe
 
 ## Escopo desta fatia
 
-Esta fundação não fecha a 0.8.10 inteira. Ainda ficam para as próximas fatias: retenção/rotação coordenada dos audits existentes, export estruturado para integração externa, métricas temporais mais completas e gate final multi-nó da release.
+A segunda fatia fecha a retenção/rotação coordenada dos audits de scheduler e leases sem mudar quem escreve ou decide no control plane. A 0.8.10 ainda não está fechada: permanecem export estruturado para integração externa, séries temporais/métricas adicionais e o gate final multi-nó da release.
