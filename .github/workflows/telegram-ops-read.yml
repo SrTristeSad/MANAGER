@@ -57,6 +57,8 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          sudo systemctl disable --now manager-session-cleanup.timer manager-session-reconcile.path >/dev/null 2>&1 || true
+          sudo systemctl stop manager-session-cleanup.service >/dev/null 2>&1 || true
           now="$(date +%s)"
           future="$((now + 7200))"
           sudo install -d -m 0700 \
