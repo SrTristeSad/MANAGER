@@ -237,33 +237,30 @@ O contrato de saída é `manager-telegram-gateway-v1`. O audit `/var/log/manager
 
 ## Ingresso do Telegram Bot por long polling
 
-O Bot usa o mesmo `bot-token` root-only já configurado pela autenticação do Mini App. Por padrão não abre nenhuma porta: o serviço consulta `https://api.telegram.org` por HTTPS com `getUpdates`, guarda apenas o próximo `update_id` e converte comandos conhecidos em `manager-telegram-gateway-request-v1`.
+O Bot usa `getUpdates` por HTTPS contra `https://api.telegram.org`, portanto não abre porta pública, não exige webhook e não altera firewall. O bot token é lido do mesmo arquivo root-only usado pela autenticação do Mini App e nunca aparece em argv, audit ou mensagens de erro.
+
+Somente mensagens privadas com `message.from.id == message.chat.id` entram no parser. O `user.id` vem da resposta autenticada da Bot API e é resolvido no mesmo binding `telegram_user_id -> principal_id`; username, nome, texto livre e `chat.id` não concedem autoridade. O ingresso inicial expõe somente comandos fixos de leitura:
+
+- `/describe` -> `system.describe`;
+- `/node` -> `node.usage`;
+- `/status ID` -> `connection.status`;
+- `/help` e `/start` retornam a ajuda local.
+
+Texto desconhecido nunca vira `action_id`, shell ou comando do sistema. Cada `update_id` vira um `request_id` estável do gateway, de modo que falha ao entregar a resposta ao Telegram pode repetir a ação sem duplicar mutação; a Automation v2 devolve o resultado idempotente após revalidar RBAC. O offset só avança depois que o update é tratado e, quando há resposta, depois que `sendMessage` é aceito.
+
+CLI:
 
 ```bash
 manager telegram bot status
-manager telegram bot enable 25
+manager telegram bot enable
 manager telegram bot disable
 manager telegram bot poll-once
 ```
 
-Comandos Bot inicialmente allowlisted: `/describe`, `/node`, `/status ID`, `/revoke ID`, `/preflight ID PLAN [OWNER] [PROTOCOLS]` e `/create ID PLAN [OWNER] [PROTOCOLS]`. Username, nome, chat id e texto livre não concedem autoridade. O `from.id` só escolhe o binding existente; a Automation v2 continua revalidando principal, scopes, rate limit e idempotência antes do dispatcher.
-
-A autenticidade de uma atualização em long polling deriva da conexão HTTPS do MANAGER com a Telegram Bot API usando o token secreto; não existe assinatura individual de cada update. O token nunca é colocado em argv, audit ou resposta pública. O serviço persiste `next_update_id` root-only para não executar novamente updates já consumidos.
-
-Contrato do ingresso:
-
-```text
-manager-telegram-bot-ingress-v1
-```
-
-Webhook permanece uma alternativa futura; ele deverá exigir `X-Telegram-Bot-Api-Secret-Token` e alimentar o mesmo gateway tipado, sem criar outra ACL.
+A unidade `manager-telegram-bot.service` é opcional e usa long polling. Estado e offset ficam root-only em `/etc/manager/telegram/bot` e `/var/lib/manager/telegram-bot`; o audit sanitizado fica em `/var/log/manager/telegram-bot-audit.jsonl`. O uninstall normal para a unidade e preserva estado; reinstalação/rollback reanexam somente quando aplicável.
 
 ## Próximas fatias da 0.9
 
-A camada Telegram ainda precisa:
+A fundação de ingresso Bot + Mini App da 0.9.0 fica funcionalmente completa com o long polling. As fases seguintes expandem telas e fluxos de sessões, clientes, produtos, cotas, nós e diagnósticos. Webhook pode ser adicionado como transporte alternativo futuro sem mudar a autoridade do gateway.
 
-1. adicionar ingresso autenticado do Telegram Bot (webhook/long polling) para alimentar o mesmo gateway tipado sem confiar em username/chat;
-2. implementar telas e fluxos de sessões, clientes, produtos, cotas, nós e diagnósticos;
-3. expandir o E2E para o transporte real do Bot quando esse ingresso existir.
-
-O Mini App já possui E2E do `initData` até a Automation v2. O Telegram permanece apenas uma interface do control plane existente, não uma nova autoridade paralela.
+O Telegram permanece apenas uma interface do control plane existente, não uma nova autoridade paralela.

@@ -187,9 +187,9 @@ Uso:
   manager telegram gateway status
   manager telegram gateway call /CAMINHO/INITDATA /CAMINHO/REQUEST.json
   manager telegram gateway call-stdin /CAMINHO/REQUEST.json
-                                  gateway tipado Telegram -> Automation v2 (0.9.0)
-  manager telegram bot status|enable [POLL_TIMEOUT]|disable|poll-once
-                                  ingresso Telegram Bot por long polling HTTPS (0.9.x)
+                                  executa ações tipadas via Automation v2 sem shell arbitrário (0.9.0)
+  manager telegram bot status|enable|disable|poll-once
+                                  ingresso Bot API por long polling, sem listener público (0.9.0)
   manager --diagnostics           abre o diagnóstico
   manager --version               mostra a versão
   manager --help                  mostra esta ajuda
@@ -689,10 +689,10 @@ case "${1:-}" in
       bot)
         case "${3:-status}" in
           status) exec "$MANAGER_HOME/modules/telegram_bot.sh" --status ;;
-          enable) exec "$MANAGER_HOME/modules/telegram_bot.sh" --enable "${4:-25}" ;;
+          enable) exec "$MANAGER_HOME/modules/telegram_bot.sh" --enable ;;
           disable) exec "$MANAGER_HOME/modules/telegram_bot.sh" --disable ;;
           poll-once) exec "$MANAGER_HOME/modules/telegram_bot.sh" --poll-once ;;
-          *) err "Uso: manager telegram bot {status|enable [POLL_TIMEOUT]|disable|poll-once}"; exit 64 ;;
+          *) err "Uso: manager telegram bot {status|enable|disable|poll-once}"; exit 64 ;;
         esac
         ;;
       *) err "Uso: manager telegram {identity|auth|gateway|bot} ..."; exit 64 ;;
@@ -888,14 +888,14 @@ while true; do
       ;;
     43)
       header
-      say "${C_WHITE}TELEGRAM — IDENTIDADE / AUTENTICAÇÃO / GATEWAY / RBAC${C_RESET}\n"
+      say "${C_WHITE}TELEGRAM — IDENTIDADE / AUTENTICAÇÃO / GATEWAY / BOT${C_RESET}\n"
       "$MANAGER_HOME/modules/telegram_identity.sh" --status || true
       say ""
       "$MANAGER_HOME/modules/telegram_auth.sh" --status 2>/dev/null || true
       say ""
-      "$MANAGER_HOME/modules/telegram_gateway.sh" --status 2>/dev/null || true
-      say ""
       "$MANAGER_HOME/modules/telegram_bot.sh" --status 2>/dev/null || true
+      say ""
+      "$MANAGER_HOME/modules/telegram_gateway.sh" --status 2>/dev/null || true
       say ""
       "$MANAGER_HOME/modules/telegram_identity.sh" --list 2>/dev/null || true
       say ""
@@ -905,6 +905,7 @@ while true; do
       say " manager telegram auth token install /root/telegram-bot-token"
       say " manager telegram auth verify /root/initdata.txt"
       say " manager telegram auth resolve /root/initdata.txt"
+      say " manager telegram bot enable"
       say " manager telegram gateway call-stdin /root/request.json < /root/initdata.txt"
       pause
       ;;

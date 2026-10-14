@@ -383,20 +383,19 @@ Gateway Mini App implementado nesta fatia:
 - `initData`, bot token e credencial privada não entram em argv, audit ou contrato público do gateway;
 - gate E2E cobre HMAC/freshness -> binding -> gateway -> Ed25519 -> RBAC -> dispatcher, replay idempotente, conflito e rate limit.
 
-Ingresso Telegram Bot implementado nesta fatia:
+Ingresso do Bot implementado nesta fatia:
 
-- ingresso autenticado do Telegram Bot por long polling HTTPS, reutilizando o gateway tipado;
-- long polling HTTPS com a Telegram Bot API sem listener público adicional;
-- `from.id` numérico é resolvido no binding existente e nunca substituído por username/chat/nome;
-- comandos Bot são mapeados para o mesmo contrato `manager-telegram-gateway-request-v1`;
-- Automation v2 continua autoridade única para RBAC, scopes, rate limit, idempotência e dispatcher;
-- offset de `update_id` é persistente/root-only para impedir reexecução de update consumido;
-- bot token permanece fora de argv/audits/respostas.
+- `manager-telegram-bot-ingress-v1` usa long polling HTTPS oficial da Bot API, sem listener público ou regra de firewall;
+- `message.from.id` de update privado autenticado é a única identidade do Bot; username/nome/chat não concedem autoridade;
+- comandos Bot são mapeados por allowlist fixa para ações tipadas e entram pelo mesmo gateway/Automation v2;
+- `update_id` gera `request_id` estável para retry idempotente e o offset só avança depois do tratamento seguro;
+- bot token não entra em argv/audit/erro e estado/offset são root-only;
+- lifecycle de enable/disable/reinstall/rollback/uninstall preserva intenção sem deixar unidade órfã.
 
-Ainda pendente para fechar toda a integração Bot/Mini App da série 0.9:
+Pendências da série 0.9 após a fundação 0.9.0:
 
-- webhook autenticado como transporte alternativo ao long polling;
-- telas/fluxos de produto posteriores.
+- telas/fluxos de produto posteriores;
+- webhook opcional como transporte alternativo ao long polling, sem nova autoridade.
 
 Fases seguintes da série 0.9:
 
