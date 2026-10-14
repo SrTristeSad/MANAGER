@@ -421,7 +421,10 @@ if role == "admin":
     subject = "*"
 elif not ID_RE.fullmatch(subject or ""):
     die("ops-subject-invalid", 64)
-if products_scope != "*":
+if role == "user":
+    if products_scope != "-":
+        die("ops-user-products-sentinel-invalid", 64)
+elif products_scope != "*":
     parts = products_scope.split(",")
     if not parts or any(not PRODUCT_RE.fullmatch(x) for x in parts):
         die("ops-products-scope-invalid", 64)
