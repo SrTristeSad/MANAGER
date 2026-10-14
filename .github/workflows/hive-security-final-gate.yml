@@ -1,1 +1,150 @@
-name: placeholder
+name: Hive Distributed Anti-Replay and Fencing Final Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hive-security-final:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          test "$(sudo cat /opt/manager/VERSION)" = 0.8.8
+          sudo test -x /opt/manager/modules/hive_key_rotation.sh
+          sudo test -x /opt/manager/modules/hive_wg_rotation.sh
+          sudo test -x /opt/manager/modules/hive_health.sh
+          sudo test -x /opt/manager/modules/hive_leases.sh
+
+      - name: Verify permanent replay and fencing gates remain present
+        shell: bash
+        run: |
+          set -euxo pipefail
+          grep -q 'Reject replay and tampered heartbeat' .github/workflows/hive-health.yml
+          grep -q 'old node generation was accepted after rotation' .github/workflows/hive-key-rotation.yml
+          grep -q 'cached_activation=1' .github/workflows/hive-wg-key-rotation.yml
+          grep -q 'authority_epoch' .github/workflows/hive-global-leases.yml
+          grep -qi 'replay' .github/workflows/automation-v2-transport.yml
+
+      - name: Build isolated enrolled node and baseline mesh
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager hive controller init >/dev/null
+          controller_fp="$(sudo manager hive controller fingerprint)"
+          printf '%s\n' "$controller_fp" >/tmp/final-controller.fp
+
+          sudo rm -rf /tmp/final-node /tmp/final-wg /tmp/final-bundles-1
+          sudo mkdir -m 700 /tmp/final-node /tmp/final-wg /tmp/final-bundles-1
+          sudo env MANAGER_ETC=/tmp/final-node /opt/manager/modules/node_metadata.sh --init >/dev/null
+          sudo env MANAGER_ETC=/tmp/final-node /opt/manager/modules/hive_identity.sh --request /tmp/final.identity.request.json >/dev/null
+          sudo manager hive controller approve /tmp/final.identity.request.json /tmp/final.identity.bundle.json >/tmp/final.identity.approve.log
+          node_id="$(awk -F= '$1=="node_id"{print $2}' /tmp/final.identity.approve.log)"
+          test -n "$node_id"
+          printf '%s\n' "$node_id" >/tmp/final.node-id
+          sudo env MANAGER_ETC=/tmp/final-node /opt/manager/modules/hive_identity.sh --accept /tmp/final.identity.bundle.json "$controller_fp" >/dev/null
+
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/final-node MANAGER_HIVE_WG_DIR=/tmp/final-wg /opt/manager/modules/hive_network.sh --install >/dev/null
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/final-node MANAGER_HIVE_WG_DIR=/tmp/final-wg /opt/manager/modules/hive_network.sh --request 203.0.113.70 /tmp/final.network.request.v1.json 51870 >/dev/null
+          sudo cp /tmp/final.network.request.v1.json /tmp/final.network.request.stale.json
+          sudo manager hive network controller approve /tmp/final.network.request.v1.json >/dev/null
+          sudo manager hive network controller bundle-all /tmp/final-bundles-1 >/dev/null
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/final-node MANAGER_HIVE_WG_DIR=/tmp/final-wg /opt/manager/modules/hive_network.sh --accept "/tmp/final-bundles-1/$node_id.network.json" >/dev/null
+          sudo cp "/tmp/final-bundles-1/$node_id.network.json" /tmp/final.bundle.before-node-rotation.json
+
+      - name: Rotate node identity and fence old signed requests
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node_id="$(cat /tmp/final.node-id)"
+          sudo env MANAGER_ETC=/tmp/final-node /opt/manager/modules/hive_key_rotation.sh --node-prepare /tmp/final.node-key.request.json >/tmp/final.node-key.prepare.log
+          grep -q '^node_epoch_from=1$' /tmp/final.node-key.prepare.log
+          sudo manager hive key controller accept-node /tmp/final.node-key.request.json /tmp/final.node-key.bundle.json >/tmp/final.node-key.accept.log
+          grep -q '^node_epoch_to=2$' /tmp/final.node-key.accept.log
+          if sudo manager hive network controller approve /tmp/final.network.request.stale.json; then
+            echo 'stale network request survived node_epoch fencing' >&2
+            exit 1
+          fi
+          sudo env MANAGER_ETC=/tmp/final-node /opt/manager/modules/hive_key_rotation.sh --node-commit /tmp/final.node-key.bundle.json >/tmp/final.node-key.commit.log
+          grep -q '^node_epoch=2$' /tmp/final.node-key.commit.log
+          sudo env MANAGER_ETC=/tmp/final-node /opt/manager/modules/hive_key_rotation.sh --node-commit /tmp/final.node-key.bundle.json >/tmp/final.node-key.retry.log
+          grep -q '^cached=1$' /tmp/final.node-key.retry.log
+          sudo manager hive controller show "$node_id" | grep -q '^node_epoch=2$'
+
+      - name: Re-register current node generation and rotate mgh0 key
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node_id="$(cat /tmp/final.node-id)"
+          sudo rm -rf /tmp/final-bundles-2 /tmp/final-wg-rotated
+          sudo mkdir -m 700 /tmp/final-bundles-2 /tmp/final-wg-rotated
+
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/final-node MANAGER_HIVE_WG_DIR=/tmp/final-wg /opt/manager/modules/hive_network.sh --request 203.0.113.70 /tmp/final.network.request.v2.json 51870 >/dev/null
+          sudo manager hive network controller approve /tmp/final.network.request.v2.json >/dev/null
+          sudo manager hive network controller bundle-all /tmp/final-bundles-2 >/dev/null
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/final-node MANAGER_HIVE_WG_DIR=/tmp/final-wg /opt/manager/modules/hive_network.sh --accept "/tmp/final-bundles-2/$node_id.network.json" >/dev/null
+          sudo cp "/tmp/final-bundles-2/$node_id.network.json" /tmp/final.bundle.before-wg-rotation.json
+
+          old_public="$(sudo cat /tmp/final-node/hive/network/node.pub)"
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/final-node MANAGER_HIVE_WG_DIR=/tmp/final-wg /opt/manager/modules/hive_wg_rotation.sh --node-prepare /tmp/final.wg.request.json >/tmp/final.wg.prepare.log
+          rotation_id="$(awk -F= '$1=="rotation_id"{print $2}' /tmp/final.wg.prepare.log)"
+          test -n "$rotation_id"
+          sudo manager hive network controller rotate stage /tmp/final.wg.request.json /tmp/final.wg.auth.json >/tmp/final.wg.stage.log
+          grep -q '^cached_authorization=0$' /tmp/final.wg.stage.log
+          sudo manager hive network controller rotate stage /tmp/final.wg.request.json /tmp/final.wg.auth.cached.json >/tmp/final.wg.stage.cached.log
+          grep -q '^cached_authorization=1$' /tmp/final.wg.stage.cached.log
+          sudo manager hive network controller rotate activate "$rotation_id" /tmp/final-wg-rotated >/tmp/final.wg.activate.log
+          grep -q '^cached_activation=0$' /tmp/final.wg.activate.log
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/final-node MANAGER_HIVE_WG_DIR=/tmp/final-wg /opt/manager/modules/hive_wg_rotation.sh --node-commit /tmp/final.wg.auth.json "/tmp/final-wg-rotated/$node_id.network.json" >/tmp/final.wg.commit.log
+          grep -q '^wg_key_epoch=2$' /tmp/final.wg.commit.log
+          new_public="$(sudo cat /tmp/final-node/hive/network/node.pub)"
+          test "$old_public" != "$new_public"
+          if sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/final-node MANAGER_HIVE_WG_DIR=/tmp/final-wg /opt/manager/modules/hive_network.sh --accept /tmp/final.bundle.before-wg-rotation.json; then
+            echo 'stale topology bundle survived config/network generation fencing' >&2
+            exit 1
+          fi
+          sudo manager hive network controller rotate activate "$rotation_id" /tmp/final-wg-rotated-retry >/tmp/final.wg.activate.retry.log
+          grep -q '^cached_activation=1$' /tmp/final.wg.activate.retry.log
+
+      - name: Rotate controller and reject old controller-signed topology
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager hive key controller prepare /tmp/final.controller.transition.json >/tmp/final.controller.prepare.log
+          grep -q '^controller_epoch_from=1$' /tmp/final.controller.prepare.log
+          grep -q '^controller_epoch_to=2$' /tmp/final.controller.prepare.log
+          sudo manager hive key controller commit /tmp/final.controller.transition.json >/tmp/final.controller.commit.log
+          grep -q '^controller_epoch=2$' /tmp/final.controller.commit.log
+          sudo env MANAGER_ETC=/tmp/final-node /opt/manager/modules/hive_key_rotation.sh --node-accept-controller /tmp/final.controller.transition.json >/tmp/final.controller.node-accept.log
+          grep -q '^controller_epoch=2$' /tmp/final.controller.node-accept.log
+          if sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/final-node MANAGER_HIVE_WG_DIR=/tmp/final-wg /opt/manager/modules/hive_network.sh --accept /tmp/final.bundle.before-wg-rotation.json; then
+            echo 'old controller-signed topology survived controller rotation' >&2
+            exit 1
+          fi
+          sudo env MANAGER_ETC=/tmp/final-node /opt/manager/modules/hive_key_rotation.sh --node-accept-controller /tmp/final.controller.transition.json >/tmp/final.controller.node-retry.log
+          grep -q '^cached=1$' /tmp/final.controller.node-retry.log
+
+      - name: Verify durable replay state and no private-key archive
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo test -d /etc/manager/hive/controller/rotation/replay
+          sudo test -d /tmp/final-node/hive/node/rotation/replay
+          sudo test -d /tmp/final-node/hive/network/rotation/replay
+          if sudo find /etc/manager/hive/controller/rotation /tmp/final-node/hive/node/rotation /tmp/final-node/hive/network/rotation -type f -path '*/history/*' -name '*.key' -print -quit | grep -q .; then
+            echo 'private key leaked into rotation history' >&2
+            exit 1
+          fi
+          sudo manager hive key status | grep -q '^controller_epoch=2$'
+          sudo env MANAGER_ETC=/tmp/final-node /opt/manager/modules/hive_key_rotation.sh --status | grep -q '^node_key_epoch=2$'
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/final-node MANAGER_HIVE_WG_DIR=/tmp/final-wg /opt/manager/modules/hive_wg_rotation.sh --status | grep -q '^wg_key_epoch=2$'
