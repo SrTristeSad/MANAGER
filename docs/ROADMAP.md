@@ -314,36 +314,16 @@ Fechamento da fase:
 - regressão completa de 33 workflows concluída antes do bump formal;
 - integração com Telegram permanece futura e consumirá estes contratos sem criar uma segunda autoridade paralela.
 
-### 0.8.9 — rotação de chaves e anti-replay distribuído
+### 0.8.9 — rotação de chaves e anti-replay distribuído ✅
 
-Em implementação.
-
-Implementado nesta primeira fatia:
-
-- rotação Ed25519 da identidade do nó por request assinado pela chave atual e prova de posse da nova chave;
-- aceite do controlador incrementa `node_epoch` antes do nó ativar a nova chave, cercando mensagens assinadas pela geração antiga;
-- rotação da identidade do controlador por transição explicitamente assinada pela chave antiga e pela nova;
-- `controller_epoch` monotônico e aceite explícito por nó antes de confiar no novo controlador;
-- timestamp, nonce, freshness e replay cache persistente nos contratos de rotação;
-- retries idempotentes para o mesmo `rotation_id`/payload, sem aceitar payload divergente na mesma geração;
-- chaves privadas antigas não são arquivadas; somente chaves públicas e documentos de transição ficam disponíveis para audit/fencing;
-- OpenSSL Ed25519 continua sendo a única primitiva usada; nenhuma criptografia própria foi criada.
-
-Implementado nesta segunda fatia:
-
-- rotação da chave WireGuard da malha `mgh0` com par novo gerado somente no nó e chave privada staged em `0600`;
-- request de rotação assinado pela identidade Ed25519 enrolled do nó e cercado por `controller_epoch`, `node_epoch`, `config_epoch` e `network_generation`;
-- autorização do controlador assinada por Ed25519, com nonce/freshness, digest do request e transição exata de geração;
-- ativação em duas fases: o stage não altera a topologia; o activate incrementa `config_epoch` e `network_generation` e só então gera bundles assinados para todos os nós ativos;
-- commit local transacional: a nova chave entra apenas junto do novo bundle; falha ao aplicar restaura a chave anterior e reconcilia a topologia anterior;
-- retry/crash recovery idempotente e replay cache persistente;
-- histórico contém apenas chaves públicas/documentos assinados; nenhuma chave privada WireGuard antiga é arquivada;
-- controlador continua fora do caminho de dados VPN.
-
-Pendente para fechar a 0.8.9:
-
-- consolidar os gates de anti-replay/fencing entre todos os fluxos distribuídos e executar a regressão final da release;
-- somente depois disso fazer o bump formal de `VERSION` para 0.8.9.
+- rotação Ed25519 explícita da identidade do nó com prova da chave antiga/nova e fencing por `node_epoch`;
+- rotação Ed25519 do controlador com transição dual-signed e `controller_epoch` monotônico;
+- rotação staged da chave WireGuard da malha `mgh0`, ativação por nova geração de topologia e commit local transacional;
+- nonce, timestamp, freshness, replay cache persistente e retries idempotentes nos contratos de rotação;
+- fencing consolidado por geração entre identidade, topologia e control plane;
+- histórico conserva somente material público/documentos assinados; chaves privadas antigas não são arquivadas;
+- nenhuma criptografia própria;
+- gate final integrado e regressão funcional completa: **34/34 workflows** verdes antes do bump formal.
 
 ### 0.8.10 — observabilidade distribuída
 

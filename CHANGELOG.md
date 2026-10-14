@@ -4,6 +4,25 @@ Todas as mudanças relevantes do MANAGER são registradas aqui. O projeto usa ve
 
 > O histórico detalhado das revisões antigas continua disponível no histórico Git. A partir da série 0.7, este arquivo prioriza mudanças de arquitetura e segurança que afetam contratos públicos/operacionais.
 
+## [0.8.9] - 2026-10-14
+
+### Colmeia — rotação de chaves e anti-replay distribuído
+
+- Identidades Ed25519 de nó agora possuem rotação explícita: request assinado pela chave atual, prova de posse da nova chave e `node_epoch` incrementado pelo controlador antes do commit local.
+- A identidade Ed25519 do controlador usa transição dual-signed (chave antiga + nova), `controller_epoch` monotônico e aceite explícito por cada nó enrolled.
+- Requests/transições de rotação usam `rotation_id`, timestamp, nonce, freshness e replay cache persistente; retry idêntico é idempotente e payload divergente é recusado.
+- Chaves privadas antigas de nó/controlador não são arquivadas; somente chaves públicas e documentos assinados permanecem para audit/fencing.
+- A chave WireGuard da malha `mgh0` ganhou staged rotation: chave privada nova nasce somente no nó em `0600`, o controlador autoriza a transição e a ativação avança `config_epoch`/`network_generation` antes de redistribuir a topologia.
+- Commit WireGuard local é transacional: chave e bundle novo entram juntos; falha de aplicação restaura chave/topologia anteriores e permite crash recovery seguro.
+- Anti-replay/fencing consolidado cobre `node_epoch`, `controller_epoch`, `config_epoch`, `network_generation`, freshness e nonces entre identidade, topologia, health/leases e control plane.
+- O gate final encadeia node-key rotation, re-enrollment da geração atual, WireGuard key rotation e controller-key rotation, comprovando que artefatos das gerações antigas são recusados enquanto retries legítimos permanecem idempotentes.
+- Nenhuma criptografia própria foi criada: Ed25519/OpenSSL e WireGuard continuam sendo as primitivas utilizadas.
+- O HEAD funcional de fechamento passou **34/34 workflows** antes do bump formal da release.
+
+### Próxima etapa
+
+- 0.8.10: observabilidade distribuída da Colmeia.
+
 ## [0.8.8] - 2026-10-12
 
 ### Colmeia — comandos remotos controlados

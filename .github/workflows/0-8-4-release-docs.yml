@@ -1,4 +1,4 @@
-name: Validate MANAGER 0.8.8 Release Metadata
+name: Validate MANAGER 0.8.9 Release Metadata
 
 on:
   push:
@@ -14,24 +14,25 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Verify 0.8.8 version and release documentation
+      - name: Verify 0.8.9 version and release documentation
         shell: bash
         run: |
           set -euxo pipefail
-          test "$(cat VERSION)" = "0.8.8"
-          grep -q 'Versão atual: \*\*0.8.8\*\*' README.md
-          grep -q '0.8.8.*operações administrativas remotas tipadas' README.md
-          grep -q '^## \[0.8.8\] - 2026-10-12$' CHANGELOG.md
-          grep -q '^### 0\.8\.8 — comandos remotos controlados ✅$' docs/ROADMAP.md
-          grep -q '^## 23\. Roteamento remoto tipado — fundação 0\.8\.8$' docs/HIVE.md
-          grep -q 'controller call-pool' docs/HIVE.md
-          grep -q 'hive_controller_remote_auth=1' modules/automation_v2.sh
-          grep -q 'controller-call-pool' modules/hive_remote.sh
+          test "$(cat VERSION)" = "0.8.9"
+          grep -q 'Versão atual: \*\*0.8.9\*\*' README.md
+          grep -q '^## \[0.8.9\] - 2026-10-14$' CHANGELOG.md
+          grep -q '^### 0\.8\.9 — rotação de chaves e anti-replay distribuído ✅$' docs/ROADMAP.md
+          grep -q '^## 24\. Rotação de chaves — fundação 0\.8\.9$' docs/HIVE.md
+          grep -q 'hive_key_rotation.sh' install.sh
+          grep -q 'hive_wg_rotation.sh' install.sh
+          grep -q '^name: Hive Key Rotation$' .github/workflows/hive-key-rotation.yml
+          grep -q '^name: Hive WireGuard Key Rotation$' .github/workflows/hive-wg-key-rotation.yml
+          grep -q '^name: Hive Distributed Anti-Replay and Fencing Final Gate$' .github/workflows/hive-security-final-gate.yml
 
-      - name: Keep 0.8.9 outside the 0.8.8 release
+      - name: Keep 0.8.10 outside the 0.8.9 release
         shell: bash
         run: |
           set -euxo pipefail
-          grep -q '^### 0\.8\.9 — rotação de chaves e anti-replay distribuído$' docs/ROADMAP.md
-          ! grep -q '^## \[0.8.9\]' CHANGELOG.md
-          test "$(cat VERSION)" = "0.8.8"
+          grep -q '^### 0\.8\.10 — observabilidade distribuída$' docs/ROADMAP.md
+          ! grep -q '^## \[0.8.10\]' CHANGELOG.md
+          test "$(cat VERSION)" = "0.8.9"
