@@ -74,9 +74,9 @@ jobs:
             MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health \
             MANAGER_HIVE_OBSERVABILITY_AUDIT_FILE=/tmp/hive-logs/observe.jsonl \
             /opt/manager/modules/hive_observability.sh --record-health /tmp/hive-health/nodes/new.json
-          sudo test "$(stat -c '%a' /tmp/hive-observe/health-history.jsonl)" = 600
+          test "$(sudo stat -c '%a' /tmp/hive-observe/health-history.jsonl)" = 600
           ! sudo grep -Eq '203\.0\.113\.99|must-not-leak|private_key|token' /tmp/hive-observe/health-history.jsonl
-          test "$(sudo wc -l </tmp/hive-observe/health-history.jsonl)" -eq 2
+          test "$(sudo wc -l /tmp/hive-observe/health-history.jsonl | awk '{print $1}')" -eq 2
 
       - name: Query scheduler and lease audits through field allowlists
         shell: bash
@@ -153,7 +153,7 @@ jobs:
             echo 'unbounded observability query was accepted' >&2
             exit 1
           fi
-          test "$(sudo wc -l </tmp/hive-observe/health-history.jsonl)" -eq 1
+          test "$(sudo wc -l /tmp/hive-observe/health-history.jsonl | awk '{print $1}')" -eq 1
 
       - name: Verify 0.8.10 remains in development
         shell: bash
