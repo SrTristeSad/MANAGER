@@ -29,9 +29,8 @@ HEALTH_OBS_DIR = os.path.join(HEALTH_DATA_DIR, "nodes")
 SCHED_AUDIT = os.environ.get("MANAGER_HIVE_SCHEDULER_AUDIT_FILE", "/var/log/manager/hive-scheduler-audit.jsonl")
 LEASE_AUDIT = os.environ.get("MANAGER_HIVE_LEASE_AUDIT_FILE", "/var/log/manager/hive-lease-audit.jsonl")
 AUDIT_FILE = os.environ.get("MANAGER_HIVE_OBSERVABILITY_AUDIT_FILE", "/var/log/manager/hive-observability-audit.jsonl")
-AUDIT_ARCHIVE_ROOT = os.path.join(DATA_DIR, "audit-archive")
-SCHED_ARCHIVE_DIR = os.path.join(AUDIT_ARCHIVE_ROOT, "scheduler")
-LEASE_ARCHIVE_DIR = os.path.join(AUDIT_ARCHIVE_ROOT, "leases")
+SCHED_ARCHIVE_DIR = os.environ.get("MANAGER_HIVE_SCHEDULER_AUDIT_ARCHIVE_DIR", SCHED_AUDIT + ".d")
+LEASE_ARCHIVE_DIR = os.environ.get("MANAGER_HIVE_LEASE_AUDIT_ARCHIVE_DIR", LEASE_AUDIT + ".d")
 LOCK_FILE = os.path.join(DATA_DIR, ".lock")
 CONTRACT = "manager-hive-observability-v1"
 HEALTH_CONTRACT = "manager-hive-health-history-v1"
@@ -60,7 +59,6 @@ def ensure_dir(path, mode=0o700):
 
 def init_dirs():
     ensure_dir(DATA_DIR, 0o700)
-    ensure_dir(AUDIT_ARCHIVE_ROOT, 0o700)
     ensure_dir(SCHED_ARCHIVE_DIR, 0o700)
     ensure_dir(LEASE_ARCHIVE_DIR, 0o700)
     Path(LOCK_FILE).touch(mode=0o600, exist_ok=True)
