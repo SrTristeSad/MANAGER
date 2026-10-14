@@ -1,0 +1,39 @@
+name: Temporary Telegram Workflow Sync
+
+on:
+  push:
+    branches:
+      - feature/0.9.0-telegram-gateway
+    paths:
+      - tmp_update_telegram_workflows.py
+      - .github/workflows/tmp-telegram-workflow-sync.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feature/0.9.0-telegram-gateway
+      - name: Update Telegram CI assertions
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 tmp_update_telegram_workflows.py
+          git diff --check
+      - name: Commit workflow assertion updates
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if git diff --quiet -- .github/workflows/telegram-identity.yml .github/workflows/telegram-initdata-auth.yml; then
+            echo 'No workflow changes to commit'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/telegram-identity.yml .github/workflows/telegram-initdata-auth.yml
+          git commit -m 'ci: advance Telegram gateway roadmap assertions'
+          git push origin HEAD:feature/0.9.0-telegram-gateway
