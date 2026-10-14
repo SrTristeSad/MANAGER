@@ -21,6 +21,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          sed -i 's/TELEGRAM — IDENTIDADE \/ AUTENTICAÇÃO \/ GATEWAY \/ RBAC/TELEGRAM — IDENTIDADE \/ AUTENTICAÇÃO \/ RBAC/' manager
           python3 tmp_patch_telegram_bot.py
           bash -n modules/telegram_bot.sh
           bash -n modules/telegram_gateway.sh
