@@ -1,0 +1,47 @@
+name: Temporary Apply 0.8.10 Audit Retention
+
+on:
+  push:
+    branches:
+      - feature/0.8.10-audit-retention
+    paths:
+      - .github/workflows/tmp-observe-audit-retention.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feature/0.8.10-audit-retention
+          fetch-depth: 0
+
+      - name: Apply patch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 scripts/tmp_observe_audit_retention.py
+          bash -n modules/hive_observability.sh
+          bash -n manager
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('modules/hive_observability.sh').read_text()
+          marker='python3 - "$@" <<\'PY\'\n'
+          start=p.index(marker)+len(marker)
+          end=p.rfind('\nPY')
+          compile(p[start:end], 'embedded-hive-observability', 'exec')
+          PY
+          git diff --check
+
+      - name: Commit product changes
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add modules/hive_observability.sh manager docs/HIVE_OBSERVABILITY.md docs/ROADMAP.md
+          git commit -m 'feat: rotate and retain Hive control-plane audits'
+          git push origin HEAD:feature/0.8.10-audit-retention
