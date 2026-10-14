@@ -92,10 +92,10 @@ jobs:
           cat >/tmp/unknown.json <<'JSON'
           {"update_id":7002,"message":{"from":{"id":123456789,"username":"admin"},"chat":{"id":1},"text":"/shell id"}}
           JSON
-          before="$(sudo wc -l </var/log/manager/telegram-gateway-audit.jsonl)"
+          before="$(sudo wc -l /var/log/manager/telegram-gateway-audit.jsonl | awk '{print $1}')"
           sudo /opt/manager/modules/telegram_bot.sh --process-update /tmp/unknown.json >/tmp/unknown-result
           grep -q '"ignored":1' /tmp/unknown-result
-          after="$(sudo wc -l </var/log/manager/telegram-gateway-audit.jsonl)"
+          after="$(sudo wc -l /var/log/manager/telegram-gateway-audit.jsonl | awk '{print $1}')"
           test "$before" = "$after"
 
       - name: Fail closed for unbound user and disabled binding
