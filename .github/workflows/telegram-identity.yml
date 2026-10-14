@@ -130,6 +130,8 @@ jobs:
           grep -q '^# MANAGER Telegram Bot + Mini App' docs/TELEGRAM.md
           grep -q 'manager-telegram-identity-v1' docs/TELEGRAM.md
           grep -q '^### 0\.9\.0 — identidade Telegram + ponte RBAC 🚧$' docs/ROADMAP.md
-          grep -q 'validação criptográfica do Telegram Bot/WebApp `initData`' docs/ROADMAP.md
+          grep -q 'manager-telegram-initdata-v1' docs/ROADMAP.md
+          grep -q 'manager-telegram-authenticated-principal-v1' docs/ROADMAP.md
+          grep -q 'gateway Bot/Mini App consumindo apenas ações tipadas/allowlisted' docs/ROADMAP.md
           test "$(cat VERSION)" = 0.8.10
           git diff --exit-code
