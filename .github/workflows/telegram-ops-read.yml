@@ -153,6 +153,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          sudo /opt/manager/modules/resellers.sh --create-reseller resellerA reseller '' 100 1
           actions='ops.clients,ops.sessions,ops.products,ops.quotas,ops.nodes,ops.diagnostics'
           sudo manager automation v2 principal create ops-admin admin '*'
           sudo manager automation v2 principal scope ops-admin '*' '*' "$actions"
