@@ -92,6 +92,7 @@ FILES=(
   "modules/hive_network.sh"
   "modules/hive_wg_rotation.sh"
   "modules/hive_health.sh"
+  "modules/hive_observability.sh"
   "modules/hive_scheduler.sh"
   "modules/hive_leases.sh"
   "modules/hive_allocations.sh"
@@ -227,6 +228,9 @@ chmod 0644 "$ETC_DIR/installed-version"
 "$INSTALL_DIR/modules/hive_health.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O heartbeat/saúde da Colmeia não pôde ser reanexado. Use: manager hive health status" >&2
 }
+"$INSTALL_DIR/modules/hive_observability.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] A observabilidade da Colmeia não pôde inicializar seu histórico. Use: manager hive observe status" >&2
+}
 "$INSTALL_DIR/modules/hive_scheduler.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O scheduler da Colmeia não pôde inicializar seu estado. Use: manager hive node status" >&2
 }
@@ -295,6 +299,7 @@ echo "Nó:          manager --node"
 echo "Colmeia:     manager hive status"
 echo "Rede Colmeia: manager hive network status"
 echo "Saúde Colmeia: manager hive health status"
+echo "Observabilidade: manager hive observe summary"
 echo "Scheduler:   manager hive node status"
 echo "Leases globais: manager hive lease status"
 echo "Accounting global: manager hive accounting status"

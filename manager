@@ -94,6 +94,13 @@ Uso:
   manager hive health controller thresholds DEGRADED OFFLINE
   manager hive health controller rotate-tls
                                   heartbeat assinado e saúde distribuída dos nós
+  manager hive observe status
+  manager hive observe summary [WINDOW_SECONDS]
+  manager hive observe health [NODE_ID|*] [LIMIT]
+  manager hive observe scheduler [LIMIT]
+  manager hive observe leases [IDENTITY_ID|*] [LIMIT]
+  manager hive observe prune [RETENTION_SECONDS]
+                                  histórico/summary sanitizado do control plane (0.8.10)
   manager hive node status|list
   manager hive node show NODE
   manager hive node placement NODE NAME COUNTRY REGION POOL
@@ -471,6 +478,17 @@ case "${1:-}" in
             esac
             ;;
           *) err "Uso: manager hive accounting {status|enable|disable|sync [ID]|controller ...|quota ...}"; exit 64 ;;
+        esac
+        ;;
+      observe|observability)
+        case "${3:-status}" in
+          status) exec "$MANAGER_HOME/modules/hive_observability.sh" --status ;;
+          summary) exec "$MANAGER_HOME/modules/hive_observability.sh" --summary "${4:-3600}" ;;
+          health) exec "$MANAGER_HOME/modules/hive_observability.sh" --health "${4:-*}" "${5:-50}" ;;
+          scheduler) exec "$MANAGER_HOME/modules/hive_observability.sh" --scheduler "${4:-50}" ;;
+          leases) exec "$MANAGER_HOME/modules/hive_observability.sh" --leases "${4:-*}" "${5:-50}" ;;
+          prune) if [[ -n "${4:-}" ]]; then exec "$MANAGER_HOME/modules/hive_observability.sh" --prune "$4"; else exec "$MANAGER_HOME/modules/hive_observability.sh" --prune; fi ;;
+          *) err "Uso: manager hive observe {status|summary [WINDOW]|health [NODE|*] [LIMIT]|scheduler [LIMIT]|leases [ID|*] [LIMIT]|prune [SECONDS]}"; exit 64 ;;
         esac
         ;;
       node)

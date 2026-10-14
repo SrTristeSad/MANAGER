@@ -1,0 +1,166 @@
+name: Hive Distributed Observability Foundation
+
+on:
+  pull_request:
+    paths:
+      - modules/hive_observability.sh
+      - modules/hive_health.sh
+      - manager
+      - install.sh
+      - docs/HIVE_OBSERVABILITY.md
+      - docs/ROADMAP.md
+      - .github/workflows/hive-observability.yml
+  push:
+    branches:
+      - main
+    paths:
+      - modules/hive_observability.sh
+      - modules/hive_health.sh
+      - manager
+      - install.sh
+      - docs/HIVE_OBSERVABILITY.md
+      - docs/ROADMAP.md
+      - .github/workflows/hive-observability.yml
+
+permissions:
+  contents: read
+
+jobs:
+  observability-foundation:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          test "$(sudo cat /opt/manager/VERSION)" = 0.8.9
+          sudo test -x /opt/manager/modules/hive_observability.sh
+          grep -q 'hive_observability.sh' /opt/manager/modules/hive_health.sh
+
+      - name: Build sanitized health history
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo rm -rf /tmp/hive-observe /tmp/hive-health /tmp/hive-logs
+          sudo mkdir -p /tmp/hive-observe /tmp/hive-health/nodes /tmp/hive-logs
+          now="$(date +%s)"
+          old="$((now - 7200))"
+          sudo python3 - "$old" "$now" <<'PY'
+          import json,sys
+          old,now=map(int,sys.argv[1:])
+          base={
+            "version":1,"node_id":"node-0123456789abcdef","node_epoch":2,
+            "issued_at":now,"source":"203.0.113.99","base_state":"HEALTHY","base_reason":"ok",
+            "metrics":{"sessions":2,"max_sessions":20,"capacity":100,"weight":2,"cpu_percent":25.5,
+                       "memory_used_percent":40.0,"previous_rtt_ms":12.5,"hive_network_peer_count":3,
+                       "private_key":"must-not-leak","token":"must-not-leak"}
+          }
+          for name,epoch,rtt,sessions in (("old",old,55.0,5),("new",now,12.5,2)):
+              obj=dict(base); obj["received_at"]=epoch; obj["issued_at"]=epoch
+              obj["metrics"]=dict(base["metrics"]); obj["metrics"]["previous_rtt_ms"]=rtt; obj["metrics"]["sessions"]=sessions
+              open(f"/tmp/hive-health/nodes/{name}.json","w").write(json.dumps(obj))
+          PY
+          sudo env \
+            MANAGER_HIVE_OBSERVABILITY_DATA_DIR=/tmp/hive-observe \
+            MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health \
+            MANAGER_HIVE_OBSERVABILITY_AUDIT_FILE=/tmp/hive-logs/observe.jsonl \
+            /opt/manager/modules/hive_observability.sh --record-health /tmp/hive-health/nodes/old.json
+          sudo env \
+            MANAGER_HIVE_OBSERVABILITY_DATA_DIR=/tmp/hive-observe \
+            MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health \
+            MANAGER_HIVE_OBSERVABILITY_AUDIT_FILE=/tmp/hive-logs/observe.jsonl \
+            /opt/manager/modules/hive_observability.sh --record-health /tmp/hive-health/nodes/new.json
+          test "$(sudo stat -c '%a' /tmp/hive-observe/health-history.jsonl)" = 600
+          ! sudo grep -Eq '203\.0\.113\.99|must-not-leak|private_key|token' /tmp/hive-observe/health-history.jsonl
+          test "$(sudo wc -l /tmp/hive-observe/health-history.jsonl | awk '{print $1}')" -eq 2
+
+      - name: Query scheduler and lease audits through field allowlists
+        shell: bash
+        run: |
+          set -euxo pipefail
+          now="$(date +%s)"
+          sudo tee /tmp/hive-logs/scheduler.jsonl >/dev/null <<EOF
+          {"epoch":$now,"event":"select","node_id":"node-0123456789abcdef","protocol":"wireguard","reason":"sticky-failover","score":0.12,"sticky":true,"secret":"scheduler-secret"}
+          {"epoch":$now,"event":"drain","node_id":"node-0123456789abcdef","reason":"maintenance","token":"scheduler-token"}
+          EOF
+          sudo tee /tmp/hive-logs/lease.jsonl >/dev/null <<EOF
+          {"epoch":$now,"event":"grant","identity_id":"maria","node_id":"node-0123456789abcdef","global_lease_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","max_sessions_global":1,"password":"lease-secret"}
+          {"epoch":$now,"event":"deny","identity_id":"maria","node_id":"node-fedcba9876543210","reason":"global-session-limit","active":1,"max_sessions_global":1,"token":"lease-token"}
+          {"epoch":$now,"event":"node-authority-outage","node_id":"node-0123456789abcdef","authority_epoch":4,"outage_started_epoch":$now,"private_key":"nope"}
+          EOF
+          common=(
+            MANAGER_HIVE_OBSERVABILITY_DATA_DIR=/tmp/hive-observe
+            MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health
+            MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-logs/scheduler.jsonl
+            MANAGER_HIVE_LEASE_AUDIT_FILE=/tmp/hive-logs/lease.jsonl
+            MANAGER_HIVE_OBSERVABILITY_AUDIT_FILE=/tmp/hive-logs/observe.jsonl
+          )
+          sudo env "${common[@]}" /opt/manager/modules/hive_observability.sh --scheduler 10 >/tmp/scheduler.out
+          sudo env "${common[@]}" /opt/manager/modules/hive_observability.sh --leases maria 10 >/tmp/leases.out
+          grep -q 'sticky-failover' /tmp/scheduler.out
+          grep -q 'global-session-limit' /tmp/leases.out
+          ! grep -Eq 'scheduler-secret|scheduler-token|secret|token' /tmp/scheduler.out
+          ! grep -Eq 'lease-secret|lease-token|password|private_key|token' /tmp/leases.out
+
+      - name: Aggregate failover drain latency and lease metrics
+        shell: bash
+        run: |
+          set -euxo pipefail
+          common=(
+            MANAGER_HIVE_OBSERVABILITY_DATA_DIR=/tmp/hive-observe
+            MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health
+            MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-logs/scheduler.jsonl
+            MANAGER_HIVE_LEASE_AUDIT_FILE=/tmp/hive-logs/lease.jsonl
+            MANAGER_HIVE_OBSERVABILITY_AUDIT_FILE=/tmp/hive-logs/observe.jsonl
+          )
+          sudo env "${common[@]}" /opt/manager/modules/hive_observability.sh --summary 10800 >/tmp/summary.json
+          python3 - <<'PY'
+          import json
+          x=json.load(open('/tmp/summary.json'))
+          assert x['contract']=='manager-hive-observability-v1'
+          assert x['nodes_observed']==1
+          assert x['scheduler_selections']==1
+          assert x['scheduler_failovers']==1
+          assert x['drains']==1
+          assert x['lease_grants']==1
+          assert x['lease_denies']==1
+          assert x['authority_outages']==1
+          assert x['rtt_p95_ms']==55.0
+          assert x['controller_in_user_vpn_path']==0
+          PY
+          sudo env "${common[@]}" /opt/manager/manager hive observe status | grep -q '^contract=manager-hive-observability-v1$'
+          sudo env "${common[@]}" /opt/manager/manager hive observe health node-0123456789abcdef 10 >/tmp/health.out
+          test "$(wc -l </tmp/health.out)" -eq 2
+          ! grep -Eq 'source|private_key|token|must-not-leak' /tmp/health.out
+
+      - name: Enforce retention and bounded queries
+        shell: bash
+        run: |
+          set -euxo pipefail
+          common=(
+            MANAGER_HIVE_OBSERVABILITY_DATA_DIR=/tmp/hive-observe
+            MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health
+            MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-logs/scheduler.jsonl
+            MANAGER_HIVE_LEASE_AUDIT_FILE=/tmp/hive-logs/lease.jsonl
+            MANAGER_HIVE_OBSERVABILITY_AUDIT_FILE=/tmp/hive-logs/observe.jsonl
+          )
+          sudo env "${common[@]}" /opt/manager/modules/hive_observability.sh --prune 3600 | grep -q '^health_history_entries=1$'
+          if sudo env "${common[@]}" /opt/manager/modules/hive_observability.sh --health '*' 501; then
+            echo 'unbounded observability query was accepted' >&2
+            exit 1
+          fi
+          test "$(sudo wc -l /tmp/hive-observe/health-history.jsonl | awk '{print $1}')" -eq 1
+
+      - name: Verify 0.8.10 remains in development
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "$(cat VERSION)" = 0.8.9
+          grep -q '^### 0.8.10 — observabilidade distribuída 🚧$' docs/ROADMAP.md
+          grep -q 'Ainda pendente para fechar a 0.8.10' docs/ROADMAP.md
+          test -f docs/HIVE_OBSERVABILITY.md
+          git diff --exit-code

@@ -325,12 +325,24 @@ Fechamento da fase:
 - nenhuma criptografia própria;
 - gate final integrado e regressão funcional completa: **34/34 workflows** verdes antes do bump formal.
 
-### 0.8.10 — observabilidade distribuída
+### 0.8.10 — observabilidade distribuída 🚧
 
-- visão histórica de saúde/capacidade por nó;
-- histórico de decisões do scheduler;
-- leases/grants globais auditáveis;
-- métricas de failover, drain e latência;
+Fundação implementada nesta primeira fatia:
+
+- histórico sanitizado de saúde/capacidade por nó a partir de heartbeat aceito;
+- consulta ao histórico de decisões já auditadas pelo scheduler, sem duplicar autoridade;
+- consulta sanitizada a grants/leases e eventos de recovery/fencing já auditados;
+- summary por janela com failover sticky, drain/undrain, RTT médio/p95, grants/denies/releases e estado de autoridade;
+- retenção temporal do histórico de health, root-only, sem chaves/credenciais/assinaturas/nonces;
+- observabilidade failure-isolated: erro no histórico não invalida heartbeat aceito;
+- controlador continua fora do caminho de dados VPN.
+
+Ainda pendente para fechar a 0.8.10:
+
+- retenção/rotação coordenada dos audits existentes;
+- export estruturado/integração externa;
+- séries temporais e métricas operacionais adicionais;
+- gate final multi-nó e regressão completa da release.
 - retenção operacional sem persistir segredos.
 
 ## 0.9.x — Telegram Bot + Mini App
