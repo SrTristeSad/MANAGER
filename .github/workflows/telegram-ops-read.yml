@@ -1,0 +1,301 @@
+name: Telegram Operational Read API E2E
+
+on:
+  pull_request:
+    paths:
+      - modules/automation_ops_views.sh
+      - modules/automation_v2.sh
+      - modules/telegram_gateway.sh
+      - modules/telegram_bot.sh
+      - modules/automation_principals.sh
+      - modules/telegram_identity.sh
+      - install.sh
+      - docs/TELEGRAM.md
+      - docs/ROADMAP.md
+      - .github/workflows/telegram-ops-read.yml
+  push:
+    branches: [main]
+    paths:
+      - modules/automation_ops_views.sh
+      - modules/automation_v2.sh
+      - modules/telegram_gateway.sh
+      - modules/telegram_bot.sh
+      - modules/automation_principals.sh
+      - modules/telegram_identity.sh
+      - install.sh
+      - docs/TELEGRAM.md
+      - docs/ROADMAP.md
+      - .github/workflows/telegram-ops-read.yml
+
+permissions:
+  contents: read
+
+jobs:
+  ops-read-e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          test "$(sudo cat /opt/manager/VERSION)" = "$(cat VERSION)"
+          test "$(cat VERSION)" = 0.8.10
+          sudo test -x /opt/manager/modules/automation_ops_views.sh
+          sudo manager telegram gateway status >/tmp/gateway-status
+          sudo manager telegram bot status >/tmp/bot-status
+          grep -q 'ops.clients,ops.sessions,ops.products,ops.quotas,ops.nodes,ops.diagnostics' /tmp/gateway-status
+          grep -q 'ops.clients,ops.sessions,ops.products,ops.quotas,ops.nodes,ops.diagnostics' /tmp/bot-status
+          grep -q 'manager-automation-ops-read-v1' docs/TELEGRAM.md
+          grep -q 'manager-automation-ops-read-v1' docs/ROADMAP.md
+          bash -n modules/automation_ops_views.sh modules/automation_v2.sh modules/telegram_gateway.sh modules/telegram_bot.sh
+
+      - name: Create root-owned operational fixtures
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo systemctl disable --now manager-session-cleanup.timer manager-session-reconcile.path >/dev/null 2>&1 || true
+          sudo systemctl stop manager-session-cleanup.service >/dev/null 2>&1 || true
+          now="$(date +%s)"
+          future="$((now + 7200))"
+          sudo install -d -m 0700 \
+            /etc/manager/connection/identities \
+            /etc/manager/connection/products/catalog \
+            /etc/manager/connection/products/assignments \
+            /etc/manager/connection/product-usage/identities \
+            /run/manager-session-leases/active
+
+          write_identity() {
+            local id="$1" owner="$2"
+            cat >"/tmp/${id}.conf" <<EOF
+          id=${id}
+          owner=${owner}
+          enabled=1
+          expires_epoch=${future}
+          max_sessions=2
+          protocols=ssh,wireguard
+          created_epoch=${now}
+          updated_epoch=${now}
+          ssh_user=
+          wireguard_client=
+          openvpn_client=
+          EOF
+            sudo install -m 0600 "/tmp/${id}.conf" "/etc/manager/connection/identities/${id}.conf"
+          }
+          write_product() {
+            local id="$1" name="$2"
+            cat >"/tmp/product-${id}.conf" <<EOF
+          id=${id}
+          name=${name}
+          enabled=1
+          duration_days=30
+          max_sessions=2
+          protocols=ssh,wireguard
+          traffic_quota_bytes=1000000
+          quota_period=monthly
+          quota_action=warn
+          EOF
+            sudo install -m 0600 "/tmp/product-${id}.conf" "/etc/manager/connection/products/catalog/${id}.conf"
+          }
+          assign_product() {
+            local id="$1" product="$2"
+            printf 'identity_id=%s\nproduct_id=%s\nassigned_epoch=%s\n' "$id" "$product" "$now" >"/tmp/assign-${id}.conf"
+            sudo install -m 0600 "/tmp/assign-${id}.conf" "/etc/manager/connection/products/assignments/${id}.conf"
+          }
+          write_quota() {
+            local id="$1" product="$2" used="$3"
+            cat >"/tmp/quota-${id}.state" <<EOF
+          identity_id=${id}
+          product_id=${product}
+          quota_bytes=1000000
+          used_bytes=${used}
+          exceeded=0
+          enforceable=1
+          cycle=2026-10
+          quota_action=warn
+          EOF
+            sudo install -m 0600 "/tmp/quota-${id}.state" "/etc/manager/connection/product-usage/identities/${id}.state"
+          }
+          write_session() {
+            local sid="$1" id="$2" proto="$3"
+            cat >"/tmp/${sid}.lease" <<EOF
+          identity_id=${id}
+          protocol=${proto}
+          session_epoch=1
+          expires_epoch=${future}
+          resource=SHOULD-NOT-LEAK
+          device_id=SHOULD-NOT-LEAK
+          EOF
+            sudo install -m 0600 "/tmp/${sid}.lease" "/run/manager-session-leases/active/${sid}.lease"
+          }
+
+          write_product PLAN_A 'Plano A'
+          write_product PLAN_B 'Plano B'
+          write_identity clientA resellerA
+          write_identity clientB resellerA
+          write_identity clientC resellerB
+          write_identity rootClient root-owner
+          assign_product clientA PLAN_A
+          assign_product clientB PLAN_B
+          assign_product clientC PLAN_A
+          assign_product rootClient PLAN_B
+          write_quota clientA PLAN_A 120000
+          write_quota clientB PLAN_B 220000
+          write_quota clientC PLAN_A 320000
+          write_quota rootClient PLAN_B 420000
+          write_session 11111111111111111111111111111111 clientA ssh
+          write_session 22222222222222222222222222222222 clientB wireguard
+          write_session 33333333333333333333333333333333 clientC ssh
+          write_session 44444444444444444444444444444444 rootClient wireguard
+
+      - name: Prepare admin reseller and user Telegram principals
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/resellers.sh --create-reseller resellerA reseller '' 100 1
+          actions='ops.clients,ops.sessions,ops.products,ops.quotas,ops.nodes,ops.diagnostics'
+          sudo manager automation v2 principal create ops-admin admin '*'
+          sudo manager automation v2 principal scope ops-admin '*' '*' "$actions"
+          sudo manager telegram identity bind 123456789 ops-admin
+
+          sudo manager automation v2 principal create ops-reseller reseller resellerA PLAN_A
+          sudo manager automation v2 principal scope ops-reseller '*' '*' "$actions"
+          sudo manager telegram identity bind 223456789 ops-reseller
+
+          sudo manager automation v2 principal create ops-user user clientA '*'
+          sudo manager automation v2 principal scope ops-user '*' '*' 'ops.clients,ops.sessions,ops.products,ops.quotas'
+          sudo manager telegram identity bind 323456789 ops-user
+
+      - name: Generate typed operational requests
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          import json
+          actions=['clients','sessions','products','quotas','nodes','diagnostics']
+          for who in ('admin','reseller','user'):
+              for action in actions:
+                  payload={'contract':'manager-telegram-gateway-request-v1','request_id':f'ops-{who}-{action}-0001','action_id':f'ops.{action}','params':{}}
+                  open(f'/tmp/{who}-{action}.json','w').write(json.dumps(payload,separators=(',',':'))+'\n')
+          bad={'contract':'manager-telegram-gateway-request-v1','request_id':'ops-admin-badparam-0001','action_id':'ops.clients','params':{'owner':'resellerB'}}
+          open('/tmp/admin-badparam.json','w').write(json.dumps(bad,separators=(',',':'))+'\n')
+          PY
+
+      - name: Admin receives all safe operational views
+        shell: bash
+        run: |
+          set -euxo pipefail
+          for action in clients sessions products quotas nodes diagnostics; do
+            sudo /opt/manager/modules/telegram_gateway.sh --call-bot-user 123456789 "/tmp/admin-${action}.json" >"/tmp/admin-${action}.out"
+          done
+          python3 - <<'PY'
+          import json
+          forbidden={'password','passwd','secret','private_key','credential','token','resource','device_id'}
+          def load(name):
+              x=json.load(open('/tmp/admin-'+name+'.out'))
+              assert x['ok'] is True and x['code']==0 and x['action_id']=='ops.'+name
+              view=x['result']['view']
+              assert view['contract']=='manager-automation-ops-read-v1' and view['view']==name
+              def walk(v):
+                  if isinstance(v,dict):
+                      assert not (set(v) & forbidden)
+                      for z in v.values(): walk(z)
+                  elif isinstance(v,list):
+                      for z in v: walk(z)
+              walk(view)
+              return view
+          clients=load('clients')
+          assert {x['identity_id'] for x in clients['items']} == {'clientA','clientB','clientC','rootClient'}
+          sessions=load('sessions')
+          assert sessions['source']=='local'
+          assert {x['identity_id'] for x in sessions['items']} == {'clientA','clientB','clientC','rootClient'}
+          products=load('products')
+          assert {x['product_id'] for x in products['items']} == {'PLAN_A','PLAN_B'}
+          quotas=load('quotas')
+          assert {x['identity_id'] for x in quotas['items']} == {'clientA','clientB','clientC','rootClient'}
+          nodes=load('nodes')
+          assert isinstance(nodes['items'],list)
+          diagnostics=load('diagnostics')
+          assert isinstance(diagnostics['checks'],dict)
+          assert 'automation_v2_active' in diagnostics['checks']
+          PY
+
+      - name: Reseller is fenced by owner and product scope
+        shell: bash
+        run: |
+          set -euxo pipefail
+          for action in clients sessions products quotas; do
+            sudo /opt/manager/modules/telegram_gateway.sh --call-bot-user 223456789 "/tmp/reseller-${action}.json" >"/tmp/reseller-${action}.out"
+          done
+          python3 - <<'PY'
+          import json
+          def view(name): return json.load(open('/tmp/reseller-'+name+'.out'))['result']['view']
+          assert {x['identity_id'] for x in view('clients')['items']} == {'clientA'}
+          assert {x['identity_id'] for x in view('sessions')['items']} == {'clientA'}
+          assert {x['product_id'] for x in view('products')['items']} == {'PLAN_A'}
+          assert {x['identity_id'] for x in view('quotas')['items']} == {'clientA'}
+          PY
+
+          set +e
+          sudo /opt/manager/modules/telegram_gateway.sh --call-bot-user 223456789 /tmp/reseller-nodes.json >/tmp/reseller-nodes.out
+          node_rc=$?
+          sudo /opt/manager/modules/telegram_gateway.sh --call-bot-user 223456789 /tmp/reseller-diagnostics.json >/tmp/reseller-diagnostics.out
+          diag_rc=$?
+          set -e
+          test "$node_rc" = 67
+          test "$diag_rc" = 67
+          python3 - <<'PY'
+          import json
+          for path in ('/tmp/reseller-nodes.out','/tmp/reseller-diagnostics.out'):
+              x=json.load(open(path)); assert x['ok'] is False and x['code']==67
+          PY
+
+      - name: User sees only own identity and assigned product
+        shell: bash
+        run: |
+          set -euxo pipefail
+          for action in clients sessions products quotas; do
+            sudo /opt/manager/modules/telegram_gateway.sh --call-bot-user 323456789 "/tmp/user-${action}.json" >"/tmp/user-${action}.out"
+          done
+          python3 - <<'PY'
+          import json
+          def view(name): return json.load(open('/tmp/user-'+name+'.out'))['result']['view']
+          assert [x['identity_id'] for x in view('clients')['items']] == ['clientA']
+          assert [x['identity_id'] for x in view('sessions')['items']] == ['clientA']
+          assert [x['product_id'] for x in view('products')['items']] == ['PLAN_A']
+          assert [x['identity_id'] for x in view('quotas')['items']] == ['clientA']
+          PY
+
+      - name: Reject Telegram supplied filters and preserve idempotency
+        shell: bash
+        run: |
+          set -euxo pipefail
+          set +e
+          sudo /opt/manager/modules/telegram_gateway.sh --call-bot-user 123456789 /tmp/admin-badparam.json >/tmp/badparam.out
+          bad_rc=$?
+          set -e
+          test "$bad_rc" = 64
+          grep -q 'parâmetros não permitidos' /tmp/badparam.out
+
+          sudo /opt/manager/modules/telegram_gateway.sh --call-bot-user 223456789 /tmp/reseller-clients.json >/tmp/retry.out
+          python3 - <<'PY'
+          import json
+          x=json.load(open('/tmp/retry.out'))
+          assert x['ok'] is True and x['cached'] is True
+          assert x['result']['view']['contract']=='manager-automation-ops-read-v1'
+          PY
+
+      - name: Verify docs boundary and no arbitrary execution surface
+        shell: bash
+        run: |
+          set -euxo pipefail
+          grep -q 'ops.clients' docs/TELEGRAM.md
+          grep -q 'admin-only' docs/TELEGRAM.md
+          grep -q 'telas visuais do Mini App' docs/ROADMAP.md
+          ! grep -Eqi 'ops\.(create|revoke|delete|write|shell|exec)' docs/TELEGRAM.md
+          ! grep -Eqi 'shell\.exec|command.*params|script.*params' modules/automation_ops_views.sh
+          test "$(cat VERSION)" = 0.8.10
+          git diff --exit-code

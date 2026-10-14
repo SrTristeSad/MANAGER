@@ -53,7 +53,7 @@ status() {
   printf 'auth_contract=manager-telegram-authenticated-principal-v1\n'
   printf 'authorization_authority=automation-v2\n'
   printf 'automation_auth=ed25519-v2\n'
-  printf 'typed_actions=system.describe,node.usage,connection.preflight,connection.create,connection.status,connection.revoke\n'
+  printf 'typed_actions=system.describe,node.usage,connection.preflight,connection.create,connection.status,connection.revoke,ops.clients,ops.sessions,ops.products,ops.quotas,ops.nodes,ops.diagnostics\n'
   printf 'rate_limit=automation-v2-principal-action\n'
   printf 'idempotency=automation-v2-request-id\n'
   printf 'credential_model=per-principal-ed25519-client\n'
@@ -103,6 +103,12 @@ ACTION_SCHEMAS = {
     "connection.create": ({"id", "plan"}, {"id", "plan", "owner", "protocols"}),
     "connection.status": ({"id"}, {"id"}),
     "connection.revoke": ({"id"}, {"id"}),
+    "ops.clients": (set(), set()),
+    "ops.sessions": (set(), set()),
+    "ops.products": (set(), set()),
+    "ops.quotas": (set(), set()),
+    "ops.nodes": (set(), set()),
+    "ops.diagnostics": (set(), set()),
 }
 
 def finish_meta(**values):

@@ -344,6 +344,7 @@ AUDIT_FILE = "/var/log/manager/automation-v2-audit.jsonl"
 SOCKET_FILE = "/run/manager-automation-v2/manager.sock"
 CONNECTION_ACTIONS = os.path.join(MANAGER_HOME, "modules", "connection_actions.sh")
 NODE_USAGE = os.path.join(MANAGER_HOME, "modules", "node_usage.sh")
+OPS_VIEWS = os.path.join(MANAGER_HOME, "modules", "automation_ops_views.sh")
 RESELLERS_DIR = os.path.join(MANAGER_ETC, "access", "resellers")
 IDENTITY_DIR = os.path.join(MANAGER_ETC, "connection", "identities")
 NODE_CONF = os.path.join(MANAGER_ETC, "connection", "node", "node.conf")
@@ -368,8 +369,10 @@ KEY_ID_RE = re.compile(r"^ed25519-[a-f0-9]{16}$")
 KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{32,80}$")
 SENSITIVE_RE = re.compile(r"(?i)(password|passwd|secret|private[_-]?key|credential|token)")
-ACTIONS = {"system.describe", "node.usage", "connection.preflight", "connection.create", "connection.status", "connection.revoke"}
-READ_ACTIONS = {"system.describe", "node.usage", "connection.status"}
+ACTIONS = {"system.describe", "node.usage", "connection.preflight", "connection.create", "connection.status", "connection.revoke",
+           "ops.clients", "ops.sessions", "ops.products", "ops.quotas", "ops.nodes", "ops.diagnostics"}
+READ_ACTIONS = {"system.describe", "node.usage", "connection.status",
+                "ops.clients", "ops.sessions", "ops.products", "ops.quotas", "ops.nodes", "ops.diagnostics"}
 RATE_READ_PER_MIN = 120.0
 RATE_READ_BURST = 20.0
 RATE_WRITE_PER_MIN = 30.0
@@ -760,6 +763,10 @@ def authorize(principal, action_id, params):
             return False, normalized, "pool-out-of-scope"
     if action_id == "system.describe": return True, normalized, "system-describe"
     if action_id == "node.usage": return role == "admin", normalized, "node-usage-admin-only"
+    if action_id in {"ops.clients", "ops.sessions", "ops.products", "ops.quotas"}:
+        return not normalized, normalized, "ops-read-scoped" if not normalized else "ops-read-no-params"
+    if action_id in {"ops.nodes", "ops.diagnostics"}:
+        return role == "admin" and not normalized, normalized, "ops-admin-read-only" if role == "admin" and not normalized else "ops-admin-only"
     if action_id in {"connection.preflight", "connection.create"}:
         if role not in {"admin", "reseller", "subreseller"}: return False, normalized, "role-cannot-create"
         plan = normalized.get("plan", "")
@@ -792,7 +799,7 @@ def string_param(params, key, required=True):
     return value
 
 
-def command_for(action_id, params):
+def command_for(action_id, params, principal=None):
     if not isinstance(params, dict): raise ValueError("params deve ser objeto")
     if action_id == "system.describe":
         if params: raise ValueError("system.describe não aceita parâmetros")
@@ -800,6 +807,11 @@ def command_for(action_id, params):
     if action_id == "node.usage":
         if params: raise ValueError("node.usage não aceita parâmetros")
         return [NODE_USAGE, "--show"]
+    if action_id.startswith("ops."):
+        if params: raise ValueError("ações ops não aceitam parâmetros")
+        if not principal: raise ValueError("contexto principal ausente")
+        view = "--" + action_id.split(".", 1)[1]
+        return [OPS_VIEWS, view, principal["role"], principal["subject"], principal["products"]]
     if action_id in {"connection.status", "connection.revoke"}:
         if set(params) != {"id"}: raise ValueError("parâmetro não permitido")
         ident = string_param(params, "id")
@@ -830,6 +842,16 @@ def sanitize_stdout(text):
     return "" if not kept else "\n".join(kept) + ("\n" if text.endswith("\n") else "")
 
 
+def sanitize_structured(value):
+    if isinstance(value, dict):
+        return {str(k)[:128]: sanitize_structured(v) for k, v in value.items() if not SENSITIVE_RE.search(str(k))}
+    if isinstance(value, list):
+        return [sanitize_structured(x) for x in value[:500]]
+    if isinstance(value, str): return value[:8192]
+    if value is None or isinstance(value, (bool, int, float)): return value
+    return str(value)[:8192]
+
+
 def cacheable_response(response):
     safe, redacted = json.loads(json.dumps(response)), False
     result = safe.get("result")
@@ -838,6 +860,11 @@ def cacheable_response(response):
         if isinstance(data, dict):
             for key in list(data):
                 if SENSITIVE_RE.search(key): data.pop(key, None); redacted = True
+        view = result.get("view")
+        if isinstance(view, (dict, list)):
+            sanitized_view = sanitize_structured(view)
+            if sanitized_view != view: redacted = True
+            result["view"] = sanitized_view
         stdout = result.get("stdout")
         if isinstance(stdout, str):
             sanitized = sanitize_stdout(stdout)
@@ -943,7 +970,7 @@ def execute(request, uid):
     if isinstance(cached, dict):
         audit(request_id, action_id, uid, cached, principal=principal, decision="allow", reason=rbac_reason, cached=True, auth=auth_meta,
               transport=transport, replay=replay_decision, rate="allow", issued_at=request.get("issued_at")); return cached
-    try: cmd = command_for(action_id, params)
+    try: cmd = command_for(action_id, params, principal)
     except ValueError as exc:
         result = response_error(request_id, action_id, 64, str(exc), principal=principal); save_cache(request_id, req_hash, result)
         audit(request_id, action_id, uid, result, principal=principal, decision="allow", reason=rbac_reason, auth=auth_meta,
@@ -955,6 +982,14 @@ def execute(request, uid):
         result = {"contract": CONTRACT, "version": VERSION, "request_id": request_id, "action_id": action_id,
                   "principal_id": principal["principal_id"], "principal_role": principal["role"], "ok": proc.returncode == 0,
                   "code": int(proc.returncode), "result": {"data": parse_kv(proc.stdout), "stdout": proc.stdout[:65536]}, "cached": False}
+        if proc.returncode == 0 and action_id.startswith("ops."):
+            try:
+                view = json.loads(proc.stdout)
+                if not isinstance(view, dict) or view.get("contract") != "manager-automation-ops-read-v1":
+                    raise ValueError("contrato inválido")
+                result["result"] = {"view": sanitize_structured(view)}
+            except Exception:
+                result = response_error(request_id, action_id, 70, "resposta estruturada ops inválida", principal=principal)
         if proc.stderr: result["stderr"] = proc.stderr[:8192]
     except subprocess.TimeoutExpired:
         result = response_error(request_id, action_id, 70, "tempo limite da operação excedido", principal=principal)
