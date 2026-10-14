@@ -26,36 +26,22 @@ jobs:
 
           p=Path('modules/automation_principals.sh')
           s=p.read_text()
-          old='system.describe|node.usage|connection.preflight|connection.create|connection.status|connection.revoke)'
-          new='system.describe|node.usage|connection.preflight|connection.create|connection.status|connection.revoke|ops.clients|ops.sessions|ops.products|ops.quotas|ops.nodes|ops.diagnostics)'
-          if s.count(old) != 1:
-              raise SystemExit(f'action allowlist anchor count={s.count(old)}')
+          old='          system.describe|node.usage|connection.preflight|connection.create|connection.status|connection.revoke) ;;'
+          new='          system.describe|node.usage|connection.preflight|connection.create|connection.status|connection.revoke|ops.clients|ops.sessions|ops.products|ops.quotas|ops.nodes|ops.diagnostics) ;;'
+          if old not in s:
+              raise SystemExit('action allowlist anchor missing')
           p.write_text(s.replace(old,new,1))
 
           p=Path('.github/workflows/telegram-ops-read.yml')
           s=p.read_text()
-          marker="actions='ops.clients,ops.sessions,ops.products,ops.quotas,ops.nodes,ops.diagnostics'"
-          if s.count(marker) != 1:
-              raise SystemExit(f'fixture marker count={s.count(marker)}')
-          indent='          '
-          lines=[
-              'sudo install -d -m 0700 /etc/manager/access/resellers',
-              "cat >/tmp/resellerA.conf <<'EOF'",
-              'id=resellerA',
-              'role=reseller',
-              'parent=',
-              'quota=100',
-              'enabled=1',
-              'created_epoch=1',
-              'updated_epoch=1',
-              'EOF',
-              'sudo install -m 0600 /tmp/resellerA.conf /etc/manager/access/resellers/resellerA.conf',
-              '',
-              marker,
-          ]
-          replacement='\n'.join((indent+line) if line else '' for line in lines)
-          p.write_text(s.replace(indent+marker, replacement, 1))
+          marker="          actions='ops.clients,ops.sessions,ops.products,ops.quotas,ops.nodes,ops.diagnostics'"
+          insert="          sudo /opt/manager/modules/resellers.sh --create-reseller resellerA reseller '' 100 1\n\n" + marker
+          if marker not in s:
+              raise SystemExit('fixture marker missing')
+          p.write_text(s.replace(marker,insert,1))
           PY
+          grep -q 'ops.clients|ops.sessions|ops.products|ops.quotas|ops.nodes|ops.diagnostics' modules/automation_principals.sh
+          grep -q -- '--create-reseller resellerA reseller' .github/workflows/telegram-ops-read.yml
           bash -n modules/automation_principals.sh
           git diff --check
           git config user.name github-actions[bot]
