@@ -1,0 +1,42 @@
+name: Telegram Ops Contract Documentation
+
+on:
+  pull_request:
+    paths:
+      - docs/TELEGRAM_OPS_READ_CONTRACT.md
+      - docs/TELEGRAM.md
+      - docs/ROADMAP.md
+      - modules/automation_ops_views.sh
+      - modules/automation_v2.sh
+      - .github/workflows/telegram-ops-contract-doc.yml
+  push:
+    branches: [main]
+    paths:
+      - docs/TELEGRAM_OPS_READ_CONTRACT.md
+      - docs/TELEGRAM.md
+      - docs/ROADMAP.md
+      - modules/automation_ops_views.sh
+      - modules/automation_v2.sh
+      - .github/workflows/telegram-ops-contract-doc.yml
+
+permissions:
+  contents: read
+
+jobs:
+  contract-doc:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate read-only contract boundary
+        shell: bash
+        run: |
+          set -euxo pipefail
+          grep -q '^# Contrato operacional de leitura do Telegram$' docs/TELEGRAM_OPS_READ_CONTRACT.md
+          grep -q 'manager-automation-ops-read-v1' docs/TELEGRAM_OPS_READ_CONTRACT.md
+          for action in clients sessions products quotas nodes diagnostics; do
+            grep -q "ops.${action}" docs/TELEGRAM_OPS_READ_CONTRACT.md
+            grep -q "ops.${action}" docs/TELEGRAM.md
+          done
+          grep -q 'read-only' docs/TELEGRAM_OPS_READ_CONTRACT.md
+          ! grep -Eqi 'ops\.(create|revoke|delete|write|shell|exec)' docs/TELEGRAM_OPS_READ_CONTRACT.md
+          test "$(cat VERSION)" = 0.8.10
