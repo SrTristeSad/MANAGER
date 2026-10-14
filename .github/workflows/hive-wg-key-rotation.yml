@@ -1,0 +1,224 @@
+name: Hive WireGuard Key Rotation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hive-wg-key-rotation:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          test "$(sudo cat /opt/manager/VERSION)" = 0.8.8
+          sudo test -x /opt/manager/modules/hive_wg_rotation.sh
+          sudo manager hive network rotate status >/tmp/wgrot-status
+          grep -q '^contract=manager-hive-wg-key-rotation-v1$' /tmp/wgrot-status
+          grep -q '^old_private_key_retained=0$' /tmp/wgrot-status
+          grep -q '^rotation_fail_closed=1$' /tmp/wgrot-status
+
+      - name: Build an isolated two-node Hive mesh
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager hive controller init >/dev/null
+          fp="$(sudo manager hive controller fingerprint)"
+          printf '%s\n' "$fp" >/tmp/controller.fp
+          for node in a b; do
+            root="/tmp/wgrot-node-$node"
+            wgdir="/tmp/wgrot-wg-$node"
+            sudo rm -rf "$root" "$wgdir"
+            sudo mkdir -m 700 "$root" "$wgdir"
+            sudo env MANAGER_ETC="$root" /opt/manager/modules/node_metadata.sh --init >/dev/null
+            sudo env MANAGER_ETC="$root" /opt/manager/modules/hive_identity.sh --request "/tmp/wgrot-$node.identity-request.json" >/dev/null
+            sudo manager hive controller approve "/tmp/wgrot-$node.identity-request.json" "/tmp/wgrot-$node.identity-bundle.json" >/tmp/wgrot-$node.identity-approve.log
+            node_id="$(awk -F= '$1=="node_id"{print $2}' /tmp/wgrot-$node.identity-approve.log)"
+            printf '%s\n' "$node_id" >"/tmp/wgrot-$node.id"
+            sudo env MANAGER_ETC="$root" /opt/manager/modules/hive_identity.sh --accept "/tmp/wgrot-$node.identity-bundle.json" "$fp" >/dev/null
+            sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC="$root" MANAGER_HIVE_WG_DIR="$wgdir" /opt/manager/modules/hive_network.sh --init >/dev/null
+            endpoint="203.0.113.30"; [[ "$node" == b ]] && endpoint="203.0.113.31"
+            sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC="$root" MANAGER_HIVE_WG_DIR="$wgdir" /opt/manager/modules/hive_network.sh --request "$endpoint" "/tmp/wgrot-$node.network-request.json" 51870 >/dev/null
+            sudo manager hive network controller approve "/tmp/wgrot-$node.network-request.json" >/dev/null
+          done
+
+          sudo rm -rf /tmp/wgrot-initial-bundles
+          sudo mkdir -m 700 /tmp/wgrot-initial-bundles
+          sudo manager hive network controller bundle-all /tmp/wgrot-initial-bundles >/dev/null
+          for node in a b; do
+            node_id="$(cat /tmp/wgrot-$node.id)"
+            root="/tmp/wgrot-node-$node"; wgdir="/tmp/wgrot-wg-$node"
+            sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC="$root" MANAGER_HIVE_WG_DIR="$wgdir" /opt/manager/modules/hive_network.sh --accept "/tmp/wgrot-initial-bundles/$node_id.network.json" >/dev/null
+          done
+          sudo manager hive network controller status | grep -q '^nodes_active=2$'
+
+      - name: Stage without mutating topology and reject tampering
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node_a="$(cat /tmp/wgrot-a.id)"
+          old_private="$(sudo cat /tmp/wgrot-node-a/hive/network/node.key)"
+          old_public="$(sudo cat /tmp/wgrot-node-a/hive/network/node.pub)"
+          printf '%s\n' "$old_private" >/tmp/wgrot-a.old-private
+          printf '%s\n' "$old_public" >/tmp/wgrot-a.old-public
+          cfg_before="$(sudo manager hive network controller status | awk -F= '$1=="config_epoch"{print $2}')"
+          gen_before="$(sudo manager hive network controller show "$node_a" | awk -F= '$1=="network_generation"{print $2}')"
+          printf '%s\n' "$cfg_before" >/tmp/wgrot.cfg-before
+          printf '%s\n' "$gen_before" >/tmp/wgrot.gen-before
+
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/wgrot-node-a MANAGER_HIVE_WG_DIR=/tmp/wgrot-wg-a /opt/manager/modules/hive_wg_rotation.sh --node-prepare /tmp/wgrot-a.request.json >/tmp/wgrot-prepare.log
+          rotation_id="$(awk -F= '$1=="rotation_id"{print $2}' /tmp/wgrot-prepare.log)"
+          test -n "$rotation_id"
+          printf '%s\n' "$rotation_id" >/tmp/wgrot.rotation-id
+          test "$(sudo stat -c '%a' /tmp/wgrot-node-a/hive/network/rotation/pending/new.key)" = 600
+          new_private="$(sudo cat /tmp/wgrot-node-a/hive/network/rotation/pending/new.key)"
+          new_public="$(sudo cat /tmp/wgrot-node-a/hive/network/rotation/pending/new.pub)"
+          test "$new_private" != "$old_private"
+          test "$new_public" != "$old_public"
+          printf '%s\n' "$new_private" >/tmp/wgrot-a.new-private
+          printf '%s\n' "$new_public" >/tmp/wgrot-a.new-public
+          if sudo grep -Fq "$new_private" /tmp/wgrot-a.request.json; then exit 1; fi
+
+          sudo python3 - <<'PY'
+          import json
+          d=json.load(open('/tmp/wgrot-a.request.json'))
+          d['new_wireguard_public_key']='A'*43+'='
+          json.dump(d,open('/tmp/wgrot-a.tampered.json','w'),sort_keys=True,separators=(',',':'))
+          PY
+          sudo chmod 600 /tmp/wgrot-a.tampered.json
+          if sudo manager hive network controller rotate stage /tmp/wgrot-a.tampered.json /tmp/wgrot-a.tampered.auth.json; then exit 1; fi
+          sudo test ! -e /tmp/wgrot-a.tampered.auth.json
+
+          sudo manager hive network controller rotate stage /tmp/wgrot-a.request.json /tmp/wgrot-a.auth.json >/tmp/wgrot-stage.log
+          grep -q '^cached_authorization=0$' /tmp/wgrot-stage.log
+          test "$(sudo manager hive network controller status | awk -F= '$1=="config_epoch"{print $2}')" = "$cfg_before"
+          test "$(sudo manager hive network controller show "$node_a" | awk -F= '$1=="network_generation"{print $2}')" = "$gen_before"
+          test "$(sudo manager hive network controller show "$node_a" | sed -n 's/^wireguard_public_key=//p')" = "$old_public"
+          sudo manager hive network controller rotate stage /tmp/wgrot-a.request.json /tmp/wgrot-a.auth.cached.json >/tmp/wgrot-stage-cached.log
+          grep -q '^cached_authorization=1$' /tmp/wgrot-stage-cached.log
+
+      - name: Activate topology and commit target key transactionally
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node_a="$(cat /tmp/wgrot-a.id)"; node_b="$(cat /tmp/wgrot-b.id)"
+          rotation_id="$(cat /tmp/wgrot.rotation-id)"
+          cfg_before="$(cat /tmp/wgrot.cfg-before)"; gen_before="$(cat /tmp/wgrot.gen-before)"
+          old_private="$(cat /tmp/wgrot-a.old-private)"; old_public="$(cat /tmp/wgrot-a.old-public)"
+          new_private="$(cat /tmp/wgrot-a.new-private)"; new_public="$(cat /tmp/wgrot-a.new-public)"
+          cfg_after="$((cfg_before + 1))"; gen_after="$((gen_before + 1))"
+
+          sudo rm -rf /tmp/wgrot-activated
+          sudo mkdir -m 700 /tmp/wgrot-activated
+          sudo manager hive network controller rotate activate "$rotation_id" /tmp/wgrot-activated >/tmp/wgrot-activate.log
+          grep -q '^cached_activation=0$' /tmp/wgrot-activate.log
+          grep -q "^config_epoch=$cfg_after$" /tmp/wgrot-activate.log
+          sudo test -f "/tmp/wgrot-activated/$node_a.network.json"
+          sudo test -f "/tmp/wgrot-activated/$node_b.network.json"
+          test "$(sudo manager hive network controller status | awk -F= '$1=="config_epoch"{print $2}')" = "$cfg_after"
+          test "$(sudo manager hive network controller show "$node_a" | awk -F= '$1=="network_generation"{print $2}')" = "$gen_after"
+          test "$(sudo manager hive network controller show "$node_a" | sed -n 's/^wireguard_public_key=//p')" = "$new_public"
+          sudo python3 - "$node_a" "$new_public" <<'PY'
+          import json,sys
+          node_a,new_pub=sys.argv[1:]
+          d=json.load(open('/tmp/wgrot-activated/'+open('/tmp/wgrot-b.id').read().strip()+'.network.json'))
+          peer=next(x for x in d['peers'] if x['node_id']==node_a)
+          assert peer['wireguard_public_key']==new_pub
+          PY
+
+          before_hash="$(sudo sha256sum /tmp/wgrot-node-a/hive/network/node.key | awk '{print $1}')"
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/wgrot-node-a MANAGER_HIVE_WG_DIR=/tmp/wgrot-wg-a /opt/manager/modules/hive_wg_rotation.sh --node-commit /tmp/wgrot-a.auth.json "/tmp/wgrot-activated/$node_a.network.json" >/tmp/wgrot-commit.log
+          after_hash="$(sudo sha256sum /tmp/wgrot-node-a/hive/network/node.key | awk '{print $1}')"
+          test "$before_hash" != "$after_hash"
+          test "$(sudo cat /tmp/wgrot-node-a/hive/network/node.key)" = "$new_private"
+          test "$(sudo cat /tmp/wgrot-node-a/hive/network/node.pub)" = "$new_public"
+          grep -q '^wg_key_epoch=2$' /tmp/wgrot-commit.log
+          grep -q "^config_epoch=$cfg_after$" /tmp/wgrot-commit.log
+          grep -q "^network_generation=$gen_after$" /tmp/wgrot-commit.log
+          sudo test ! -e /tmp/wgrot-node-a/hive/network/rotation/pending/new.key
+          sudo test -f "/tmp/wgrot-node-a/hive/network/rotation/history/$rotation_id/old.pub"
+          test "$(sudo cat /tmp/wgrot-node-a/hive/network/rotation/history/$rotation_id/old.pub)" = "$old_public"
+          if sudo find /tmp/wgrot-node-a/hive/network/rotation /etc/manager/hive/controller/network/rotation -type f -name '*.key' -path '*/history/*' -print -quit | grep -q .; then exit 1; fi
+          if sudo grep -R -F "$old_private" /etc/manager/hive/controller/network/rotation /tmp/wgrot-activated /tmp/wgrot-a.request.json /tmp/wgrot-a.auth.json; then exit 1; fi
+          if sudo grep -R -F "$new_private" /etc/manager/hive/controller/network/rotation /tmp/wgrot-activated /tmp/wgrot-a.request.json /tmp/wgrot-a.auth.json; then exit 1; fi
+
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/wgrot-node-a MANAGER_HIVE_WG_DIR=/tmp/wgrot-wg-a /opt/manager/modules/hive_wg_rotation.sh --node-commit /tmp/wgrot-a.auth.json "/tmp/wgrot-activated/$node_a.network.json" >/tmp/wgrot-commit-cached.log
+          grep -q '^cached=1$' /tmp/wgrot-commit-cached.log
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/wgrot-node-b MANAGER_HIVE_WG_DIR=/tmp/wgrot-wg-b /opt/manager/modules/hive_network.sh --accept "/tmp/wgrot-activated/$node_b.network.json" >/dev/null
+
+          if sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/wgrot-node-a MANAGER_HIVE_WG_DIR=/tmp/wgrot-wg-a /opt/manager/modules/hive_network.sh --accept "/tmp/wgrot-initial-bundles/$node_a.network.json"; then exit 1; fi
+          if sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/wgrot-node-b MANAGER_HIVE_WG_DIR=/tmp/wgrot-wg-b /opt/manager/modules/hive_network.sh --accept "/tmp/wgrot-initial-bundles/$node_b.network.json"; then exit 1; fi
+
+          sudo rm -rf /tmp/wgrot-reissued
+          sudo mkdir -m 700 /tmp/wgrot-reissued
+          sudo manager hive network controller rotate activate "$rotation_id" /tmp/wgrot-reissued >/tmp/wgrot-reactivate.log
+          grep -q '^cached_activation=1$' /tmp/wgrot-reactivate.log
+          grep -q '^bundle_count=2$' /tmp/wgrot-reactivate.log
+
+      - name: Recover a simulated crash after only the node record advanced
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node_a="$(cat /tmp/wgrot-a.id)"; node_b="$(cat /tmp/wgrot-b.id)"
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/wgrot-node-a MANAGER_HIVE_WG_DIR=/tmp/wgrot-wg-a /opt/manager/modules/hive_wg_rotation.sh --node-prepare /tmp/wgrot-a2.request.json >/tmp/wgrot-a2.prepare.log
+          rot2="$(awk -F= '$1=="rotation_id"{print $2}' /tmp/wgrot-a2.prepare.log)"
+          sudo manager hive network controller rotate stage /tmp/wgrot-a2.request.json /tmp/wgrot-a2.auth.json >/dev/null
+
+          sudo python3 - "$rot2" "$node_a" <<'PY'
+          import json, pathlib, sys
+          rot,node=sys.argv[1:]
+          auth=json.load(open('/tmp/wgrot-a2.auth.json'))
+          state=pathlib.Path(f'/etc/manager/hive/controller/network/rotation/pending/{rot}.conf')
+          lines={}
+          for line in state.read_text().splitlines():
+              if '=' in line:
+                  k,v=line.split('=',1); lines[k]=v
+          lines['status']='activating'
+          state.write_text(''.join(f'{k}={v}\n' for k,v in lines.items()))
+          nodep=pathlib.Path(f'/etc/manager/hive/controller/network/nodes/{node}.conf')
+          n={}
+          for line in nodep.read_text().splitlines():
+              if '=' in line:
+                  k,v=line.split('=',1); n[k]=v
+          n['wireguard_public_key']=auth['new_wireguard_public_key']
+          n['wireguard_key_id']=auth['new_wireguard_key_id']
+          n['network_generation']=str(auth['network_generation_to'])
+          nodep.write_text(''.join(f'{k}={v}\n' for k,v in n.items()))
+          PY
+          sudo chmod 600 "/etc/manager/hive/controller/network/rotation/pending/$rot2.conf" "/etc/manager/hive/controller/network/nodes/$node_a.conf"
+
+          sudo rm -rf /tmp/wgrot-recovered
+          sudo mkdir -m 700 /tmp/wgrot-recovered
+          sudo manager hive network controller rotate activate "$rot2" /tmp/wgrot-recovered >/tmp/wgrot-recover.log
+          grep -q '^recovered_partial_activation=1$' /tmp/wgrot-recover.log
+          grep -q '^cached_activation=1$' /tmp/wgrot-recover.log
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/wgrot-node-a MANAGER_HIVE_WG_DIR=/tmp/wgrot-wg-a /opt/manager/modules/hive_wg_rotation.sh --node-commit /tmp/wgrot-a2.auth.json "/tmp/wgrot-recovered/$node_a.network.json" >/tmp/wgrot-a2.commit.log
+          grep -q '^wg_key_epoch=3$' /tmp/wgrot-a2.commit.log
+          sudo env GITHUB_ACTIONS=true MANAGER_HIVE_NETWORK_SKIP_APPLY=1 MANAGER_ETC=/tmp/wgrot-node-b MANAGER_HIVE_WG_DIR=/tmp/wgrot-wg-b /opt/manager/modules/hive_network.sh --accept "/tmp/wgrot-recovered/$node_b.network.json" >/dev/null
+
+      - name: Persistent root-only state and no private-key archive
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager hive network controller rotate status >/tmp/wgrot-controller-status
+          grep -q '^contract=manager-hive-wg-key-rotation-v1$' /tmp/wgrot-controller-status
+          grep -q '^old_private_key_retained=0$' /tmp/wgrot-controller-status
+          grep -q '^controller_in_user_vpn_path=0$' /tmp/wgrot-controller-status
+          sudo env MANAGER_ETC=/tmp/wgrot-node-a MANAGER_HIVE_WG_DIR=/tmp/wgrot-wg-a /opt/manager/modules/hive_wg_rotation.sh --status >/tmp/wgrot-final-node-status
+          grep -q '^wg_key_epoch=3$' /tmp/wgrot-final-node-status
+          test "$(sudo stat -c '%a' /tmp/wgrot-node-a/hive/network/rotation/state.conf)" = 600
+          sudo test -d /tmp/wgrot-node-a/hive/network/rotation/replay
+          sudo test -d /etc/manager/hive/controller/network/rotation/replay
+          if sudo find /tmp/wgrot-node-a/hive/network/rotation /etc/manager/hive/controller/network/rotation -type f -path '*/history/*' -name '*.key' -print -quit | grep -q .; then
+            echo 'WireGuard private key leaked into rotation history' >&2
+            exit 1
+          fi

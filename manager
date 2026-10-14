@@ -77,6 +77,13 @@ Uso:
   manager hive network controller bundle NODE_ID OUT
   manager hive network controller bundle-all DIR
                                   administra a topologia mesh privada da Colmeia
+  manager hive network rotate status
+  manager hive network rotate prepare OUT
+  manager hive network rotate commit AUTH BUNDLE
+  manager hive network controller rotate status
+  manager hive network controller rotate stage REQUEST OUT
+  manager hive network controller rotate activate ROTATION_ID OUT_DIR
+                                  rotação staged da chave WireGuard mgh0 (0.8.9)
   manager hive health status
   manager hive health configure HOST PORT TLS_FP [INTERVAL]
   manager hive health disable|send
@@ -309,6 +316,14 @@ case "${1:-}" in
           accept) [[ -n "${4:-}" ]] || { err "Uso: manager hive network accept BUNDLE"; exit 64; }; exec "$MANAGER_HOME/modules/hive_network.sh" --accept "$4" ;;
           up|reconcile) exec "$MANAGER_HOME/modules/hive_network.sh" --reconcile ;;
           down) exec "$MANAGER_HOME/modules/hive_network.sh" --down ;;
+          rotate)
+            case "${4:-status}" in
+              status) exec "$MANAGER_HOME/modules/hive_wg_rotation.sh" --status ;;
+              prepare) [[ -n "${5:-}" ]] || { err "Uso: manager hive network rotate prepare OUT"; exit 64; }; exec "$MANAGER_HOME/modules/hive_wg_rotation.sh" --node-prepare "$5" ;;
+              commit) [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager hive network rotate commit AUTH BUNDLE"; exit 64; }; exec "$MANAGER_HOME/modules/hive_wg_rotation.sh" --node-commit "$5" "$6" ;;
+              *) err "Uso: manager hive network rotate {status|prepare OUT|commit AUTH BUNDLE}"; exit 64 ;;
+            esac
+            ;;
           controller)
             case "${4:-status}" in
               init) exec "$MANAGER_HOME/modules/hive_network.sh" --controller-init ;;
@@ -320,10 +335,18 @@ case "${1:-}" in
               disable) [[ -n "${5:-}" ]] || { err "Uso: manager hive network controller disable NODE_ID"; exit 64; }; exec "$MANAGER_HOME/modules/hive_network.sh" --controller-disable "$5" ;;
               bundle) [[ -n "${5:-}" && -n "${6:-}" ]] || { err "Uso: manager hive network controller bundle NODE_ID OUT"; exit 64; }; exec "$MANAGER_HOME/modules/hive_network.sh" --controller-bundle "$5" "$6" ;;
               bundle-all) [[ -n "${5:-}" ]] || { err "Uso: manager hive network controller bundle-all DIR"; exit 64; }; exec "$MANAGER_HOME/modules/hive_network.sh" --controller-bundle-all "$5" ;;
+              rotate)
+                case "${5:-status}" in
+                  status) exec "$MANAGER_HOME/modules/hive_wg_rotation.sh" --controller-status ;;
+                  stage) [[ -n "${6:-}" && -n "${7:-}" ]] || { err "Uso: manager hive network controller rotate stage REQUEST OUT"; exit 64; }; exec "$MANAGER_HOME/modules/hive_wg_rotation.sh" --controller-stage "$6" "$7" ;;
+                  activate) [[ -n "${6:-}" && -n "${7:-}" ]] || { err "Uso: manager hive network controller rotate activate ROTATION_ID OUT_DIR"; exit 64; }; exec "$MANAGER_HOME/modules/hive_wg_rotation.sh" --controller-activate "$6" "$7" ;;
+                  *) err "Uso: manager hive network controller rotate {status|stage REQUEST OUT|activate ROTATION_ID OUT_DIR}"; exit 64 ;;
+                esac
+                ;;
               *) err "Ação de rede do controlador inválida: ${4:-}"; exit 64 ;;
             esac
             ;;
-          *) err "Uso: manager hive network {status|init|request|accept|up|down|reconcile|controller ...}"; exit 64 ;;
+          *) err "Uso: manager hive network {status|init|request|accept|up|down|reconcile|rotate ...|controller ...}"; exit 64 ;;
         esac
         ;;
       health)
