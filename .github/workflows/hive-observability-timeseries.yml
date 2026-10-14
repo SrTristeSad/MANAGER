@@ -44,7 +44,7 @@ jobs:
           sudo mkdir -p /tmp/hive-timeseries-observe /tmp/hive-timeseries-health/nodes /tmp/hive-timeseries-logs
           now="$(date +%s)"
           sudo python3 - "$now" <<'PY'
-          import json,sys,os
+          import json,sys
           now=int(sys.argv[1])
           history='/tmp/hive-timeseries-observe/health-history.jsonl'
           legacy={
@@ -185,9 +185,19 @@ jobs:
           python3 - <<'PY'
           import json
           raw=open('/tmp/hive-series.json').read()
-          for marker in ['must-not-leak','203.0.113.200','network_interface','private_key','password','token','/tmp/hive-timeseries']:
+          for marker in ['must-not-leak','203.0.113.200','eth0-secret-interface','/tmp/hive-timeseries']:
               assert marker not in raw, marker
           x=json.loads(raw)
+          forbidden_keys={'private_key','password','token','secret','unknown','signature','nonce','network_interface'}
+          def reject_forbidden_keys(value):
+              if isinstance(value, dict):
+                  assert not (set(value) & forbidden_keys), set(value) & forbidden_keys
+                  for child in value.values():
+                      reject_forbidden_keys(child)
+              elif isinstance(value, list):
+                  for child in value:
+                      reject_forbidden_keys(child)
+          reject_forbidden_keys(x)
           assert x['contract']=='manager-hive-observability-series-v1'
           assert x['observability_contract']=='manager-hive-observability-v1'
           assert x['window_seconds']==1800
@@ -203,6 +213,7 @@ jobs:
           assert all(set(row['cpu_percent'])=={'avg','p95','max'} for row in x['series'])
           assert x['security']['contains_private_keys']==0
           node=json.load(open('/tmp/hive-series-node.json'))
+          reject_forbidden_keys(node)
           assert node['node_filter']=='node-0123456789abcdef'
           assert node['nodes_observed']==1
           assert node['samples']==5
