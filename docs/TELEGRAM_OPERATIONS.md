@@ -8,6 +8,7 @@ Esta fatia da série 0.9 adiciona um gateway **somente leitura** para o futuro M
 - request: `manager-telegram-operations-request-v1`
 - backend sanitizado: `manager-automation-read-ops-v1`
 - capability de autorização: `node.usage`
+- campo público correspondente: `authorization_capability=node.usage`
 
 O request contém exatamente:
 
