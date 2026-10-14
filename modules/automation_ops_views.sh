@@ -118,7 +118,14 @@ def owner_visible(owner):
 def identity_visible(identity_id, owner=""):
     if role == "user":
         return identity_id == subject
-    return owner_visible(owner)
+    if not owner_visible(owner):
+        return False
+    if role in {"reseller", "subreseller"}:
+        assignment = read_conf(assignment_dir / f"{identity_id}.conf")
+        product_id = assignment.get("product_id", "")
+        if product_id and not product_visible(product_id, identity_id):
+            return False
+    return True
 
 
 def product_visible(product_id, identity_id=""):
@@ -356,7 +363,12 @@ def diagnostics_view():
                                        timeout=timeout, check=False).returncode == 0 else 0
         except Exception:
             return 0
-    route = run_ok(["sh", "-c", "ip -4 route show default | grep -q '^default'"])
+    try:
+        route_proc = subprocess.run(["ip", "-4", "route", "show", "default"], stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=5, check=False)
+        route = 1 if route_proc.returncode == 0 and any(x.startswith("default") for x in route_proc.stdout.splitlines()) else 0
+    except Exception:
+        route = 0
     dns = run_ok(["getent", "ahostsv4", "debian.org"], 8)
     ntp = 0
     try:
