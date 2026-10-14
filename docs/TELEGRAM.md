@@ -164,7 +164,7 @@ manager telegram auth verify /root/initdata.txt
 manager telegram auth resolve /root/initdata.txt
 ```
 
-Para o futuro gateway, prefira stdin para não colocar material de autenticação em argv:
+Para o gateway, prefira stdin para não colocar material de autenticação em argv:
 
 ```bash
 printf '%s' "$TELEGRAM_INIT_DATA" | manager telegram auth verify-stdin
@@ -246,7 +246,7 @@ Somente mensagens privadas com `message.from.id == message.chat.id` entram no pa
 - `/status ID` -> `connection.status`;
 - `/help` e `/start` retornam a ajuda local.
 
-Texto desconhecido nunca vira `action_id`, shell ou comando do sistema. Cada `update_id` vira um `request_id` estável do gateway, de modo que falha ao entregar a resposta ao Telegram pode repetir a ação sem duplicar mutação; a Automation v2 devolve o resultado idempotente após revalidar RBAC. O offset só avança depois que o update é tratado e, quando há resposta, depois que `sendMessage` é aceito.
+Texto desconhecido nunca vira `action_id`, shell ou comando do sistema. Cada `update_id` vira um `request_id` estável do gateway. O Bot responde pelo método `sendMessage`; se a entrega falhar, o offset não avança e o mesmo update é tentado novamente com o mesmo `request_id`. A Automation v2 revalida RBAC e devolve o resultado idempotente em cache em vez de executar a ação novamente. O offset só avança depois que a resposta é aceita pela Bot API.
 
 CLI:
 
@@ -261,6 +261,6 @@ A unidade `manager-telegram-bot.service` é opcional e usa long polling. Estado 
 
 ## Próximas fatias da 0.9
 
-A fundação de ingresso Bot + Mini App da 0.9.0 fica funcionalmente completa com o long polling. As fases seguintes expandem telas e fluxos de sessões, clientes, produtos, cotas, nós e diagnósticos. Webhook pode ser adicionado como transporte alternativo futuro sem mudar a autoridade do gateway.
+A fundação de ingresso Bot + Mini App da 0.9.0 fica funcionalmente completa com o long polling. As fases seguintes expandem telas e fluxos de sessões, clientes, produtos, cotas, nós e diagnósticos. Operações de escrita no Bot serão expostas apenas com confirmação explícita na UX. Webhook pode ser adicionado como transporte alternativo futuro sem mudar a autoridade do gateway.
 
 O Telegram permanece apenas uma interface do control plane existente, não uma nova autoridade paralela.
