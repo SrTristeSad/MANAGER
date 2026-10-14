@@ -97,6 +97,8 @@ Observabilidade é diagnóstica. Se a gravação do histórico falhar, o heartbe
 - chaves privadas nunca entram no histórico;
 - o controlador continua fora do caminho de dados VPN.
 
-## Escopo desta fatia
+## Fechamento da 0.8.10
 
-A quarta fatia adiciona séries temporais e métricas operacionais derivadas das mesmas fontes autenticadas e sanitizadas. A 0.8.10 ainda não está fechada: permanece o gate final multi-nó com regressão completa e o bump formal da release.
+A release 0.8.10 fecha a observabilidade distribuída sem criar uma nova autoridade. O gate final usa dois nós enrolled de verdade, envia heartbeats assinados por Ed25519 através do listener TLS 1.3 pinado, confirma a criação automática do histórico sanitizado e consulta `summary`, `metrics`, `series` e `export` sobre a mesma janela multi-nó.
+
+O gate também cerca a fronteira de autoridade: um heartbeat preparado antes da revogação do segundo nó é recusado depois do `node_epoch`/estado autoritativo mudar e não aumenta o histórico. A observabilidade continua diagnóstica, root-only e fora do caminho de dados VPN.

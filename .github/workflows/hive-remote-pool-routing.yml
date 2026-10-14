@@ -19,7 +19,7 @@ jobs:
         run: |
           set -euxo pipefail
           sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="file://${GITHUB_WORKSPACE}" bash install.sh
-          test "$(sudo cat /opt/manager/VERSION)" = 0.8.9
+          test "$(sudo cat /opt/manager/VERSION)" = "$(cat VERSION)"
           status="$(sudo manager hive remote controller status 2>/dev/null || true)"
           # Controller is initialized in the next step; product code must already expose the pool implementation.
           grep -q 'controller-select-pool' /opt/manager/modules/hive_remote.sh
@@ -188,11 +188,11 @@ jobs:
           fi
           grep -q 'revogado/desabilitado' /tmp/revoked.err
 
-      - name: Keep 0.8.9 unreleased until final release gate
+      - name: Validate remote pool routing feature boundary
         shell: bash
         run: |
           set -euxo pipefail
-          test "$(sudo cat /opt/manager/VERSION)" = 0.8.9
+          test "$(sudo cat /opt/manager/VERSION)" = "$(cat VERSION)"
           sudo manager hive remote controller status | grep -q '^pool_routing=1$'
           sudo manager hive remote controller status | grep -q '^pool_selector=hive-scheduler-weighted-least-loaded$'
           sudo manager hive remote controller status | grep -q '^pool_health_required=HEALTHY$'

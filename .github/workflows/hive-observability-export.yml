@@ -35,7 +35,7 @@ jobs:
           set -euxo pipefail
           source_url="file://${GITHUB_WORKSPACE}"
           sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
-          test "$(sudo cat /opt/manager/VERSION)" = 0.8.9
+          test "$(sudo cat /opt/manager/VERSION)" = "$(cat VERSION)"
           sudo test -x /opt/manager/modules/hive_observability.sh
 
       - name: Seed sanitized health and hostile audit fields
@@ -193,9 +193,9 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          test "$(cat VERSION)" = 0.8.9
+          test "$(cat VERSION)" = 0.8.10
           grep -q 'manager-hive-observability-export-v1' docs/HIVE_OBSERVABILITY.md
           grep -q 'export JSON versionado' docs/ROADMAP.md
           ! grep -q '^- export estruturado/integração externa;$' docs/ROADMAP.md
-          grep -q '^### 0.8.10 — observabilidade distribuída 🚧$' docs/ROADMAP.md
+          grep -q '^### 0.8.10 — observabilidade distribuída ✅$' docs/ROADMAP.md
           git diff --exit-code

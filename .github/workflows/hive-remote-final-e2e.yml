@@ -19,7 +19,7 @@ jobs:
         run: |
           set -euxo pipefail
           sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="file://${GITHUB_WORKSPACE}" bash install.sh
-          test "$(sudo cat /opt/manager/VERSION)" = 0.8.9
+          test "$(sudo cat /opt/manager/VERSION)" = "$(cat VERSION)"
           sudo test -x /opt/manager/modules/hive_remote.sh
           sudo manager hive remote status | grep -q '^arbitrary_target=0$'
           sudo manager automation v2 status | grep -q '^remote_scoped_rbac=1$'
@@ -190,16 +190,16 @@ jobs:
           assert direct and pool
           PY
 
-      - name: Validate 0.8.9 release boundary
+      - name: Validate 0.8.9 remote boundary remains documented
         shell: bash
         run: |
           set -euxo pipefail
-          test "$(sudo cat /opt/manager/VERSION)" = 0.8.9
+          test "$(sudo cat /opt/manager/VERSION)" = "$(cat VERSION)"
           sudo manager hive remote controller status | grep -q '^pool_routing=1$'
           sudo manager hive remote controller status | grep -q '^arbitrary_target=0$'
           grep -q '^## \[0.8.9\] - 2026-10-14$' CHANGELOG.md
           grep -q '^### 0\.8\.9 — rotação de chaves e anti-replay distribuído ✅$' docs/ROADMAP.md
-          ! grep -q '^## \[0.8.10\]' CHANGELOG.md
+          test -f docs/HIVE_OBSERVABILITY.md
 
       - name: Stop second gateway
         if: always()

@@ -4,7 +4,7 @@ Gerenciador moderno de VPS inspirado na experiência clássica do **SSHPlus Mana
 
 > O objetivo não é executar cegamente binários antigos do SSHPlus. O MANAGER preserva capacidades úteis, substitui implementações inseguras/obsoletas e evolui para uma arquitetura própria de identidade, automação, VPN, revenda e operação multi-servidor.
 
-Versão atual: **0.8.9**.
+Versão atual: **0.8.10**.
 
 ## Princípios
 
@@ -576,13 +576,13 @@ Plano detalhado: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 0.8.1  rede privada WireGuard da Colmeia                             ✅
 0.8.2  heartbeat + saúde de nós                                      ✅
 0.8.3  scheduler / drain / seleção de nó                             ✅
-0.8.4  autoridade de leases globais                                  próximo
-0.8.5  VPN allocation / login global
-0.8.6  quotas/accounting globais
-0.8.7  failover e resiliência operacional
-0.8.8  comandos remotos controlados
-0.8.9  rotação de chaves / anti-replay distribuído
-0.8.10 observabilidade distribuída
+0.8.4  autoridade de leases globais                                  ✅
+0.8.5  VPN allocation / login global                                 ✅
+0.8.6  quotas/accounting globais                                     ✅
+0.8.7  failover e resiliência operacional                            ✅
+0.8.8  comandos remotos controlados                                  ✅
+0.8.9  rotação de chaves / anti-replay distribuído                   ✅
+0.8.10 observabilidade distribuída                                   ✅
 0.9.x  Telegram Bot + Mini App
 1.0.0  release de produção
 ```

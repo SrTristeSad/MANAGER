@@ -1,0 +1,257 @@
+name: Hive Observability 0.8.10 Final Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  observability-final-gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install 0.8.10 release candidate
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "$(cat VERSION)" = 0.8.10
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="file://${GITHUB_WORKSPACE}" bash install.sh
+          test "$(sudo cat /opt/manager/VERSION)" = "$(cat VERSION)"
+          sudo test -x /opt/manager/modules/hive_health.sh
+          sudo test -x /opt/manager/modules/hive_observability.sh
+          sudo manager hive observe status | grep -q '^controller_in_user_vpn_path=0$'
+
+      - name: Enroll two isolated Hive nodes
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo rm -rf /tmp/hive-0810-node1 /tmp/hive-0810-node2 /tmp/hive-0810-node1-data /tmp/hive-0810-node2-data \
+            /tmp/hive-0810-health /tmp/hive-0810-observe /tmp/hive-0810-systemd /tmp/hive-0810-logs
+          sudo mkdir -m 700 /tmp/hive-0810-node1 /tmp/hive-0810-node2 /tmp/hive-0810-node1-data /tmp/hive-0810-node2-data \
+            /tmp/hive-0810-health /tmp/hive-0810-observe /tmp/hive-0810-logs
+          sudo mkdir -m 755 /tmp/hive-0810-systemd
+          sudo manager hive controller init >/dev/null
+          controller_fp="$(sudo manager hive controller fingerprint)"
+          printf '%s\n' "$controller_fp" >"${RUNNER_TEMP}/hive-0810-controller.fp"
+
+          for idx in 1 2; do
+            etc="/tmp/hive-0810-node${idx}"
+            req="/tmp/hive-0810-node${idx}.request.json"
+            bundle="/tmp/hive-0810-node${idx}.bundle.json"
+            sudo env MANAGER_ETC="$etc" /opt/manager/modules/node_metadata.sh --init >/dev/null
+            sudo env MANAGER_ETC="$etc" /opt/manager/modules/hive_identity.sh --request "$req" >/dev/null
+            approve="$(sudo manager hive controller approve "$req" "$bundle")"
+            node_id="$(awk -F= '$1=="node_id"{print $2}' <<<"$approve")"
+            test -n "$node_id"
+            sudo env MANAGER_ETC="$etc" /opt/manager/modules/hive_identity.sh --accept "$bundle" "$controller_fp" >/dev/null
+            printf '%s\n' "$node_id" >"${RUNNER_TEMP}/hive-0810-node${idx}.id"
+          done
+          test "$(cat "${RUNNER_TEMP}/hive-0810-node1.id")" != "$(cat "${RUNNER_TEMP}/hive-0810-node2.id")"
+
+      - name: Start pinned TLS 1.3 health authority
+        shell: bash
+        run: |
+          set -euxo pipefail
+          port="$(python3 - <<'PY'
+          import socket
+          s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()
+          PY
+          )"
+          printf '%s\n' "$port" >"${RUNNER_TEMP}/hive-0810-health.port"
+          common=(
+            GITHUB_ACTIONS=true
+            MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1
+            MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-0810-systemd
+            MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-0810-health
+            MANAGER_HIVE_HEALTH_AUDIT_FILE=/tmp/hive-0810-logs/health.jsonl
+            MANAGER_HIVE_OBSERVABILITY_DATA_DIR=/tmp/hive-0810-observe
+            MANAGER_HIVE_OBSERVABILITY_AUDIT_FILE=/tmp/hive-0810-logs/observe.jsonl
+          )
+          enable="$(sudo env "${common[@]}" /opt/manager/modules/hive_health.sh --controller-enable 127.0.0.1 "$port")"
+          grep -q '^controller_health_enabled=1$' <<<"$enable"
+          grep -q '^tls=TLSv1.3$' <<<"$enable"
+          grep -q '^firewall_auto_open=0$' <<<"$enable"
+          status="$(sudo env "${common[@]}" /opt/manager/modules/hive_health.sh --controller-status)"
+          tls_fp="$(awk -F= '$1=="tls_fingerprint"{print $2}' <<<"$status")"
+          [[ "$tls_fp" =~ ^SHA256:[a-f0-9]{64}$ ]]
+          printf '%s\n' "$tls_fp" >"${RUNNER_TEMP}/hive-0810-health.tls-fp"
+          sudo env "${common[@]}" /opt/manager/modules/hive_health.sh --serve-controller >"${RUNNER_TEMP}/hive-0810-health.log" 2>&1 &
+          echo $! >"${RUNNER_TEMP}/hive-0810-health.pid"
+          for _ in $(seq 1 60); do
+            if python3 - "$port" <<'PY'
+          import socket,sys
+          try:
+              s=socket.create_connection(('127.0.0.1',int(sys.argv[1])),timeout=.2); s.close()
+          except OSError:
+              raise SystemExit(1)
+          PY
+            then break; fi
+            sleep .1
+          done
+          kill -0 "$(cat "${RUNNER_TEMP}/hive-0810-health.pid")"
+
+      - name: Send signed heartbeats from both nodes and build history automatically
+        shell: bash
+        run: |
+          set -euxo pipefail
+          port="$(cat "${RUNNER_TEMP}/hive-0810-health.port")"
+          tls_fp="$(cat "${RUNNER_TEMP}/hive-0810-health.tls-fp")"
+          for idx in 1 2; do
+            etc="/tmp/hive-0810-node${idx}"
+            data="/tmp/hive-0810-node${idx}-data"
+            sudo env GITHUB_ACTIONS=true MANAGER_ETC="$etc" MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 \
+              MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-0810-systemd MANAGER_HIVE_HEALTH_DATA_DIR="$data" \
+              /opt/manager/modules/hive_health.sh --configure 127.0.0.1 "$port" "$tls_fp" 30 >/dev/null
+            sent="$(sudo env GITHUB_ACTIONS=true MANAGER_ETC="$etc" MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 \
+              MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-0810-systemd MANAGER_HIVE_HEALTH_DATA_DIR="$data" \
+              /opt/manager/modules/hive_health.sh --send)"
+            grep -q '^heartbeat_accepted=1$' <<<"$sent"
+          done
+
+          sudo env MANAGER_ETC=/tmp/hive-0810-node2 /opt/manager/modules/node_metadata.sh --set enabled 0 >/dev/null
+          for idx in 1 2; do
+            etc="/tmp/hive-0810-node${idx}"
+            data="/tmp/hive-0810-node${idx}-data"
+            sent="$(sudo env GITHUB_ACTIONS=true MANAGER_ETC="$etc" MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 \
+              MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-0810-systemd MANAGER_HIVE_HEALTH_DATA_DIR="$data" \
+              /opt/manager/modules/hive_health.sh --send)"
+            grep -q '^heartbeat_accepted=1$' <<<"$sent"
+          done
+          node2="$(cat "${RUNNER_TEMP}/hive-0810-node2.id")"
+          show2="$(sudo env GITHUB_ACTIONS=true MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-0810-systemd \
+            MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-0810-health MANAGER_HIVE_HEALTH_AUDIT_FILE=/tmp/hive-0810-logs/health.jsonl \
+            /opt/manager/modules/hive_health.sh --controller-show "$node2")"
+          grep -q '^state=DRAINING$' <<<"$show2"
+
+          sudo test -f /tmp/hive-0810-observe/health-history.jsonl
+          test "$(sudo wc -l /tmp/hive-0810-observe/health-history.jsonl | awk '{print $1}')" -ge 4
+          test "$(sudo stat -c '%a' /tmp/hive-0810-observe/health-history.jsonl)" = 600
+          ! sudo grep -Eq 'signature|nonce|private_key|password|token|network_interface|source' /tmp/hive-0810-observe/health-history.jsonl
+
+      - name: Add control-plane events and query all observability contracts
+        shell: bash
+        run: |
+          set -euxo pipefail
+          now="$(date +%s)"
+          node1="$(cat "${RUNNER_TEMP}/hive-0810-node1.id")"
+          node2="$(cat "${RUNNER_TEMP}/hive-0810-node2.id")"
+          sudo tee /tmp/hive-0810-logs/scheduler.jsonl >/dev/null <<EOF
+          {"epoch":$((now-40)),"event":"select","node_id":"$node1","protocol":"ssh","reason":"weighted-least-loaded","secret":"must-not-leak"}
+          {"epoch":$((now-30)),"event":"select","node_id":"$node2","protocol":"ssh","reason":"sticky-failover","token":"must-not-leak"}
+          {"epoch":$((now-20)),"event":"drain","node_id":"$node2","reason":"release-gate"}
+          {"epoch":$((now-10)),"event":"undrain","node_id":"$node2"}
+          EOF
+          sudo tee /tmp/hive-0810-logs/lease.jsonl >/dev/null <<EOF
+          {"epoch":$((now-35)),"event":"grant","identity_id":"release-gate","node_id":"$node1","password":"must-not-leak"}
+          {"epoch":$((now-25)),"event":"deny","identity_id":"release-gate","node_id":"$node2","reason":"global-session-limit","token":"must-not-leak"}
+          {"epoch":$((now-15)),"event":"node-authority-outage","node_id":"$node2","authority_epoch":9,"private_key":"must-not-leak"}
+          EOF
+          sudo chmod 600 /tmp/hive-0810-logs/scheduler.jsonl /tmp/hive-0810-logs/lease.jsonl
+          common=(
+            MANAGER_HIVE_OBSERVABILITY_DATA_DIR=/tmp/hive-0810-observe
+            MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-0810-health
+            MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-0810-logs/scheduler.jsonl
+            MANAGER_HIVE_LEASE_AUDIT_FILE=/tmp/hive-0810-logs/lease.jsonl
+            MANAGER_HIVE_OBSERVABILITY_AUDIT_FILE=/tmp/hive-0810-logs/observe.jsonl
+          )
+          sudo env "${common[@]}" /opt/manager/manager hive observe summary 3600 >/tmp/hive-0810-summary.json
+          sudo env "${common[@]}" /opt/manager/manager hive observe metrics 3600 >/tmp/hive-0810-metrics.json
+          sudo env "${common[@]}" /opt/manager/manager hive observe series '*' 3600 300 >/tmp/hive-0810-series.json
+          sudo env "${common[@]}" /opt/manager/manager hive observe export 3600 50 >/tmp/hive-0810-export.json
+          sudo env "${common[@]}" /opt/manager/manager hive observe health '*' 20 >/tmp/hive-0810-health-history.out
+          python3 - <<'PY'
+          import json
+          summary=json.load(open('/tmp/hive-0810-summary.json'))
+          metrics=json.load(open('/tmp/hive-0810-metrics.json'))
+          series=json.load(open('/tmp/hive-0810-series.json'))
+          export=json.load(open('/tmp/hive-0810-export.json'))
+          assert summary['contract']=='manager-hive-observability-v1'
+          assert summary['nodes_observed']==2 and summary['health_samples'] >= 4
+          assert summary['scheduler_selections']==2 and summary['scheduler_failovers']==1
+          assert summary['drains']==1 and summary['undrains']==1
+          assert summary['lease_grants']==1 and summary['lease_denies']==1
+          assert metrics['contract']=='manager-hive-observability-metrics-v1'
+          assert metrics['nodes_observed']==2 and metrics['health_samples'] >= 4
+          assert metrics['scheduler_failover_percent']==50.0
+          assert metrics['lease_deny_percent']==50.0
+          assert metrics['authority_outages']==1
+          assert metrics['network_rx_delta_bytes'] >= 0 and metrics['network_tx_delta_bytes'] >= 0
+          assert series['contract']=='manager-hive-observability-series-v1'
+          assert series['nodes_observed']==2 and series['samples'] >= 4
+          assert 1 <= series['returned_buckets'] <= series['max_buckets']
+          assert export['contract']=='manager-hive-observability-export-v1'
+          assert export['summary']['nodes_observed']==2
+          assert export['security']['contains_private_keys']==0
+          assert export['security']['contains_credentials']==0
+          for path in ('/tmp/hive-0810-summary.json','/tmp/hive-0810-metrics.json','/tmp/hive-0810-series.json','/tmp/hive-0810-export.json','/tmp/hive-0810-health-history.out'):
+              raw=open(path).read()
+              assert 'must-not-leak' not in raw
+              assert 'private_key' not in raw or 'contains_private_keys' in raw
+              assert 'password' not in raw and 'token' not in raw
+          PY
+
+      - name: Fence a revoked node before it can extend observability history
+        shell: bash
+        run: |
+          set -euxo pipefail
+          node2="$(cat "${RUNNER_TEMP}/hive-0810-node2.id")"
+          sudo env MANAGER_ETC=/tmp/hive-0810-node2 MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-0810-node2-data \
+            /opt/manager/modules/hive_health.sh --heartbeat /tmp/hive-0810-node2-stale.json >/dev/null
+          before="$(sudo wc -l /tmp/hive-0810-observe/health-history.jsonl | awk '{print $1}')"
+          sudo manager hive controller revoke "$node2" release-gate-fence >/dev/null
+          if sudo env GITHUB_ACTIONS=true MANAGER_ETC=/tmp/hive-0810-node2 MANAGER_HIVE_HEALTH_SKIP_SYSTEMD=1 \
+            MANAGER_HIVE_HEALTH_SYSTEMD_DIR=/tmp/hive-0810-systemd MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-0810-node2-data \
+            /opt/manager/modules/hive_health.sh --send-file /tmp/hive-0810-node2-stale.json; then
+            echo 'revoked node extended health/observability history' >&2
+            exit 1
+          fi
+          after="$(sudo wc -l /tmp/hive-0810-observe/health-history.jsonl | awk '{print $1}')"
+          test "$after" = "$before"
+          sudo grep -q '"event":"reject"' /tmp/hive-0810-logs/health.jsonl
+
+      - name: Rotate audits and keep bounded multi-node queries readable
+        shell: bash
+        run: |
+          set -euxo pipefail
+          common=(
+            MANAGER_HIVE_OBSERVABILITY_DATA_DIR=/tmp/hive-0810-observe
+            MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-0810-health
+            MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-0810-logs/scheduler.jsonl
+            MANAGER_HIVE_LEASE_AUDIT_FILE=/tmp/hive-0810-logs/lease.jsonl
+            MANAGER_HIVE_OBSERVABILITY_AUDIT_FILE=/tmp/hive-0810-logs/observe.jsonl
+          )
+          sudo env "${common[@]}" /opt/manager/manager hive observe audit-maintain 3600 1024 force >/tmp/hive-0810-maintain.out
+          grep -q '^scheduler_rotated=1$' /tmp/hive-0810-maintain.out
+          grep -q '^leases_rotated=1$' /tmp/hive-0810-maintain.out
+          sudo env "${common[@]}" /opt/manager/manager hive observe summary 3600 >/tmp/hive-0810-summary-after.json
+          python3 - <<'PY'
+          import json
+          x=json.load(open('/tmp/hive-0810-summary-after.json'))
+          assert x['scheduler_selections']==2
+          assert x['lease_grants']==1 and x['lease_denies']==1
+          PY
+          sudo env "${common[@]}" /opt/manager/manager hive observe prune 3600 >/tmp/hive-0810-prune.out
+          test "$(sudo stat -c '%a' /tmp/hive-0810-observe/health-history.jsonl)" = 600
+
+      - name: Validate closed 0.8.10 release boundary
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "$(cat VERSION)" = 0.8.10
+          grep -q 'Versão atual: \*\*0.8.10\*\*' README.md
+          grep -q '^## \[0.8.10\] - 2026-10-14$' CHANGELOG.md
+          grep -q '^### 0\.8\.10 — observabilidade distribuída ✅$' docs/ROADMAP.md
+          grep -q '^## Fechamento da 0\.8\.10$' docs/HIVE_OBSERVABILITY.md
+          ! grep -q 'Ainda pendente para fechar a 0.8.10' docs/ROADMAP.md
+
+      - name: Stop health authority
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f "${RUNNER_TEMP}/hive-0810-health.pid" ]]; then
+            sudo kill "$(cat "${RUNNER_TEMP}/hive-0810-health.pid")" 2>/dev/null || true
+          fi

@@ -4,6 +4,25 @@ Todas as mudanças relevantes do MANAGER são registradas aqui. O projeto usa ve
 
 > O histórico detalhado das revisões antigas continua disponível no histórico Git. A partir da série 0.7, este arquivo prioriza mudanças de arquitetura e segurança que afetam contratos públicos/operacionais.
 
+## [0.8.10] - 2026-10-14
+
+### Colmeia — observabilidade distribuída
+
+- Heartbeats aceitos passam a alimentar histórico sanitizado de saúde/capacidade por nó sem transformar observabilidade em autoridade e sem colocar o controlador no caminho de dados VPN.
+- O histórico root-only preserva apenas campos operacionais allowlisted; endereço de origem, interface, assinatura, nonce, chave, token, senha e credencial VPN continuam fora da retenção.
+- `manager hive observe summary` agrega saúde, RTT, scheduler, drain/failover, leases e eventos de outage/recovery/fencing dentro de uma janela limitada.
+- Scheduler e autoridade global continuam donos dos próprios audits; a observabilidade consulta segmentos ativo/arquivados e coordena rotação por rename atômico sem truncar writers em andamento.
+- `manager hive observe export` fornece JSON versionado e sanitizado para integrações controladas sem abrir listener, endpoint HTTP ou segunda superfície remota.
+- `manager hive observe metrics` agrega CPU/RAM/RTT/load, sessões, utilização, deltas/rates de rede e taxas operacionais usando a janela completa.
+- `manager hive observe series` produz buckets temporais limitados e filtráveis por nó; reset/reboot ou mudança de `node_epoch` cria nova baseline e nunca gera delta negativo artificial.
+- Retenção de health e audits possui limites temporais/tamanho, ownership root-only e consultas bounded; falha da camada diagnóstica não invalida um heartbeat já aceito.
+- Gate final integrado usa dois nós enrolled, heartbeats Ed25519 reais sobre TLS 1.3 com pin SHA-256, histórico automático, fencing de nó revogado e consultas multi-nó dos contratos de observabilidade.
+- Os gates históricos deixaram de fixar a string da versão corrente e agora conferem a instalação contra o arquivo `VERSION`, evitando quebra artificial no próximo bump.
+
+### Próxima etapa
+
+- 0.9.x: Telegram Bot + Mini App consumindo somente contratos estruturados e autoridades já existentes.
+
 ## [0.8.9] - 2026-10-14
 
 ### Colmeia — rotação de chaves e anti-replay distribuído
