@@ -1,0 +1,189 @@
+name: Hive Observability Structured Export
+
+on:
+  pull_request:
+    paths:
+      - modules/hive_observability.sh
+      - manager
+      - install.sh
+      - docs/HIVE_OBSERVABILITY.md
+      - docs/ROADMAP.md
+      - .github/workflows/hive-observability-export.yml
+  push:
+    branches:
+      - main
+    paths:
+      - modules/hive_observability.sh
+      - manager
+      - install.sh
+      - docs/HIVE_OBSERVABILITY.md
+      - docs/ROADMAP.md
+      - .github/workflows/hive-observability-export.yml
+
+permissions:
+  contents: read
+
+jobs:
+  structured-export:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          test "$(sudo cat /opt/manager/VERSION)" = 0.8.9
+          sudo test -x /opt/manager/modules/hive_observability.sh
+
+      - name: Seed sanitized health and hostile audit fields
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo rm -rf /tmp/hive-export-observe /tmp/hive-export-health /tmp/hive-export-logs
+          sudo mkdir -p /tmp/hive-export-observe /tmp/hive-export-health/nodes /tmp/hive-export-logs
+          now="$(date +%s)"
+          sudo python3 - "$now" <<'PY'
+          import json,sys
+          now=int(sys.argv[1])
+          health={
+            "version":1,
+            "node_id":"node-0123456789abcdef",
+            "node_epoch":7,
+            "issued_at":now,
+            "received_at":now,
+            "source":"203.0.113.200",
+            "base_state":"HEALTHY",
+            "base_reason":"ok",
+            "metrics":{
+              "sessions":3,"max_sessions":20,"capacity":100,"weight":2,
+              "cpu_percent":20.5,"memory_used_percent":33.0,
+              "previous_rtt_ms":9.5,"hive_network_peer_count":4,
+              "private_key":"health-private-key-must-not-leak",
+              "token":"health-token-must-not-leak"
+            }
+          }
+          open('/tmp/hive-export-health/nodes/node.json','w').write(json.dumps(health))
+          long_reason='R'*300
+          scheduler=[
+            {"epoch":now,"event":"select","node_id":"node-0123456789abcdef","protocol":"wireguard","reason":"sticky-failover","score":0.25,"sticky":True,"secret":"scheduler-secret-must-not-leak","unknown":"scheduler-unknown-must-not-leak"},
+            {"epoch":now,"event":"select","node_id":"node-0123456789abcdef","protocol":"openvpn","reason":long_reason,"score":0.5,"token":"scheduler-token-must-not-leak"}
+          ]
+          leases=[
+            {"epoch":now,"event":"grant","identity_id":"maria","product_id":"premium","node_id":"node-0123456789abcdef","global_lease_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","max_sessions_global":1,"password":"lease-password-must-not-leak","private_key":"lease-private-key-must-not-leak"},
+            {"epoch":now,"event":"deny","identity_id":"maria","product_id":"premium","node_id":"node-fedcba9876543210","reason":"global-session-limit","active":1,"max_sessions_global":1,"token":"lease-token-must-not-leak","unknown":"lease-unknown-must-not-leak"}
+          ]
+          with open('/tmp/hive-export-logs/scheduler.jsonl','w') as f:
+            for row in scheduler: f.write(json.dumps(row)+'\n')
+          with open('/tmp/hive-export-logs/lease.jsonl','w') as f:
+            for row in leases: f.write(json.dumps(row)+'\n')
+          PY
+          common=(
+            MANAGER_HIVE_OBSERVABILITY_DATA_DIR=/tmp/hive-export-observe
+            MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-export-health
+            MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-export-logs/scheduler.jsonl
+            MANAGER_HIVE_LEASE_AUDIT_FILE=/tmp/hive-export-logs/lease.jsonl
+            MANAGER_HIVE_OBSERVABILITY_AUDIT_FILE=/tmp/hive-export-logs/observe.jsonl
+          )
+          sudo env "${common[@]}" /opt/manager/modules/hive_observability.sh --record-health /tmp/hive-export-health/nodes/node.json
+          sudo env "${common[@]}" /opt/manager/manager hive observe audit-maintain 86400 1024 force >/tmp/export-rotate.out
+          grep -q '^scheduler_rotated=1$' /tmp/export-rotate.out
+          grep -q '^leases_rotated=1$' /tmp/export-rotate.out
+          now2="$(date +%s)"
+          sudo tee /tmp/hive-export-logs/scheduler.jsonl >/dev/null <<EOF
+          {"epoch":$now2,"event":"drain","node_id":"node-0123456789abcdef","reason":"maintenance","token":"active-scheduler-token-must-not-leak"}
+          EOF
+          sudo tee /tmp/hive-export-logs/lease.jsonl >/dev/null <<EOF
+          {"epoch":$now2,"event":"release","identity_id":"maria","node_id":"node-0123456789abcdef","global_lease_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","password":"active-lease-password-must-not-leak"}
+          EOF
+
+      - name: Export one bounded canonical JSON envelope
+        shell: bash
+        run: |
+          set -euxo pipefail
+          common=(
+            MANAGER_HIVE_OBSERVABILITY_DATA_DIR=/tmp/hive-export-observe
+            MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-export-health
+            MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-export-logs/scheduler.jsonl
+            MANAGER_HIVE_LEASE_AUDIT_FILE=/tmp/hive-export-logs/lease.jsonl
+            MANAGER_HIVE_OBSERVABILITY_AUDIT_FILE=/tmp/hive-export-logs/observe.jsonl
+          )
+          sudo env "${common[@]}" /opt/manager/manager hive observe export 10800 10 >/tmp/hive-export.json
+          test "$(wc -l </tmp/hive-export.json)" -eq 1
+          python3 - <<'PY'
+          import json
+          p='/tmp/hive-export.json'
+          raw=open(p).read()
+          forbidden=[
+            '203.0.113.200','must-not-leak','private_key','password','token','secret','unknown',
+            '/tmp/hive-export-logs','/var/log/manager','/var/lib/manager'
+          ]
+          for marker in forbidden:
+              assert marker not in raw, marker
+          x=json.loads(raw)
+          assert x['contract']=='manager-hive-observability-export-v1'
+          assert x['observability_contract']=='manager-hive-observability-v1'
+          assert x['window_seconds']==10800
+          assert x['limit_per_stream']==10
+          assert set(x['streams'])=={'health','scheduler','leases'}
+          assert len(x['streams']['health'])==1
+          assert len(x['streams']['scheduler'])==3
+          assert len(x['streams']['leases'])==3
+          assert x['summary']['scheduler_selections']==2
+          assert x['summary']['scheduler_failovers']==1
+          assert x['summary']['drains']==1
+          assert x['summary']['lease_grants']==1
+          assert x['summary']['lease_denies']==1
+          assert x['summary']['lease_releases']==1
+          assert x['security']=={
+            'allowlisted_fields_only':1,
+            'contains_private_keys':0,
+            'contains_credentials':0,
+            'contains_raw_audit':0,
+            'contains_internal_paths':0,
+            'controller_in_user_vpn_path':0,
+          }
+          reasons=[r.get('reason','') for r in x['streams']['scheduler']]
+          assert max(map(len,reasons)) <= 160
+          allowed_sched={'epoch','event','node_id','protocol','region','pool','reason','score','sticky','name','country','node_epoch'}
+          allowed_lease={'epoch','event','identity_id','product_id','node_id','global_lease_id','local_session_id','reason','active','max_sessions_global','authority_epoch','outage_started_epoch','recovery_count','previous_state','seen_authority_epoch','returned_authority_epoch','removed','global_epoch'}
+          assert all(set(r) <= allowed_sched for r in x['streams']['scheduler'])
+          assert all(set(r) <= allowed_lease for r in x['streams']['leases'])
+          PY
+
+      - name: Enforce export limits and root-only execution
+        shell: bash
+        run: |
+          set -euxo pipefail
+          common=(
+            MANAGER_HIVE_OBSERVABILITY_DATA_DIR=/tmp/hive-export-observe
+            MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-export-health
+            MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-export-logs/scheduler.jsonl
+            MANAGER_HIVE_LEASE_AUDIT_FILE=/tmp/hive-export-logs/lease.jsonl
+            MANAGER_HIVE_OBSERVABILITY_AUDIT_FILE=/tmp/hive-export-logs/observe.jsonl
+          )
+          if sudo env "${common[@]}" /opt/manager/manager hive observe export 3600 101; then
+            echo 'export accepted more than 100 records per stream' >&2
+            exit 1
+          fi
+          if sudo env "${common[@]}" /opt/manager/modules/hive_observability.sh --export 3600 10 unexpected; then
+            echo 'export accepted unexpected positional argument' >&2
+            exit 1
+          fi
+          if env "${common[@]}" /opt/manager/manager hive observe export 3600 10; then
+            echo 'non-root observability export was accepted' >&2
+            exit 1
+          fi
+
+      - name: Verify milestone remains unreleased
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "$(cat VERSION)" = 0.8.9
+          grep -q 'manager-hive-observability-export-v1' docs/HIVE_OBSERVABILITY.md
+          grep -q 'export JSON versionado' docs/ROADMAP.md
+          ! grep -q '^- export estruturado/integração externa;$' docs/ROADMAP.md
+          grep -q '^### 0.8.10 — observabilidade distribuída 🚧$' docs/ROADMAP.md
+          git diff --exit-code
