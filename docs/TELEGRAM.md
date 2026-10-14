@@ -235,6 +235,29 @@ printf '%s' "$TELEGRAM_INIT_DATA" | manager telegram gateway call-stdin /root/re
 
 O contrato de saída é `manager-telegram-gateway-v1`. O audit `/var/log/manager/telegram-gateway-audit.jsonl` registra somente IDs, ação, decisão, código e estado de cache; não recebe bot token, initData, hash, assinatura, query_id, credencial privada ou conteúdo da resposta.
 
+## Ingresso do Telegram Bot por long polling
+
+O Bot usa o mesmo `bot-token` root-only já configurado pela autenticação do Mini App. Por padrão não abre nenhuma porta: o serviço consulta `https://api.telegram.org` por HTTPS com `getUpdates`, guarda apenas o próximo `update_id` e converte comandos conhecidos em `manager-telegram-gateway-request-v1`.
+
+```bash
+manager telegram bot status
+manager telegram bot enable 25
+manager telegram bot disable
+manager telegram bot poll-once
+```
+
+Comandos Bot inicialmente allowlisted: `/describe`, `/node`, `/status ID`, `/revoke ID`, `/preflight ID PLAN [OWNER] [PROTOCOLS]` e `/create ID PLAN [OWNER] [PROTOCOLS]`. Username, nome, chat id e texto livre não concedem autoridade. O `from.id` só escolhe o binding existente; a Automation v2 continua revalidando principal, scopes, rate limit e idempotência antes do dispatcher.
+
+A autenticidade de uma atualização em long polling deriva da conexão HTTPS do MANAGER com a Telegram Bot API usando o token secreto; não existe assinatura individual de cada update. O token nunca é colocado em argv, audit ou resposta pública. O serviço persiste `next_update_id` root-only para não executar novamente updates já consumidos.
+
+Contrato do ingresso:
+
+```text
+manager-telegram-bot-ingress-v1
+```
+
+Webhook permanece uma alternativa futura; ele deverá exigir `X-Telegram-Bot-Api-Secret-Token` e alimentar o mesmo gateway tipado, sem criar outra ACL.
+
 ## Próximas fatias da 0.9
 
 A camada Telegram ainda precisa:

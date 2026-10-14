@@ -383,9 +383,18 @@ Gateway Mini App implementado nesta fatia:
 - `initData`, bot token e credencial privada não entram em argv, audit ou contrato público do gateway;
 - gate E2E cobre HMAC/freshness -> binding -> gateway -> Ed25519 -> RBAC -> dispatcher, replay idempotente, conflito e rate limit.
 
+Ingresso Telegram Bot implementado nesta fatia:
+
+- long polling HTTPS com a Telegram Bot API sem listener público adicional;
+- `from.id` numérico é resolvido no binding existente e nunca substituído por username/chat/nome;
+- comandos Bot são mapeados para o mesmo contrato `manager-telegram-gateway-request-v1`;
+- Automation v2 continua autoridade única para RBAC, scopes, rate limit, idempotência e dispatcher;
+- offset de `update_id` é persistente/root-only para impedir reexecução de update consumido;
+- bot token permanece fora de argv/audits/respostas.
+
 Ainda pendente para fechar toda a integração Bot/Mini App da série 0.9:
 
-- ingresso autenticado do Telegram Bot por webhook/long polling reutilizando o mesmo gateway tipado;
+- webhook autenticado como transporte alternativo ao long polling;
 - telas/fluxos de produto posteriores.
 
 Fases seguintes da série 0.9:

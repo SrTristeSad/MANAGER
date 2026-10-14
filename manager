@@ -185,9 +185,10 @@ Uso:
   manager telegram auth resolve /CAMINHO/INITDATA | resolve-stdin
                                   valida initData HMAC/freshness antes do RBAC (0.9.0)
   manager telegram gateway status
-  manager telegram gateway call /CAMINHO/INITDATA /CAMINHO/REQUEST.json
-  manager telegram gateway call-stdin /CAMINHO/REQUEST.json
-                                  executa ações tipadas via Automation v2 sem shell arbitrário (0.9.0)
+  manager telegram gateway call /CAMINHO/INITDATA /CAMINHO/REQUEST.json | call-stdin /CAMINHO/REQUEST.json
+                                  gateway tipado Telegram -> Automation v2 (0.9.0)
+  manager telegram bot status|enable [POLL_TIMEOUT]|disable|poll-once
+                                  ingresso Telegram Bot por long polling HTTPS (0.9.x)
   manager --diagnostics           abre o diagnóstico
   manager --version               mostra a versão
   manager --help                  mostra esta ajuda
@@ -684,7 +685,16 @@ case "${1:-}" in
           *) err "Uso: manager telegram gateway {status|call|call-stdin} ..."; exit 64 ;;
         esac
         ;;
-      *) err "Uso: manager telegram {identity|auth|gateway} ..."; exit 64 ;;
+      bot)
+        case "${3:-status}" in
+          status) exec "$MANAGER_HOME/modules/telegram_bot.sh" --status ;;
+          enable) exec "$MANAGER_HOME/modules/telegram_bot.sh" --enable "${4:-25}" ;;
+          disable) exec "$MANAGER_HOME/modules/telegram_bot.sh" --disable ;;
+          poll-once) exec "$MANAGER_HOME/modules/telegram_bot.sh" --poll-once ;;
+          *) err "Uso: manager telegram bot {status|enable [POLL_TIMEOUT]|disable|poll-once}"; exit 64 ;;
+        esac
+        ;;
+      *) err "Uso: manager telegram {identity|auth|gateway|bot} ..."; exit 64 ;;
     esac
     ;;
   --diagnostics) exec "$MANAGER_HOME/modules/diagnostics.sh" ;;
@@ -883,6 +893,8 @@ while true; do
       "$MANAGER_HOME/modules/telegram_auth.sh" --status 2>/dev/null || true
       say ""
       "$MANAGER_HOME/modules/telegram_gateway.sh" --status 2>/dev/null || true
+      say ""
+      "$MANAGER_HOME/modules/telegram_bot.sh" --status 2>/dev/null || true
       say ""
       "$MANAGER_HOME/modules/telegram_identity.sh" --list 2>/dev/null || true
       say ""
