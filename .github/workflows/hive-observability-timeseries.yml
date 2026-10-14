@@ -1,0 +1,263 @@
+name: Hive Observability Operational Timeseries
+
+on:
+  pull_request:
+    paths:
+      - modules/hive_observability.sh
+      - manager
+      - docs/HIVE_OBSERVABILITY.md
+      - docs/ROADMAP.md
+      - .github/workflows/hive-observability-timeseries.yml
+  push:
+    branches:
+      - main
+    paths:
+      - modules/hive_observability.sh
+      - manager
+      - docs/HIVE_OBSERVABILITY.md
+      - docs/ROADMAP.md
+      - .github/workflows/hive-observability-timeseries.yml
+
+permissions:
+  contents: read
+
+jobs:
+  operational-timeseries:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          test "$(sudo cat /opt/manager/VERSION)" = 0.8.9
+          sudo test -x /opt/manager/modules/hive_observability.sh
+
+      - name: Seed two-node operational history with hostile fields and resets
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo rm -rf /tmp/hive-timeseries-observe /tmp/hive-timeseries-health /tmp/hive-timeseries-logs
+          sudo mkdir -p /tmp/hive-timeseries-observe /tmp/hive-timeseries-health/nodes /tmp/hive-timeseries-logs
+          now="$(date +%s)"
+          sudo python3 - "$now" <<'PY'
+          import json,sys,os
+          now=int(sys.argv[1])
+          history='/tmp/hive-timeseries-observe/health-history.jsonl'
+          legacy={
+            'contract':'manager-hive-health-history-v1','epoch':now-1000,
+            'node_id':'node-0123456789abcdef','node_epoch':7,'state':'HEALTHY','reason':'legacy',
+            'sessions':1,'max_sessions':10,'capacity':100,'weight':1,
+            'cpu_percent':10.0,'memory_used_percent':20.0,'rtt_ms':15.0,'hive_network_peer_count':1,
+          }
+          open(history,'w').write(json.dumps(legacy,separators=(',',':'))+'\n')
+
+          def snapshot(name,node,node_epoch,offset,state,cpu,mem,rtt,sessions,identities,rx,tx,
+                       wg='active',hive='active'):
+              obj={
+                'version':1,'node_id':node,'node_epoch':node_epoch,
+                'issued_at':now-offset,'received_at':now-offset,'source':'203.0.113.200',
+                'base_state':state,'base_reason':'ok' if state=='HEALTHY' else 'service-wireguard-inactive',
+                'metrics':{
+                  'sessions':sessions,'session_identities':identities,'max_sessions':10,
+                  'capacity':100,'weight':2,'cpu_percent':cpu,'cpu_count':4,
+                  'load1':2.0,'load5':1.5,'load15':1.0,'memory_used_percent':mem,
+                  'network_interface':'eth0-secret-interface','network_rx_bytes':rx,'network_tx_bytes':tx,
+                  'node_enabled':1,'protocols':['ssh','wireguard'],
+                  'service_ssh':'active','service_wireguard':wg,'service_openvpn':'unavailable',
+                  'hive_network_configured':1,'hive_network_service':hive,'hive_network_peer_count':2,
+                  'previous_rtt_ms':rtt,
+                  'private_key':'health-private-key-must-not-leak',
+                  'token':'health-token-must-not-leak','password':'health-password-must-not-leak',
+                  'unknown':'health-unknown-must-not-leak'
+                }
+              }
+              open('/tmp/hive-timeseries-health/nodes/'+name+'.json','w').write(json.dumps(obj))
+
+          snapshot('n1-a','node-0123456789abcdef',7,900,'HEALTHY',20,30,10,2,2,1000,2000)
+          snapshot('n2-a','node-fedcba9876543210',3,840,'HEALTHY',30,40,20,3,2,5000,7000)
+          snapshot('n1-b','node-0123456789abcdef',7,600,'HEALTHY',40,50,20,4,3,1600,2600)
+          snapshot('n2-b','node-fedcba9876543210',4,540,'HEALTHY',50,60,30,5,4,100,200)
+          snapshot('n1-reset','node-0123456789abcdef',7,300,'DEGRADED',60,70,30,6,5,200,300,wg='inactive',hive='inactive')
+          snapshot('n2-c','node-fedcba9876543210',4,240,'DEGRADED',70,80,40,7,5,1100,2200,wg='inactive')
+          snapshot('n1-c','node-0123456789abcdef',7,120,'HEALTHY',80,90,50,8,6,500,700)
+          PY
+          sudo chmod 600 /tmp/hive-timeseries-observe/health-history.jsonl
+          common=(
+            MANAGER_HIVE_OBSERVABILITY_DATA_DIR=/tmp/hive-timeseries-observe
+            MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-timeseries-health
+            MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-timeseries-logs/scheduler.jsonl
+            MANAGER_HIVE_LEASE_AUDIT_FILE=/tmp/hive-timeseries-logs/lease.jsonl
+            MANAGER_HIVE_OBSERVABILITY_AUDIT_FILE=/tmp/hive-timeseries-logs/observe.jsonl
+          )
+          for sample in n1-a n2-a n1-b n2-b n1-reset n2-c n1-c; do
+            sudo env "${common[@]}" /opt/manager/modules/hive_observability.sh --record-health "/tmp/hive-timeseries-health/nodes/${sample}.json"
+          done
+          test "$(sudo wc -l /tmp/hive-timeseries-observe/health-history.jsonl | awk '{print $1}')" -eq 8
+          test "$(sudo stat -c '%a' /tmp/hive-timeseries-observe/health-history.jsonl)" = 600
+          ! sudo grep -Eq '203\.0\.113\.200|must-not-leak|private_key|password|token|unknown|eth0-secret-interface|network_interface' /tmp/hive-timeseries-observe/health-history.jsonl
+          sudo grep -q '"network_rx_bytes"' /tmp/hive-timeseries-observe/health-history.jsonl
+          sudo grep -q '"session_identities"' /tmp/hive-timeseries-observe/health-history.jsonl
+          sudo grep -q '"service_wireguard"' /tmp/hive-timeseries-observe/health-history.jsonl
+
+      - name: Seed scheduler and lease control-plane events
+        shell: bash
+        run: |
+          set -euxo pipefail
+          now="$(date +%s)"
+          sudo tee /tmp/hive-timeseries-logs/scheduler.jsonl >/dev/null <<EOF
+          {"epoch":$((now-700)),"event":"select","node_id":"node-0123456789abcdef","protocol":"wireguard","reason":"weighted-least-loaded","secret":"scheduler-secret-must-not-leak"}
+          {"epoch":$((now-500)),"event":"select","node_id":"node-fedcba9876543210","protocol":"wireguard","reason":"sticky-failover","token":"scheduler-token-must-not-leak"}
+          {"epoch":$((now-400)),"event":"drain","node_id":"node-fedcba9876543210","reason":"maintenance"}
+          {"epoch":$((now-200)),"event":"undrain","node_id":"node-fedcba9876543210"}
+          EOF
+          sudo tee /tmp/hive-timeseries-logs/lease.jsonl >/dev/null <<EOF
+          {"epoch":$((now-650)),"event":"grant","identity_id":"maria","node_id":"node-0123456789abcdef","password":"lease-password-must-not-leak"}
+          {"epoch":$((now-550)),"event":"deny","identity_id":"maria","node_id":"node-fedcba9876543210","reason":"global-session-limit","token":"lease-token-must-not-leak"}
+          {"epoch":$((now-450)),"event":"release","identity_id":"maria","node_id":"node-0123456789abcdef"}
+          {"epoch":$((now-350)),"event":"node-authority-outage","node_id":"node-fedcba9876543210","authority_epoch":9}
+          {"epoch":$((now-250)),"event":"node-authority-recovered","node_id":"node-fedcba9876543210","authority_epoch":9}
+          {"epoch":$((now-150)),"event":"node-authority-fenced","node_id":"node-fedcba9876543210","returned_authority_epoch":8,"private_key":"lease-private-key-must-not-leak"}
+          EOF
+
+      - name: Aggregate whole-window operational metrics
+        shell: bash
+        run: |
+          set -euxo pipefail
+          common=(
+            MANAGER_HIVE_OBSERVABILITY_DATA_DIR=/tmp/hive-timeseries-observe
+            MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-timeseries-health
+            MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-timeseries-logs/scheduler.jsonl
+            MANAGER_HIVE_LEASE_AUDIT_FILE=/tmp/hive-timeseries-logs/lease.jsonl
+            MANAGER_HIVE_OBSERVABILITY_AUDIT_FILE=/tmp/hive-timeseries-logs/observe.jsonl
+          )
+          sudo env "${common[@]}" /opt/manager/manager hive observe metrics 1800 >/tmp/hive-metrics.json
+          test "$(wc -l </tmp/hive-metrics.json)" -eq 1
+          python3 - <<'PY'
+          import json
+          raw=open('/tmp/hive-metrics.json').read()
+          for marker in ['must-not-leak','203.0.113.200','network_interface','private_key','password','token','/tmp/hive-timeseries']:
+              assert marker not in raw, marker
+          x=json.loads(raw)
+          assert x['contract']=='manager-hive-observability-metrics-v1'
+          assert x['observability_contract']=='manager-hive-observability-v1'
+          assert x['window_seconds']==1800
+          assert x['health_samples']==8
+          assert x['nodes_observed']==2
+          assert x['nodes_healthy']==1
+          assert x['nodes_degraded']==1
+          assert x['nodes_healthy_percent']==50.0
+          assert x['network_rx_delta_bytes']==1900
+          assert x['network_tx_delta_bytes']==3000
+          assert x['network_rx_rate_bps'] > 0
+          assert x['network_tx_rate_bps'] > 0
+          assert x['service_issue_samples']==2
+          assert x['hive_network_issue_samples']==1
+          assert x['scheduler_selections']==2
+          assert x['scheduler_failovers']==1
+          assert x['scheduler_failover_percent']==50.0
+          assert x['drains']==1 and x['undrains']==1
+          assert x['lease_grants']==1 and x['lease_denies']==1 and x['lease_releases']==1
+          assert x['lease_deny_percent']==50.0
+          assert x['authority_outages']==1 and x['authority_recoveries']==1 and x['authority_fenced']==1
+          assert x['cpu_p95_percent'] >= x['cpu_avg_percent']
+          assert x['memory_p95_percent'] >= x['memory_avg_percent']
+          assert x['sessions_peak'] >= x['sessions_avg']
+          assert x['controller_in_user_vpn_path']==0
+          PY
+
+      - name: Build bounded time buckets and node filter
+        shell: bash
+        run: |
+          set -euxo pipefail
+          common=(
+            MANAGER_HIVE_OBSERVABILITY_DATA_DIR=/tmp/hive-timeseries-observe
+            MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-timeseries-health
+            MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-timeseries-logs/scheduler.jsonl
+            MANAGER_HIVE_LEASE_AUDIT_FILE=/tmp/hive-timeseries-logs/lease.jsonl
+            MANAGER_HIVE_OBSERVABILITY_AUDIT_FILE=/tmp/hive-timeseries-logs/observe.jsonl
+          )
+          sudo env "${common[@]}" /opt/manager/manager hive observe series '*' 1800 300 >/tmp/hive-series.json
+          sudo env "${common[@]}" /opt/manager/manager hive observe series node-0123456789abcdef 1800 300 >/tmp/hive-series-node.json
+          python3 - <<'PY'
+          import json
+          raw=open('/tmp/hive-series.json').read()
+          for marker in ['must-not-leak','203.0.113.200','network_interface','private_key','password','token','/tmp/hive-timeseries']:
+              assert marker not in raw, marker
+          x=json.loads(raw)
+          assert x['contract']=='manager-hive-observability-series-v1'
+          assert x['observability_contract']=='manager-hive-observability-v1'
+          assert x['window_seconds']==1800
+          assert x['bucket_seconds']==300
+          assert x['node_filter']=='*'
+          assert x['samples']==8
+          assert x['nodes_observed']==2
+          assert 1 <= x['returned_buckets'] <= 7
+          assert x['max_buckets']==1000
+          assert sum(row['network_rx_delta_bytes'] for row in x['series'])==1900
+          assert sum(row['network_tx_delta_bytes'] for row in x['series'])==3000
+          assert all(row['network_rx_delta_bytes'] >= 0 and row['network_tx_delta_bytes'] >= 0 for row in x['series'])
+          assert all(set(row['cpu_percent'])=={'avg','p95','max'} for row in x['series'])
+          assert x['security']['contains_private_keys']==0
+          node=json.load(open('/tmp/hive-series-node.json'))
+          assert node['node_filter']=='node-0123456789abcdef'
+          assert node['nodes_observed']==1
+          assert node['samples']==5
+          assert sum(row['network_rx_delta_bytes'] for row in node['series'])==900
+          assert sum(row['network_tx_delta_bytes'] for row in node['series'])==1000
+          PY
+
+      - name: Enforce bounds root-only and strict arguments
+        shell: bash
+        run: |
+          set -euxo pipefail
+          common=(
+            MANAGER_HIVE_OBSERVABILITY_DATA_DIR=/tmp/hive-timeseries-observe
+            MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-timeseries-health
+            MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-timeseries-logs/scheduler.jsonl
+            MANAGER_HIVE_LEASE_AUDIT_FILE=/tmp/hive-timeseries-logs/lease.jsonl
+            MANAGER_HIVE_OBSERVABILITY_AUDIT_FILE=/tmp/hive-timeseries-logs/observe.jsonl
+          )
+          if sudo env "${common[@]}" /opt/manager/manager hive observe series '*' 604800 60; then
+            echo 'series accepted more than 1000 possible buckets' >&2
+            exit 1
+          fi
+          if sudo env "${common[@]}" /opt/manager/manager hive observe series invalid-node 1800 300; then
+            echo 'series accepted invalid node id' >&2
+            exit 1
+          fi
+          if sudo env "${common[@]}" /opt/manager/manager hive observe series '*' 1800 59; then
+            echo 'series accepted bucket below minimum' >&2
+            exit 1
+          fi
+          if sudo env "${common[@]}" /opt/manager/modules/hive_observability.sh --metrics 1800 unexpected; then
+            echo 'metrics accepted unexpected argument' >&2
+            exit 1
+          fi
+          if sudo env "${common[@]}" /opt/manager/modules/hive_observability.sh --series '*' 1800 300 unexpected; then
+            echo 'series accepted unexpected argument' >&2
+            exit 1
+          fi
+          if env "${common[@]}" /opt/manager/manager hive observe metrics 1800; then
+            echo 'non-root metrics execution was accepted' >&2
+            exit 1
+          fi
+          if env "${common[@]}" /opt/manager/manager hive observe series '*' 1800 300; then
+            echo 'non-root series execution was accepted' >&2
+            exit 1
+          fi
+
+      - name: Verify milestone remains unreleased
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "$(cat VERSION)" = 0.8.9
+          grep -q 'manager-hive-observability-metrics-v1' docs/HIVE_OBSERVABILITY.md
+          grep -q 'manager-hive-observability-series-v1' docs/HIVE_OBSERVABILITY.md
+          grep -q 'gate final multi-nó e regressão completa da release' docs/ROADMAP.md
+          ! grep -q '^- séries temporais e métricas operacionais adicionais;$' docs/ROADMAP.md
+          grep -q '^### 0.8.10 — observabilidade distribuída 🚧$' docs/ROADMAP.md
+          git diff --exit-code
