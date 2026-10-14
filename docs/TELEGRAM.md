@@ -31,27 +31,32 @@ A role continua sendo `admin`, `reseller`, `subreseller` ou `user` conforme o pr
 
 ```text
 /etc/manager/telegram/
-└── bindings/
-    └── <telegram_user_id>.conf
+├── bindings/
+│   └── <telegram_user_id>.conf
+├── auth/
+│   └── config.conf
+└── secrets/
+    └── bot-token
 ```
 
-Diretórios são `0700` e bindings são `0600`.
+Diretórios são `0700`; bindings, configuração e bot token são `0600`.
 
-Audit local:
+Audits locais:
 
 ```text
 /var/log/manager/telegram-identity-audit.jsonl
+/var/log/manager/telegram-auth-audit.jsonl
 ```
 
-O audit registra vínculo, enable/disable, resolve e recusas sem bot token, credencial Ed25519 ou segredo de sessão.
+Os audits registram operações e recusas sem bot token, `initData`, hash, signature, query_id, nomes, username, credencial Ed25519 ou segredo de sessão.
 
-## Contrato
+## Contrato de identidade
 
 ```text
 manager-telegram-identity-v1
 ```
 
-Um resolve autorizado expõe apenas o contexto necessário para a camada Bot/Mini App:
+Um resolve local autorizado expõe apenas o contexto necessário para a camada Bot/Mini App:
 
 ```json
 {
@@ -72,7 +77,7 @@ Um resolve autorizado expõe apenas o contexto necessário para a camada Bot/Min
 
 O contexto não contém private key, bot token, senha ou credencial recuperável.
 
-## Administração local
+## Administração local da identidade
 
 A primeira vinculação é administrativa e explícita. Antes dela, o principal da Automation v2 deve existir.
 
@@ -95,14 +100,88 @@ Por segurança:
 - binding desabilitado faz o resolve falhar fechado;
 - trocar `@username` não muda autoridade;
 - username não é persistido como identidade;
-- nenhuma ação Telegram recebe shell/comando/caminho arbitrário.
-\n## Autenticação criptográfica do Mini App\n\nO backend não confia em `Telegram.WebApp.initDataUnsafe`. O Mini App deve enviar o valor bruto de `Telegram.WebApp.initData`, e o MANAGER valida esse valor antes de aceitar qualquer `user.id`.\n\nA validação segue o contrato do Telegram Mini Apps:\n\n1. parseia o query string bruto e rejeita campos duplicados ou malformados;\n2. remove somente `hash` do data-check-string e ordena os demais pares `key=value`;\n3. deriva a chave `HMAC-SHA-256(key=WebAppData, message=bot_token)`;\n4. calcula `HMAC-SHA-256` do data-check-string e compara o `hash` em tempo constante;\n5. valida `auth_date` com freshness obrigatória;\n6. somente depois lê `user.id`;\n7. somente depois resolve esse ID no binding `manager-telegram-identity-v1` e no RBAC da Automation v2.\n\nO contrato criptográfico é:\n\n```text\nmanager-telegram-initdata-v1\n```\n\nE o contexto já autenticado + autorizado usa:\n\n```text\nmanager-telegram-authenticated-principal-v1\n```\n\nPor padrão, `initData` pode ter no máximo 300 segundos de idade e até 30 segundos de tolerância para relógio futuro. O operador pode ajustar esses limites dentro dos intervalos seguros definidos pelo módulo.\n\n### Bot token\n\nO token nunca é aceito diretamente em argv. Ele deve vir de um arquivo local legível por root:\n\n```bash\nmanager telegram auth token install /root/telegram-bot-token\nmanager telegram auth status\n```\n\nO MANAGER copia o token para:\n\n```text\n/etc/manager/telegram/secrets/bot-token\n```\n\nO diretório é `0700` e o token é `0600`. O status mostra apenas se o token está configurado/válido e o `bot_id`; a parte secreta não aparece. Instalar novamente a partir de outro arquivo faz uma substituição atômica do token.\n\n### Freshness\n\n```bash\nmanager telegram auth freshness set 300 30\n```\n\nO primeiro valor é a idade máxima em segundos (`30..86400`). O segundo é a tolerância máxima de relógio futuro (`0..300`). Dados vencidos ou muito adiantados são recusados antes do RBAC.\n\n### Verificação e resolve\n\nPara operação manual:\n\n```bash\nmanager telegram auth verify /root/initdata.txt\nmanager telegram auth resolve /root/initdata.txt\n```\n\nPara o futuro gateway, prefira stdin para não colocar material de autenticação em argv:\n\n```bash\nprintf '%s' "$TELEGRAM_INIT_DATA" | manager telegram auth verify-stdin\nprintf '%s' "$TELEGRAM_INIT_DATA" | manager telegram auth resolve-stdin\n```\n\nO módulo limita o payload, usa arquivo temporário root-only apenas durante a chamada stdin e o remove ao terminar. `initData`, `hash`, `signature`, `query_id`, nomes e username não entram no audit.\n\nAudit:\n\n```text\n/var/log/manager/telegram-auth-audit.jsonl\n```\n\nUma falha de HMAC, freshness, parsing, binding ou principal resulta em fail-closed. Um `user.id` só chega ao `telegram_identity.sh --resolve` depois de a assinatura HMAC e a freshness terem sido aceitas.\n\n## Próximas fatias da 0.9
+- nenhuma ação Telegram recebe shell, comando ou caminho arbitrário.
+
+## Autenticação criptográfica do Mini App
+
+O backend não confia em `Telegram.WebApp.initDataUnsafe`. O Mini App deve enviar o valor bruto de `Telegram.WebApp.initData`, e o MANAGER valida esse valor antes de aceitar qualquer `user.id`.
+
+A validação segue o contrato do Telegram Mini Apps:
+
+1. parseia o query string bruto e rejeita campos duplicados ou malformados;
+2. remove somente `hash` do data-check-string e ordena os demais pares `key=value`;
+3. deriva a chave com `HMAC-SHA-256(key=WebAppData, message=bot_token)`;
+4. calcula `HMAC-SHA-256` do data-check-string e compara o `hash` em tempo constante;
+5. valida `auth_date` com freshness obrigatória;
+6. somente depois lê `user.id`;
+7. somente depois resolve esse ID no binding `manager-telegram-identity-v1` e no RBAC da Automation v2.
+
+O contrato da validação criptográfica é:
+
+```text
+manager-telegram-initdata-v1
+```
+
+O contexto autenticado e já autorizado usa:
+
+```text
+manager-telegram-authenticated-principal-v1
+```
+
+Por padrão, `initData` pode ter no máximo 300 segundos de idade e até 30 segundos de tolerância para relógio futuro. O operador pode ajustar esses limites dentro dos intervalos seguros definidos pelo módulo.
+
+### Bot token
+
+O token nunca é aceito diretamente em argv. Ele deve vir de um arquivo local legível por root:
+
+```bash
+manager telegram auth token install /root/telegram-bot-token
+manager telegram auth status
+```
+
+O MANAGER copia o token para:
+
+```text
+/etc/manager/telegram/secrets/bot-token
+```
+
+O diretório é `0700` e o token é `0600`. O status mostra apenas se o token está configurado/válido e o `bot_id`; a parte secreta não aparece. Instalar novamente a partir de outro arquivo faz uma substituição atômica do token.
+
+### Freshness
+
+```bash
+manager telegram auth freshness set 300 30
+```
+
+O primeiro valor é a idade máxima em segundos (`30..86400`). O segundo é a tolerância máxima de relógio futuro (`0..300`). Dados vencidos ou muito adiantados são recusados antes do RBAC.
+
+### Verificação e resolve
+
+Para operação manual:
+
+```bash
+manager telegram auth verify /root/initdata.txt
+manager telegram auth resolve /root/initdata.txt
+```
+
+Para o futuro gateway, prefira stdin para não colocar material de autenticação em argv:
+
+```bash
+printf '%s' "$TELEGRAM_INIT_DATA" | manager telegram auth verify-stdin
+printf '%s' "$TELEGRAM_INIT_DATA" | manager telegram auth resolve-stdin
+```
+
+O módulo limita o payload a 16 KiB e 64 campos, usa arquivo temporário root-only apenas durante a chamada stdin e o remove ao terminar. `initData`, `hash`, `signature`, `query_id`, nomes e username não entram no audit nem nos contratos de saída.
+
+Uma falha de HMAC, freshness, parsing, binding ou principal resulta em fail-closed. Um `user.id` só chega ao `telegram_identity.sh --resolve` depois de HMAC e freshness terem sido aceitos.
+
+## Próximas fatias da 0.9
 
 A camada Bot/Mini App ainda precisa:
 
 1. criar o gateway Bot/Mini App consumindo somente ações tipadas e allowlisted da Automation v2;
 2. aplicar rate limit e idempotência por requisição no gateway;
-3. implementar telas/fluxos de sessões, clientes, produtos, cotas, nós e diagnósticos;
+3. implementar telas e fluxos de sessões, clientes, produtos, cotas, nós e diagnósticos;
 4. adicionar gate end-to-end do gateway real, mantendo o bot token fora de argv, logs e respostas públicas.
 
 O Telegram será uma interface do control plane já existente, não uma nova autoridade paralela.
