@@ -106,6 +106,7 @@ FILES=(
   "modules/automation_principals.sh"
   "modules/automation_credentials.sh"
   "modules/automation_v2.sh"
+  "modules/telegram_identity.sh"
   "modules/policy_engine.sh"
   "modules/session_engine.sh"
   "modules/protocol_leases.sh"
@@ -276,6 +277,9 @@ fi
 }
 "$INSTALL_DIR/modules/automation_v2.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O Automation v2 local não pôde iniciar. Revise: systemctl status manager-automation-v2" >&2
+}
+"$INSTALL_DIR/modules/telegram_identity.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] A identidade Telegram 0.9.0 não pôde inicializar seu estado. Use: manager telegram identity status" >&2
 }
 "$INSTALL_DIR/modules/hive_lifecycle.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] A Colmeia iniciou, mas não pôde se vincular ao lifecycle de uninstall/rollback. Revise: /opt/manager/modules/hive_lifecycle.sh --status" >&2
