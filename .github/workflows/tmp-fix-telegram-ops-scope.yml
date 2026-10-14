@@ -38,21 +38,23 @@ jobs:
           if s.count(marker) != 1:
               raise SystemExit(f'fixture marker count={s.count(marker)}')
           indent='          '
-          fixture=(
-              "sudo install -d -m 0700 /etc/manager/access/resellers\n"
-              "cat >/tmp/resellerA.conf <<'EOF'\n"
-              "id=resellerA\n"
-              "role=reseller\n"
-              "parent=\n"
-              "quota=100\n"
-              "enabled=1\n"
-              "created_epoch=1\n"
-              "updated_epoch=1\n"
-              "EOF\n"
-              "sudo install -m 0600 /tmp/resellerA.conf /etc/manager/access/resellers/resellerA.conf\n\n"
-          )
-          fixture=indent + fixture.replace('\n','\n'+indent)
-          p.write_text(s.replace(indent+marker, fixture+marker, 1))
+          lines=[
+              'sudo install -d -m 0700 /etc/manager/access/resellers',
+              "cat >/tmp/resellerA.conf <<'EOF'",
+              'id=resellerA',
+              'role=reseller',
+              'parent=',
+              'quota=100',
+              'enabled=1',
+              'created_epoch=1',
+              'updated_epoch=1',
+              'EOF',
+              'sudo install -m 0600 /tmp/resellerA.conf /etc/manager/access/resellers/resellerA.conf',
+              '',
+              marker,
+          ]
+          replacement='\n'.join((indent+line) if line else '' for line in lines)
+          p.write_text(s.replace(indent+marker, replacement, 1))
           PY
           bash -n modules/automation_principals.sh
           git diff --check
