@@ -1,0 +1,250 @@
+name: Telegram Read-only Operations E2E
+
+on:
+  pull_request:
+    paths:
+      - modules/automation_read_ops.sh
+      - modules/telegram_operations.sh
+      - modules/telegram_gateway.sh
+      - modules/automation_v2.sh
+      - modules/connection_engine.sh
+      - modules/products.sh
+      - modules/session_engine.sh
+      - modules/hive_observability.sh
+      - modules/telegram_identity.sh
+      - modules/telegram_auth.sh
+      - install.sh
+      - docs/TELEGRAM_OPERATIONS.md
+      - docs/ROADMAP.md
+      - .github/workflows/telegram-readonly-operations.yml
+  push:
+    branches: [main]
+    paths:
+      - modules/automation_read_ops.sh
+      - modules/telegram_operations.sh
+      - modules/telegram_gateway.sh
+      - modules/automation_v2.sh
+      - modules/connection_engine.sh
+      - modules/products.sh
+      - modules/session_engine.sh
+      - modules/hive_observability.sh
+      - modules/telegram_identity.sh
+      - modules/telegram_auth.sh
+      - install.sh
+      - docs/TELEGRAM_OPERATIONS.md
+      - docs/ROADMAP.md
+      - .github/workflows/telegram-readonly-operations.yml
+
+permissions:
+  contents: read
+
+jobs:
+  telegram-readonly-operations:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          test "$(sudo cat /opt/manager/VERSION)" = "$(cat VERSION)"
+          test "$(cat VERSION)" = 0.8.10
+          sudo test -x /opt/manager/modules/automation_read_ops.sh
+          sudo test -x /opt/manager/modules/telegram_operations.sh
+          sudo /opt/manager/modules/automation_read_ops.sh --status >/tmp/read-status
+          grep -q '^contract=manager-automation-read-ops-v1$' /tmp/read-status
+          grep -q '^read_only=1$' /tmp/read-status
+          grep -q '^secret_fields=0$' /tmp/read-status
+          sudo /opt/manager/modules/telegram_operations.sh --status >/tmp/ops-status
+          grep -q '^contract=manager-telegram-operations-v1$' /tmp/ops-status
+          grep -q '^request_contract=manager-telegram-operations-request-v1$' /tmp/ops-status
+          grep -q '^authorization_authority=automation-v2$' /tmp/ops-status
+          grep -q '^authorization_capability=node.usage$' /tmp/ops-status
+          grep -q '^read_only=1$' /tmp/ops-status
+          grep -q '^writes=0$' /tmp/ops-status
+          grep -q '^arbitrary_shell=0$' /tmp/ops-status
+
+      - name: Prepare real identity product quota and Telegram admin
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo /opt/manager/modules/connection_engine.sh --create ops-user '' 0 2 ssh
+          sudo /opt/manager/modules/products.sh --create opsplan 'Operations Plan' 1 30 2 ssh 1048576 monthly warn '*' '*' '*'
+          sudo /opt/manager/modules/products.sh --assign ops-user opsplan
+          sudo manager automation v2 principal create telegram-ops-admin admin '*'
+          sudo manager automation v2 principal scope telegram-ops-admin '*' '*' 'node.usage'
+          sudo manager telegram identity bind 123456789 telegram-ops-admin
+
+      - name: Validate sanitized backend with real data
+        shell: bash
+        run: |
+          set -euxo pipefail
+          for op in identities products sessions nodes diagnostics; do
+            sudo /opt/manager/modules/automation_read_ops.sh "--$op" >"/tmp/read-$op.json"
+          done
+          python3 - <<'PY'
+          import json
+          ident=json.load(open('/tmp/read-identities.json'))
+          assert ident['contract']=='manager-automation-read-ops-v1' and ident['kind']=='identities'
+          row=next(x for x in ident['items'] if x['id']=='ops-user')
+          assert row['product_id']=='opsplan'
+          assert row['quota_bytes']==1048576
+          assert row['quota_used_bytes'] >= 0
+          assert row['quota_exceeded'] in (0,1)
+          products=json.load(open('/tmp/read-products.json'))
+          p=next(x for x in products['items'] if x['id']=='opsplan')
+          assert p['traffic_quota_bytes']==1048576 and p['quota_period']=='monthly'
+          assert json.load(open('/tmp/read-sessions.json'))['kind']=='sessions'
+          assert json.load(open('/tmp/read-nodes.json'))['kind']=='nodes'
+          diag=json.load(open('/tmp/read-diagnostics.json'))
+          assert diag['kind']=='diagnostics' and 'memory_used_percent' in diag['summary']
+          forbidden=('password','passwd','secret','private_key','credential','token','signature','nonce','authorization')
+          def walk(v):
+            if isinstance(v,dict):
+              for k,x in v.items():
+                assert not any(s in k.lower() for s in forbidden), k
+                walk(x)
+            elif isinstance(v,list):
+              for x in v: walk(x)
+          for path in ['/tmp/read-identities.json','/tmp/read-products.json','/tmp/read-sessions.json','/tmp/read-nodes.json','/tmp/read-diagnostics.json']:
+            walk(json.load(open(path)))
+          PY
+
+      - name: Exercise all operations through Bot-authenticated composition
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          import json
+          for i,op in enumerate(('identities','products','sessions','nodes','diagnostics'),1):
+            x={'contract':'manager-telegram-operations-request-v1','request_id':f'ops-bot-{i:08d}','operation':op,'params':{}}
+            open(f'/tmp/ops-{op}.json','w').write(json.dumps(x,separators=(',',':'))+'\n')
+          PY
+          for op in identities products sessions nodes diagnostics; do
+            sudo /opt/manager/modules/telegram_operations.sh --call-bot-user 123456789 "/tmp/ops-$op.json" >"/tmp/gateway-$op.json"
+          done
+          python3 - <<'PY'
+          import json
+          for op in ('identities','products','sessions','nodes','diagnostics'):
+            x=json.load(open(f'/tmp/gateway-{op}.json'))
+            assert x['contract']=='manager-telegram-operations-v1'
+            assert x['request_contract']=='manager-telegram-operations-request-v1'
+            assert x['telegram_user_id']=='123456789'
+            assert x['principal_id']=='telegram-ops-admin'
+            assert x['operation']==op and x['ok'] is True and x['code']==0
+            assert x['authorization_authority']=='automation-v2'
+            assert x['authorization_capability']=='node.usage'
+            assert x['snapshot_cached'] is False
+            assert x['result']['contract']=='manager-automation-read-ops-v1'
+            assert x['result']['kind']==op
+          PY
+
+      - name: Exercise Mini App initData path without exposing secrets
+        shell: bash
+        run: |
+          set -euxo pipefail
+          umask 077
+          printf '%s\n' '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456' >/tmp/telegram-bot-token
+          sudo manager telegram auth token install /tmp/telegram-bot-token
+          rm -f /tmp/telegram-bot-token
+          python3 - <<'PY'
+          import hashlib,hmac,json,time,urllib.parse
+          token='123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456'
+          fields={
+            'auth_date':str(int(time.time())),
+            'query_id':'OperationsSecretQueryId',
+            'signature':'T3BlcmF0aW9uc1NlY3JldA',
+            'user':json.dumps({'id':123456789,'first_name':'OperationsSecretName','username':'OperationsSecretUser'},separators=(',',':')),
+          }
+          check='\n'.join(f'{k}={fields[k]}' for k in sorted(fields))
+          secret=hmac.new(b'WebAppData',token.encode(),hashlib.sha256).digest()
+          fields['hash']=hmac.new(secret,check.encode(),hashlib.sha256).hexdigest()
+          open('/tmp/ops-initdata.txt','w').write(urllib.parse.urlencode(fields,quote_via=urllib.parse.quote))
+          x={'contract':'manager-telegram-operations-request-v1','request_id':'ops-miniapp-00000001','operation':'diagnostics','params':{}}
+          open('/tmp/ops-miniapp.json','w').write(json.dumps(x,separators=(',',':'))+'\n')
+          PY
+          cat /tmp/ops-initdata.txt | sudo /opt/manager/modules/telegram_operations.sh --call-stdin /tmp/ops-miniapp.json >/tmp/ops-miniapp-result.json
+          python3 - <<'PY'
+          import json
+          x=json.load(open('/tmp/ops-miniapp-result.json'))
+          assert x['ok'] is True and x['operation']=='diagnostics'
+          assert x['telegram_user_id']=='123456789'
+          assert x['principal_id']=='telegram-ops-admin'
+          PY
+          ! grep -Fq 'OperationsSecret' /tmp/ops-miniapp-result.json
+
+      - name: Fail closed on action scope and non-admin role
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager automation v2 principal scope telegram-ops-admin '*' '*' 'system.describe'
+          set +e
+          sudo /opt/manager/modules/telegram_operations.sh --call-bot-user 123456789 /tmp/ops-identities.json >/tmp/ops-scope-deny.json
+          rc=$?
+          set -e
+          test "$rc" = 67
+          python3 - <<'PY'
+          import json
+          x=json.load(open('/tmp/ops-scope-deny.json'))
+          assert x['ok'] is False and x['code']==67
+          assert x['authorization_authority']=='automation-v2'
+          PY
+          sudo manager automation v2 principal scope telegram-ops-admin '*' '*' 'node.usage'
+          sudo manager automation v2 principal create telegram-ops-user user ops-user
+          sudo manager automation v2 principal scope telegram-ops-user '*' '*' 'node.usage'
+          sudo manager telegram identity bind 987654321 telegram-ops-user
+          set +e
+          sudo /opt/manager/modules/telegram_operations.sh --call-bot-user 987654321 /tmp/ops-identities.json >/tmp/ops-role-deny.json
+          rc=$?
+          set -e
+          test "$rc" = 67
+          python3 - <<'PY'
+          import json
+          x=json.load(open('/tmp/ops-role-deny.json'))
+          assert x['ok'] is False and x['code']==67
+          PY
+
+      - name: Reject arbitrary operation and parameters before dispatch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          import json
+          bad=[
+            ('shell',{'contract':'manager-telegram-operations-request-v1','request_id':'ops-bad-00000001','operation':'shell','params':{}}),
+            ('param',{'contract':'manager-telegram-operations-request-v1','request_id':'ops-bad-00000002','operation':'identities','params':{'command':'id'}}),
+          ]
+          for name,x in bad:
+            open(f'/tmp/ops-bad-{name}.json','w').write(json.dumps(x,separators=(',',':'))+'\n')
+          PY
+          set +e
+          sudo /opt/manager/modules/telegram_operations.sh --call-bot-user 123456789 /tmp/ops-bad-shell.json >/tmp/ops-bad-shell.out
+          shell_rc=$?
+          sudo /opt/manager/modules/telegram_operations.sh --call-bot-user 123456789 /tmp/ops-bad-param.json >/tmp/ops-bad-param.out
+          param_rc=$?
+          set -e
+          test "$shell_rc" = 64
+          test "$param_rc" = 64
+          grep -q 'não allowlisted' /tmp/ops-bad-shell.out
+          grep -q 'não aceitam parâmetros' /tmp/ops-bad-param.out
+
+      - name: Verify permissions audits docs and syntax
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "$(sudo stat -c '%a' /etc/manager/telegram/operations)" = 700
+          test "$(sudo stat -c '%a' /var/log/manager/telegram-operations-audit.jsonl)" = 600
+          ! sudo grep -Fq 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456' /var/log/manager/telegram-operations-audit.jsonl
+          ! sudo grep -Fq 'OperationsSecret' /var/log/manager/telegram-operations-audit.jsonl
+          ! sudo grep -Eqi 'private_key|bot_token|signature|query_id|username|first_name|init_data|initData|nonce' /var/log/manager/telegram-operations-audit.jsonl
+          grep -q 'manager-telegram-operations-v1' docs/TELEGRAM_OPERATIONS.md
+          grep -q 'authorization_capability' docs/TELEGRAM_OPERATIONS.md
+          grep -q 'confirmação explícita' docs/TELEGRAM_OPERATIONS.md
+          test "$(cat VERSION)" = 0.8.10
+          bash -n modules/automation_read_ops.sh
+          bash -n modules/telegram_operations.sh
+          bash -n install.sh
+          git diff --exit-code
