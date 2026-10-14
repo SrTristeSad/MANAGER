@@ -18,16 +18,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('tmp_patch_telegram_bot_ingress.py')
-          s=p.read_text()
-          old='''  manager telegram gateway call /CAMINHO/INITDATA /CAMINHO/REQUEST.json | call-stdin /CAMINHO/REQUEST.json\n                                  gateway tipado Telegram -> Automation v2 (0.9.0)\n'''
-          new='''  manager telegram gateway call /CAMINHO/INITDATA /CAMINHO/REQUEST.json\n  manager telegram gateway call-stdin /CAMINHO/REQUEST.json\n                                  executa ações tipadas via Automation v2 sem shell arbitrário (0.9.0)\n'''
-          if old not in s:
-              raise SystemExit('old manager help anchor not found in patcher')
-          p.write_text(s.replace(old,new,1))
-          PY
+          python3 tmp_fix_bot_patcher.py
           python3 tmp_patch_telegram_bot_ingress.py
           git diff --check
       - name: Commit product integration
