@@ -1,0 +1,26 @@
+name: Temporary Refine Telegram Bot
+on:
+  push:
+    branches: [feature/0.9.0-telegram-bot-ingress]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feature/0.9.0-telegram-bot-ingress
+      - shell: bash
+        run: |
+          set -euxo pipefail
+          python3 tmp_refine_telegram_bot.py
+          bash -n modules/telegram_bot.sh rollback.sh uninstall.sh manager install.sh
+          if ! command -v shellcheck >/dev/null; then sudo apt-get update && sudo apt-get install -y shellcheck; fi
+          shellcheck -x modules/telegram_bot.sh
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add modules/telegram_bot.sh uninstall.sh docs/TELEGRAM.md docs/ROADMAP.md
+          git commit -m 'fix: make Telegram Bot reply delivery retry-safe'
+          git push origin HEAD:feature/0.9.0-telegram-bot-ingress
