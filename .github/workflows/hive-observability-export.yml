@@ -116,13 +116,25 @@ jobs:
           import json
           p='/tmp/hive-export.json'
           raw=open(p).read()
-          forbidden=[
-            '203.0.113.200','must-not-leak','private_key','password','token','secret','unknown',
+          forbidden_values=[
+            '203.0.113.200','must-not-leak',
             '/tmp/hive-export-logs','/var/log/manager','/var/lib/manager'
           ]
-          for marker in forbidden:
+          for marker in forbidden_values:
               assert marker not in raw, marker
           x=json.loads(raw)
+          forbidden_keys={'private_key','password','token','secret','unknown','signature','nonce'}
+          def reject_forbidden_keys(value):
+              if isinstance(value, dict):
+                  leaked=set(value) & forbidden_keys
+                  assert not leaked, leaked
+                  for child in value.values():
+                      reject_forbidden_keys(child)
+              elif isinstance(value, list):
+                  for child in value:
+                      reject_forbidden_keys(child)
+          reject_forbidden_keys(x['summary'])
+          reject_forbidden_keys(x['streams'])
           assert x['contract']=='manager-hive-observability-export-v1'
           assert x['observability_contract']=='manager-hive-observability-v1'
           assert x['window_seconds']==10800
