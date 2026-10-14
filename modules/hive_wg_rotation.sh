@@ -708,6 +708,26 @@ def net_node_text(n):
     return "".join(f"{k}={n.get(k,'')}\n" for k in keys) + f"updated_epoch={now}\n"
 
 
+def controller_rotation_state_text(rotation_id, node_id, auth, state, status, activated_epoch=""):
+    return (
+        f"version=1\nrotation_id={rotation_id}\nstatus={status}\nnode_id={node_id}\nnode_epoch={auth['node_epoch']}\n"
+        f"controller_epoch={auth['controller_epoch']}\nconfig_epoch_from={auth['config_epoch_from']}\n"
+        f"config_epoch_to={auth['config_epoch_to']}\nnetwork_generation_from={auth['network_generation_from']}\n"
+        f"network_generation_to={auth['network_generation_to']}\nold_wireguard_key_id={auth['old_wireguard_key_id']}\n"
+        f"new_wireguard_key_id={auth['new_wireguard_key_id']}\nstaged_epoch={state.get('staged_epoch','')}\n"
+        f"activated_epoch={activated_epoch}\n"
+    )
+
+
+def emit_activation_bundles(out_dir, node_id, auth, net, ctrl):
+    records = active_records_with_replacement(node_id, auth)
+    finals = ensure_bundle_targets(out_dir, records)
+    bundles = [bundle_for(n, records, net, ctrl, auth["config_epoch_to"]) for n in records]
+    for path, bundle in zip(finals, bundles):
+        write_external_new(path, json.dumps(bundle, sort_keys=True, separators=(",", ":")) + "\n")
+    return finals
+
+
 def ensure_bundle_targets(out_dir, records):
     if not os.path.isabs(out_dir) or not os.path.isdir(out_dir):
         die("activate exige diretório absoluto já existente para os bundles.", 64)
@@ -758,7 +778,51 @@ def controller_activate(rotation_id, out_dir):
             print(f"bundle_count={len(finals)}")
             return
 
-        if state.get("status") != "staged":
+        if state.get("status") == "activating":
+            if identity_epoch != auth["node_epoch"]:
+                die("node_epoch mudou durante a ativação; rotação cercada.", 67)
+            old_pub = auth["old_wireguard_public_key"]
+            new_pub = auth["new_wireguard_public_key"]
+            old_gen = auth["network_generation_from"]
+            new_gen = auth["network_generation_to"]
+            old_cfg = auth["config_epoch_from"]
+            new_cfg = auth["config_epoch_to"]
+            current_pub = net_node.get("wireguard_public_key")
+
+            no_write = config_epoch == old_cfg and generation == old_gen and current_pub == old_pub
+            node_written = config_epoch == old_cfg and generation == new_gen and current_pub == new_pub
+            epoch_written = config_epoch == new_cfg and generation == old_gen and current_pub == old_pub
+            complete = config_epoch == new_cfg and generation == new_gen and current_pub == new_pub
+
+            if node_written:
+                write_ctrl_net_conf(net, new_cfg)
+                config_epoch = new_cfg
+                complete = True
+            elif epoch_written:
+                repaired = dict(net_node)
+                repaired["wireguard_public_key"] = auth["new_wireguard_public_key"]
+                repaired["wireguard_key_id"] = auth["new_wireguard_key_id"]
+                repaired["network_generation"] = str(new_gen)
+                atomic_write(net_path, net_node_text(repaired))
+                net_node = read_conf(net_path)
+                generation = new_gen
+                complete = True
+            elif not (no_write or complete):
+                die("Estado parcial da ativação WireGuard divergiu; intervenção manual necessária.", 67)
+
+            if complete:
+                now = int(time.time())
+                atomic_write(state_path, controller_rotation_state_text(rotation_id, node_id, auth, state, "activated", str(now)))
+                finals = emit_activation_bundles(out_dir, node_id, auth, net, ctrl)
+                print("rotation_activated=1")
+                print("cached_activation=1")
+                print("recovered_partial_activation=1")
+                print(f"rotation_id={rotation_id}")
+                print(f"config_epoch={new_cfg}")
+                print(f"bundle_count={len(finals)}")
+                return
+
+        if state.get("status") not in {"staged", "activating"}:
             die("Estado de rotação WireGuard inválido para ativação.", 67)
         if identity_epoch != auth["node_epoch"]:
             die("node_epoch mudou depois do stage; rotação cercada.", 67)
@@ -773,6 +837,13 @@ def controller_activate(rotation_id, out_dir):
 
         old_node = Path(net_path).read_bytes()
         old_net = Path(CTRL_NET_CONF).read_bytes()
+        old_state = Path(state_path).read_bytes()
+        atomic_write(state_path, controller_rotation_state_text(rotation_id, node_id, auth, state, "activating"))
+        history_paths = [
+            os.path.join(CTRL_HISTORY, rotation_id + ".request.json"),
+            os.path.join(CTRL_HISTORY, rotation_id + ".authorization.json"),
+            os.path.join(CTRL_HISTORY, rotation_id + ".old.pub"),
+        ]
         tmp_paths = []
         try:
             for final, bundle in zip(finals, bundles):
@@ -811,6 +882,12 @@ def controller_activate(rotation_id, out_dir):
         except Exception:
             atomic_write(net_path, old_node)
             atomic_write(CTRL_NET_CONF, old_net)
+            atomic_write(state_path, old_state)
+            for history_path in history_paths:
+                try:
+                    os.unlink(history_path)
+                except FileNotFoundError:
+                    pass
             for tmp, final in tmp_paths:
                 try:
                     os.unlink(tmp)
