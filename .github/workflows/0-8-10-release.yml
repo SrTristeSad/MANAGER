@@ -1,0 +1,41 @@
+name: Validate MANAGER 0.8.10 Release Metadata
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  release-metadata:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify 0.8.10 version and release documentation
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "$(cat VERSION)" = "0.8.10"
+          grep -q 'Versão atual: \*\*0.8.10\*\*' README.md
+          grep -q '^## \[0.8.10\] - 2026-10-14$' CHANGELOG.md
+          grep -q '^### 0\.8\.10 — observabilidade distribuída ✅$' docs/ROADMAP.md
+          grep -q '^## Fechamento da 0\.8\.10$' docs/HIVE_OBSERVABILITY.md
+          grep -q 'manager-hive-observability-metrics-v1' docs/HIVE_OBSERVABILITY.md
+          grep -q 'manager-hive-observability-series-v1' docs/HIVE_OBSERVABILITY.md
+          grep -q '^name: Hive Observability 0.8.10 Final Gate$' .github/workflows/hive-observability-final-gate.yml
+          grep -q '^name: Hive Distributed Observability Foundation$' .github/workflows/hive-observability.yml
+          grep -q '^name: Hive Observability Structured Export$' .github/workflows/hive-observability-export.yml
+          grep -q '^name: Hive Observability Operational Timeseries$' .github/workflows/hive-observability-timeseries.yml
+
+      - name: Verify release boundary is closed
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ! grep -q '^### 0\.8\.10 — observabilidade distribuída 🚧$' docs/ROADMAP.md
+          ! grep -q 'Ainda pendente para fechar a 0.8.10' docs/ROADMAP.md
+          grep -q '^## 0\.9\.x — Telegram Bot + Mini App$' docs/ROADMAP.md
+          grep -q 'controlador continua fora do caminho de dados VPN' docs/ROADMAP.md
+          git diff --exit-code
