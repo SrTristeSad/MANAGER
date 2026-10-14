@@ -1,0 +1,43 @@
+name: Telegram Bot Long Polling E2E
+
+on:
+  pull_request:
+    paths:
+      - modules/telegram_bot.sh
+      - modules/telegram_gateway.sh
+      - modules/telegram_auth.sh
+      - modules/telegram_identity.sh
+      - modules/automation_v2.sh
+      - manager
+      - install.sh
+      - uninstall.sh
+      - rollback.sh
+      - docs/TELEGRAM.md
+      - docs/ROADMAP.md
+      - .github/scripts/telegram-bot-long-polling-e2e.sh
+      - .github/workflows/telegram-bot-long-polling.yml
+  push:
+    branches: [main]
+    paths:
+      - modules/telegram_bot.sh
+      - modules/telegram_gateway.sh
+      - manager
+      - install.sh
+      - uninstall.sh
+      - rollback.sh
+      - docs/TELEGRAM.md
+      - docs/ROADMAP.md
+      - .github/scripts/telegram-bot-long-polling-e2e.sh
+      - .github/workflows/telegram-bot-long-polling.yml
+
+permissions:
+  contents: read
+
+jobs:
+  telegram-bot-long-polling:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run Telegram Bot long-polling E2E
+        shell: bash
+        run: bash .github/scripts/telegram-bot-long-polling-e2e.sh

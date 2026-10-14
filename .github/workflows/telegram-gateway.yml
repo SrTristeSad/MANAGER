@@ -274,6 +274,6 @@ jobs:
           grep -q '^## Gateway tipado para Mini App$' docs/TELEGRAM.md
           grep -q 'manager-telegram-gateway-request-v1' docs/TELEGRAM.md
           grep -q 'Gateway Mini App implementado nesta fatia' docs/ROADMAP.md
-          grep -q 'ingresso autenticado do Telegram Bot' docs/ROADMAP.md
+          grep -q 'manager-telegram-bot-ingress-v1' docs/ROADMAP.md
           test "$(cat VERSION)" = 0.8.10
           git diff --exit-code

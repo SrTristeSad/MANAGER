@@ -127,6 +127,24 @@ elif $PURGE; then
   rm -f /etc/manager/automation/v2/hive-controller.conf /var/log/manager/hive-remote-audit.jsonl
 fi
 
+# Telegram Bot long polling não abre listener, mas depende da Automation v2.
+# A unidade sai antes do managerd; estado/offset sobrevivem ao uninstall normal.
+if [[ -x /opt/manager/modules/telegram_bot.sh ]]; then
+  if $PURGE; then
+    /opt/manager/modules/telegram_bot.sh --purge >/dev/null 2>&1 || true
+  else
+    /opt/manager/modules/telegram_bot.sh --detach >/dev/null 2>&1 || true
+  fi
+else
+  systemctl disable --now manager-telegram-bot.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-telegram-bot.service
+  if $PURGE; then
+    rm -rf /etc/manager/telegram/bot /var/lib/manager/telegram-bot
+    rm -f /var/log/manager/telegram-bot-audit.jsonl
+  fi
+  systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
 # Automation v2 possui o socket Unix local e pode possuir o gateway TLS remoto.
 # Ambos precisam sair antes de /opt/manager ser removido. Estado, credenciais
 # públicas, idempotência, anti-replay e configuração TLS permanecem no uninstall

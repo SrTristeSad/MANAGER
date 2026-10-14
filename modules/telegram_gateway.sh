@@ -14,6 +14,7 @@ GATEWAY_DIR="$STATE_DIR/gateway"
 CREDENTIALS_DIR="$GATEWAY_DIR/credentials"
 AUDIT_FILE="${MANAGER_TELEGRAM_GATEWAY_AUDIT_FILE:-/var/log/manager/telegram-gateway-audit.jsonl}"
 AUTH_MODULE="${MANAGER_TELEGRAM_AUTH_MODULE:-$MANAGER_HOME/modules/telegram_auth.sh}"
+IDENTITY_MODULE="${MANAGER_TELEGRAM_IDENTITY_MODULE:-$MANAGER_HOME/modules/telegram_identity.sh}"
 AUTOMATION_CREDENTIALS="${MANAGER_AUTOMATION_CREDENTIALS_MODULE:-$MANAGER_HOME/modules/automation_credentials.sh}"
 MANAGERCTL="${MANAGERCTL_BIN:-/usr/local/sbin/managerctl}"
 [[ -x "$MANAGERCTL" ]] || MANAGERCTL="$MANAGER_HOME/modules/automation_v2.sh"
@@ -63,12 +64,17 @@ status() {
 }
 
 call_gateway() {
-  local initdata="${1:-}" request_file="${2:-}" result rc meta uid principal action request_id code cached decision
+  local initdata="${1:-}" request_file="${2:-}" trusted_uid="${3:-}" result rc meta uid principal action request_id code cached decision
   init_state
   [[ -x "$AUTH_MODULE" ]] || { err "Módulo de autenticação Telegram indisponível"; return 70; }
+  [[ -x "$IDENTITY_MODULE" ]] || { err "Módulo de identidade Telegram indisponível"; return 70; }
   [[ -x "$AUTOMATION_CREDENTIALS" ]] || { err "Módulo de credenciais Automation v2 indisponível"; return 70; }
   [[ -x "$MANAGERCTL" ]] || { err "managerctl/Automation v2 indisponível"; return 70; }
-  [[ -n "$initdata" && -f "$initdata" && -r "$initdata" && ! -L "$initdata" ]] || { err "Arquivo initData inválido ou ilegível"; return 66; }
+  if [[ -n "$trusted_uid" ]]; then
+    [[ "$trusted_uid" =~ ^[1-9][0-9]{0,15}$ ]] || { err "Telegram user.id autenticado inválido"; return 64; }
+  else
+    [[ -n "$initdata" && -f "$initdata" && -r "$initdata" && ! -L "$initdata" ]] || { err "Arquivo initData inválido ou ilegível"; return 66; }
+  fi
   [[ -n "$request_file" && -f "$request_file" && -r "$request_file" && ! -L "$request_file" ]] || { err "Arquivo de requisição Telegram inválido ou ilegível"; return 66; }
   if (( $(stat -c '%s' "$request_file" 2>/dev/null || echo 999999) > MAX_REQUEST_BYTES )); then
     err "Requisição Telegram excede o limite"
@@ -78,7 +84,7 @@ call_gateway() {
   result="$(mktemp "$GATEWAY_DIR/.result.XXXXXX")"
   meta="$(mktemp "$GATEWAY_DIR/.meta.XXXXXX")"
   set +e
-  python3 - "$CONTRACT" "$REQUEST_CONTRACT" "$AUTH_MODULE" "$AUTOMATION_CREDENTIALS" "$MANAGERCTL" "$CREDENTIALS_DIR" "$initdata" "$request_file" "$meta" > "$result" <<'PY'
+  python3 - "$CONTRACT" "$REQUEST_CONTRACT" "$AUTH_MODULE" "$IDENTITY_MODULE" "$AUTOMATION_CREDENTIALS" "$MANAGERCTL" "$CREDENTIALS_DIR" "$initdata" "$request_file" "$meta" "$trusted_uid" > "$result" <<'PY'
 import hashlib
 import json
 import os
@@ -87,7 +93,7 @@ import stat
 import subprocess
 import sys
 
-contract, request_contract, auth_module, credential_module, managerctl, credential_dir, initdata, request_file, meta_file = sys.argv[1:10]
+contract, request_contract, auth_module, identity_module, credential_module, managerctl, credential_dir, initdata, request_file, meta_file, trusted_uid = sys.argv[1:12]
 REQUEST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,95}$")
 PRINCIPAL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 ACTION_SCHEMAS = {
@@ -132,14 +138,27 @@ def run_json(cmd):
     return 0, data
 
 # Authentication is completed before a principal or requested action is trusted.
-auth_rc, auth = run_json([auth_module, "--resolve", initdata])
-if auth_rc != 0 or not auth:
-    fail("autenticação Telegram recusada", auth_rc or 67)
-if auth.get("contract") != "manager-telegram-authenticated-principal-v1":
-    fail("contrato de autenticação Telegram inválido", 70)
-uid = auth.get("telegram_user_id", "")
-principal = auth.get("principal_id", "")
-if not isinstance(uid, str) or not uid.isdigit() or not PRINCIPAL_RE.fullmatch(principal or ""):
+# Mini App comes from validated initData. Bot ingress may provide only a user.id
+# that was obtained from an authenticated Telegram Bot API HTTPS response.
+if trusted_uid:
+    if not trusted_uid.isdigit():
+        fail("Telegram user.id autenticado inválido", 64)
+    auth_rc, auth = run_json([identity_module, "--resolve", trusted_uid])
+    if auth_rc != 0 or not auth:
+        fail("identidade Telegram do Bot recusada", auth_rc or 67, telegram_user_id=trusted_uid)
+    if auth.get("contract") != "manager-telegram-identity-v1":
+        fail("contrato de identidade Telegram inválido", 70, telegram_user_id=trusted_uid)
+    uid = auth.get("telegram_user_id", "")
+    principal = auth.get("principal_id", "")
+else:
+    auth_rc, auth = run_json([auth_module, "--resolve", initdata])
+    if auth_rc != 0 or not auth:
+        fail("autenticação Telegram recusada", auth_rc or 67)
+    if auth.get("contract") != "manager-telegram-authenticated-principal-v1":
+        fail("contrato de autenticação Telegram inválido", 70)
+    uid = auth.get("telegram_user_id", "")
+    principal = auth.get("principal_id", "")
+if not isinstance(uid, str) or not uid.isdigit() or uid != (trusted_uid or uid) or not PRINCIPAL_RE.fullmatch(principal or ""):
     fail("contexto Telegram autenticado inválido", 70)
 
 try:
@@ -291,12 +310,14 @@ case "${1:-}" in
   --status) status; exit $? ;;
   --call) call_gateway "${2:-}" "${3:-}"; exit $? ;;
   --call-stdin) call_stdin "${2:-}"; exit $? ;;
+  --call-bot-user) call_gateway /dev/null "${3:-}" "${2:-}"; exit $? ;;
   *)
     cat >&2 <<'USAGE'
 Uso:
   telegram_gateway.sh --status
   telegram_gateway.sh --call /CAMINHO/INITDATA /CAMINHO/REQUEST.json
   telegram_gateway.sh --call-stdin /CAMINHO/REQUEST.json
+  telegram_gateway.sh --call-bot-user TELEGRAM_USER_ID /CAMINHO/REQUEST.json  # interno
 USAGE
     exit 64
     ;;
