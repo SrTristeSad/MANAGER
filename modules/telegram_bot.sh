@@ -34,6 +34,7 @@ init_state() {
     tmp="$(mktemp "$BOT_DIR/.config.XXXXXX")"
     {
       printf 'version=1\n'
+      printf 'enabled=0\n'
       printf 'poll_timeout_seconds=%s\n' "$DEFAULT_POLL_TIMEOUT"
     } > "$tmp"
     install -m 0600 "$tmp" "$CONFIG_FILE"
@@ -92,6 +93,41 @@ EOF
   systemctl daemon-reload >/dev/null 2>&1 || true
 }
 
+set_enabled() {
+  local value="$1" timeout tmp
+  init_state
+  timeout="$(read_field "$CONFIG_FILE" poll_timeout_seconds)"
+  [[ "$timeout" =~ ^[0-9]+$ ]] || timeout="$DEFAULT_POLL_TIMEOUT"
+  tmp="$(mktemp "$BOT_DIR/.config.XXXXXX")"
+  {
+    printf 'version=1\n'
+    printf 'enabled=%s\n' "$value"
+    printf 'poll_timeout_seconds=%s\n' "$timeout"
+  } > "$tmp"
+  install -m 0600 "$tmp" "$CONFIG_FILE"
+  rm -f "$tmp"
+}
+
+install_bot() {
+  init_state
+  write_service
+  if [[ "$(read_field "$CONFIG_FILE" enabled)" == 1 ]] && valid_token_file; then
+    systemctl enable --now manager-telegram-bot.service >/dev/null 2>&1 || true
+  fi
+}
+
+detach_bot() {
+  systemctl disable --now manager-telegram-bot.service >/dev/null 2>&1 || true
+  rm -f "$SERVICE_FILE"
+  systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
+purge_bot() {
+  detach_bot
+  rm -rf "$BOT_DIR" "$DATA_DIR"
+  rm -f "$AUDIT_FILE"
+}
+
 status() {
   init_state
   local active=0 enabled=0 token=0 timeout
@@ -119,11 +155,13 @@ enable_bot() {
   valid_token_file || { err "Bot token Telegram ausente ou inseguro. Use: manager telegram auth token install ARQUIVO"; return 77; }
   [[ -x "$GATEWAY_MODULE" ]] || { err "Gateway Telegram indisponível"; return 70; }
   write_service
+  set_enabled 1
   systemctl enable --now manager-telegram-bot.service >/dev/null
   printf 'bot_enabled=1\n'
 }
 
 disable_bot() {
+  set_enabled 0
   systemctl disable --now manager-telegram-bot.service >/dev/null 2>&1 || true
   printf 'bot_enabled=0\n'
 }
@@ -395,7 +433,9 @@ serve_bot() {
 }
 
 case "${1:-}" in
-  --install|--init) init_state; write_service; exit 0 ;;
+  --install|--init) install_bot; exit 0 ;;
+  --detach) detach_bot; exit 0 ;;
+  --purge) purge_bot; exit 0 ;;
   --status) status; exit $? ;;
   --enable) enable_bot; exit $? ;;
   --disable) disable_bot; exit $? ;;
