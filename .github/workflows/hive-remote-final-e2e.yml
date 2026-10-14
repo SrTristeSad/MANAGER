@@ -197,8 +197,9 @@ jobs:
           test "$(sudo cat /opt/manager/VERSION)" = 0.8.9
           sudo manager hive remote controller status | grep -q '^pool_routing=1$'
           sudo manager hive remote controller status | grep -q '^arbitrary_target=0$'
-          grep -q '^## \[0.8.9\] - 2026-10-12$' CHANGELOG.md
-          ! grep -q '^## \[0.8.9\]' CHANGELOG.md
+          grep -q '^## \[0.8.9\] - 2026-10-14$' CHANGELOG.md
+          grep -q '^### 0\.8\.9 — rotação de chaves e anti-replay distribuído ✅$' docs/ROADMAP.md
+          ! grep -q '^## \[0.8.10\]' CHANGELOG.md
 
       - name: Stop second gateway
         if: always()

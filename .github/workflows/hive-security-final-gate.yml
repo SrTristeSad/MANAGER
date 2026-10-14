@@ -113,6 +113,7 @@ jobs:
             echo 'stale topology bundle survived config/network generation fencing' >&2
             exit 1
           fi
+          sudo mkdir -m 700 /tmp/final-wg-rotated-retry
           sudo manager hive network controller rotate activate "$rotation_id" /tmp/final-wg-rotated-retry >/tmp/final.wg.activate.retry.log
           grep -q '^cached_activation=1$' /tmp/final.wg.activate.retry.log
 
