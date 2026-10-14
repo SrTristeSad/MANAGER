@@ -16,7 +16,8 @@ grep -q '^bot_token_argv=0$' /tmp/bot-status
 grep -q '^authorization_authority=automation-v2$' /tmp/bot-status
 grep -q '^typed_bot_actions=system.describe,node.usage,connection.status$' /tmp/bot-status
 grep -q '^arbitrary_shell=0$' /tmp/bot-status
-manager --help | grep -q 'manager telegram bot status|enable|disable|poll-once'
+manager --help >/tmp/manager-help
+grep -q 'manager telegram bot status|enable \[POLL_TIMEOUT\]|disable|poll-once' /tmp/manager-help
 test "$(sudo stat -c '%a' /etc/manager/telegram/bot)" = 700
 test "$(sudo stat -c '%a' /etc/manager/telegram/bot/config.conf)" = 600
 test "$(sudo stat -c '%a' /var/lib/manager/telegram-bot/offset)" = 600
