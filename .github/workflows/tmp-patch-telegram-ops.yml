@@ -17,90 +17,27 @@ jobs:
         with:
           ref: feature/0.9.0-telegram-ops-read-api
           fetch-depth: 0
-      - name: Patch integration
+      - name: Refine scoped views
         run: |
           python3 - <<'PY'
           from pathlib import Path
-
-          def replace(path, old, new):
-              p=Path(path); s=p.read_text()
-              if old not in s:
-                  raise SystemExit(f'missing patch anchor: {path}: {old[:80]!r}')
-              p.write_text(s.replace(old,new,1))
-
-          p='modules/automation_v2.sh'
-          replace(p,
-          'NODE_USAGE = os.path.join(MANAGER_HOME, "modules", "node_usage.sh")\nRESELLERS_DIR =',
-          'NODE_USAGE = os.path.join(MANAGER_HOME, "modules", "node_usage.sh")\nOPS_VIEWS = os.path.join(MANAGER_HOME, "modules", "automation_ops_views.sh")\nRESELLERS_DIR =')
-          replace(p,
-          'ACTIONS = {"system.describe", "node.usage", "connection.preflight", "connection.create", "connection.status", "connection.revoke"}\nREAD_ACTIONS = {"system.describe", "node.usage", "connection.status"}',
-          'ACTIONS = {"system.describe", "node.usage", "connection.preflight", "connection.create", "connection.status", "connection.revoke",\n           "ops.clients", "ops.sessions", "ops.products", "ops.quotas", "ops.nodes", "ops.diagnostics"}\nREAD_ACTIONS = {"system.describe", "node.usage", "connection.status",\n                "ops.clients", "ops.sessions", "ops.products", "ops.quotas", "ops.nodes", "ops.diagnostics"}')
-          replace(p,
-          '    if action_id == "system.describe": return True, normalized, "system-describe"\n    if action_id == "node.usage": return role == "admin", normalized, "node-usage-admin-only"\n    if action_id in {"connection.preflight", "connection.create"}:',
-          '    if action_id == "system.describe": return True, normalized, "system-describe"\n    if action_id == "node.usage": return role == "admin", normalized, "node-usage-admin-only"\n    if action_id in {"ops.clients", "ops.sessions", "ops.products", "ops.quotas"}:\n        return not normalized, normalized, "ops-read-scoped" if not normalized else "ops-read-no-params"\n    if action_id in {"ops.nodes", "ops.diagnostics"}:\n        return role == "admin" and not normalized, normalized, "ops-admin-read-only" if role == "admin" and not normalized else "ops-admin-only"\n    if action_id in {"connection.preflight", "connection.create"}:')
-          replace(p,
-          'def command_for(action_id, params):\n    if not isinstance(params, dict): raise ValueError("params deve ser objeto")',
-          'def command_for(action_id, params, principal=None):\n    if not isinstance(params, dict): raise ValueError("params deve ser objeto")')
-          replace(p,
-          '    if action_id == "node.usage":\n        if params: raise ValueError("node.usage não aceita parâmetros")\n        return [NODE_USAGE, "--show"]\n    if action_id in {"connection.status", "connection.revoke"}:',
-          '    if action_id == "node.usage":\n        if params: raise ValueError("node.usage não aceita parâmetros")\n        return [NODE_USAGE, "--show"]\n    if action_id.startswith("ops."):\n        if params: raise ValueError("ações ops não aceitam parâmetros")\n        if not principal: raise ValueError("contexto principal ausente")\n        view = "--" + action_id.split(".", 1)[1]\n        return [OPS_VIEWS, view, principal["role"], principal["subject"], principal["products"]]\n    if action_id in {"connection.status", "connection.revoke"}:')
-          replace(p,
-          '    try: cmd = command_for(action_id, params)',
-          '    try: cmd = command_for(action_id, params, principal)')
-          replace(p,
-          'def cacheable_response(response):\n    safe, redacted = json.loads(json.dumps(response)), False\n    result = safe.get("result")',
-          'def sanitize_structured(value):\n    if isinstance(value, dict):\n        return {str(k)[:128]: sanitize_structured(v) for k, v in value.items() if not SENSITIVE_RE.search(str(k))}\n    if isinstance(value, list):\n        return [sanitize_structured(x) for x in value[:500]]\n    if isinstance(value, str): return value[:8192]\n    if value is None or isinstance(value, (bool, int, float)): return value\n    return str(value)[:8192]\n\n\ndef cacheable_response(response):\n    safe, redacted = json.loads(json.dumps(response)), False\n    result = safe.get("result")')
-          replace(p,
-          '        stdout = result.get("stdout")\n        if isinstance(stdout, str):\n            sanitized = sanitize_stdout(stdout)\n            if sanitized != stdout: result["stdout"] = sanitized; redacted = True',
-          '        view = result.get("view")\n        if isinstance(view, (dict, list)):\n            sanitized_view = sanitize_structured(view)\n            if sanitized_view != view: redacted = True\n            result["view"] = sanitized_view\n        stdout = result.get("stdout")\n        if isinstance(stdout, str):\n            sanitized = sanitize_stdout(stdout)\n            if sanitized != stdout: result["stdout"] = sanitized; redacted = True')
-          replace(p,
-          '        result = {"contract": CONTRACT, "version": VERSION, "request_id": request_id, "action_id": action_id,\n                  "principal_id": principal["principal_id"], "principal_role": principal["role"], "ok": proc.returncode == 0,\n                  "code": int(proc.returncode), "result": {"data": parse_kv(proc.stdout), "stdout": proc.stdout[:65536]}, "cached": False}\n        if proc.stderr: result["stderr"] = proc.stderr[:8192]',
-          '        result = {"contract": CONTRACT, "version": VERSION, "request_id": request_id, "action_id": action_id,\n                  "principal_id": principal["principal_id"], "principal_role": principal["role"], "ok": proc.returncode == 0,\n                  "code": int(proc.returncode), "result": {"data": parse_kv(proc.stdout), "stdout": proc.stdout[:65536]}, "cached": False}\n        if proc.returncode == 0 and action_id.startswith("ops."):\n            try:\n                view = json.loads(proc.stdout)\n                if not isinstance(view, dict) or view.get("contract") != "manager-automation-ops-read-v1":\n                    raise ValueError("contrato inválido")\n                result["result"] = {"view": sanitize_structured(view)}\n            except Exception:\n                result = response_error(request_id, action_id, 70, "resposta estruturada ops inválida", principal=principal)\n        if proc.stderr: result["stderr"] = proc.stderr[:8192]')
-
-          p='modules/telegram_gateway.sh'
-          replace(p,
-          "printf 'typed_actions=system.describe,node.usage,connection.preflight,connection.create,connection.status,connection.revoke\\n'",
-          "printf 'typed_actions=system.describe,node.usage,connection.preflight,connection.create,connection.status,connection.revoke,ops.clients,ops.sessions,ops.products,ops.quotas,ops.nodes,ops.diagnostics\\n'")
-          replace(p,
-          '    "connection.revoke": ({"id"}, {"id"}),\n}',
-          '    "connection.revoke": ({"id"}, {"id"}),\n    "ops.clients": (set(), set()),\n    "ops.sessions": (set(), set()),\n    "ops.products": (set(), set()),\n    "ops.quotas": (set(), set()),\n    "ops.nodes": (set(), set()),\n    "ops.diagnostics": (set(), set()),\n}')
-
-          p='modules/telegram_bot.sh'
-          replace(p,
-          "printf 'typed_bot_actions=system.describe,node.usage,connection.status\\n'",
-          "printf 'typed_bot_actions=system.describe,node.usage,connection.status,ops.clients,ops.sessions,ops.products,ops.quotas,ops.nodes,ops.diagnostics\\n'")
-          replace(p,
-          "    if cmd == '/status' and len(parts)==2 and ID_RE.fullmatch(parts[1]):\n        return ('status','connection.status',{'id':parts[1]})\n    return ('help','',{})",
-          "    if cmd == '/status' and len(parts)==2 and ID_RE.fullmatch(parts[1]):\n        return ('status','connection.status',{'id':parts[1]})\n    ops={'/clients':'clients','/sessions':'sessions','/products':'products','/quotas':'quotas','/nodes':'nodes','/diagnostics':'diagnostics'}\n    if cmd in ops and len(parts)==1:\n        name=ops[cmd]; return (name,'ops.'+name,{})\n    return ('help','',{})")
-          replace(p,
-          "        return 'Comandos: /describe, /node, /status ID'",
-          "        return 'Comandos: /describe, /node, /status ID, /clients, /sessions, /products, /quotas, /nodes, /diagnostics'")
-
-          p='install.sh'
-          replace(p,
-          '  "modules/automation_v2.sh"\n  "modules/telegram_identity.sh"',
-          '  "modules/automation_v2.sh"\n  "modules/automation_ops_views.sh"\n  "modules/telegram_identity.sh"')
-
-          p='docs/TELEGRAM.md'
-          replace(p,
-          '- `connection.revoke`.\n\nCada ação possui schema fechado',
-          '- `connection.revoke`;\n- `ops.clients`;\n- `ops.sessions`;\n- `ops.products`;\n- `ops.quotas`;\n- `ops.nodes`;\n- `ops.diagnostics`.\n\nAs seis ações `ops.*` são somente leitura e não aceitam parâmetros. Elas retornam o contrato estruturado `manager-automation-ops-read-v1`. O `managerd` injeta no helper apenas a role, subject e escopo de produtos já carregados do principal autenticado; o Telegram não pode enviar ou sobrescrever esses valores. `ops.clients`, `ops.sessions`, `ops.products` e `ops.quotas` filtram resultados pela identidade/owner/produtos do principal. `ops.nodes` e `ops.diagnostics` são admin-only.\n\nCada ação possui schema fechado')
-          replace(p,
-          '- `/help` e `/start` retornam a ajuda local.\n',
-          '- `/help` e `/start` retornam a ajuda local;\n- `/clients` -> `ops.clients`;\n- `/sessions` -> `ops.sessions`;\n- `/products` -> `ops.products`;\n- `/quotas` -> `ops.quotas`;\n- `/nodes` -> `ops.nodes`;\n- `/diagnostics` -> `ops.diagnostics`.\n')
-          replace(p,
-          '## Próximas fatias da 0.9\n\nA fundação de ingresso Bot + Mini App da 0.9.0 fica funcionalmente completa com o long polling. As fases seguintes expandem telas e fluxos de sessões, clientes, produtos, cotas, nós e diagnósticos. Operações de escrita no Bot serão expostas apenas com confirmação explícita na UX.',
-          '## API operacional somente leitura\n\nA primeira camada operacional compartilhada pelo Bot e pelo Mini App expõe `ops.clients`, `ops.sessions`, `ops.products`, `ops.quotas`, `ops.nodes` e `ops.diagnostics`. A resposta é um documento JSON `manager-automation-ops-read-v1`, limitado e sanitizado. Sessões preferem a autoridade global da Colmeia quando ela está ativa; produtos e cotas respeitam o escopo do principal; nós e diagnósticos permanecem restritos a admin. O helper não recebe input arbitrário nem caminho fornecido pelo Telegram.\n\n## Próximas fatias da 0.9\n\nCom a API operacional de leitura pronta, a próxima fase é a interface visual do Mini App consumindo esses contratos. Operações de escrita no Bot serão expostas apenas com confirmação explícita na UX.')
-
-          p='docs/ROADMAP.md'
-          replace(p,
-          'Próximas fatias da série 0.9:\n\n- telas/fluxos de sessões, clientes, produtos, cotas, nós e diagnósticos;',
-          'API operacional de leitura implementada:\n\n- contrato `manager-automation-ops-read-v1` para clientes, sessões, produtos, cotas, nós e diagnósticos;\n- ações `ops.clients`, `ops.sessions`, `ops.products`, `ops.quotas`, `ops.nodes` e `ops.diagnostics` passam pelo mesmo gateway tipado e pela Automation v2;\n- role, subject e escopo de produtos são injetados pelo `managerd`, nunca aceitos do Telegram;\n- clientes/sessões/produtos/cotas são filtrados por RBAC; nós e diagnósticos são admin-only;\n- views são sanitizadas, limitadas e não expõem token, credencial, segredo, resource de sessão ou shell.\n\nPróximas fatias da série 0.9:\n\n- telas visuais do Mini App consumindo as views estruturadas;')
+          p=Path('modules/automation_ops_views.sh')
+          s=p.read_text()
+          old='''def identity_visible(identity_id, owner=""):\n    if role == "user":\n        return identity_id == subject\n    return owner_visible(owner)\n'''
+          new='''def identity_visible(identity_id, owner=""):\n    if role == "user":\n        return identity_id == subject\n    if not owner_visible(owner):\n        return False\n    if role in {"reseller", "subreseller"}:\n        assignment = read_conf(assignment_dir / f"{identity_id}.conf")\n        product_id = assignment.get("product_id", "")\n        if product_id and not product_visible(product_id, identity_id):\n            return False\n    return True\n'''
+          if old not in s:
+              raise SystemExit('identity visibility anchor missing')
+          s=s.replace(old,new,1)
+          old2='''    route = run_ok(["sh", "-c", "ip -4 route show default | grep -q '^default'"])\n    dns = run_ok(["getent", "ahostsv4", "debian.org"], 8)\n'''
+          new2='''    try:\n        route_proc = subprocess.run(["ip", "-4", "route", "show", "default"], stdin=subprocess.DEVNULL,\n                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=5, check=False)\n        route = 1 if route_proc.returncode == 0 and any(x.startswith("default") for x in route_proc.stdout.splitlines()) else 0\n    except Exception:\n        route = 0\n    dns = run_ok(["getent", "ahostsv4", "debian.org"], 8)\n'''
+          if old2 not in s:
+              raise SystemExit('diagnostics route anchor missing')
+          p.write_text(s.replace(old2,new2,1))
           PY
-          bash -n modules/automation_v2.sh modules/automation_ops_views.sh modules/telegram_gateway.sh modules/telegram_bot.sh install.sh
+          bash -n modules/automation_ops_views.sh
           git diff --check
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add modules/automation_v2.sh modules/telegram_gateway.sh modules/telegram_bot.sh install.sh docs/TELEGRAM.md docs/ROADMAP.md
-          git commit -m 'feat: wire operational read views through Automation v2'
+          git add modules/automation_ops_views.sh
+          git commit -m 'fix: enforce product scope in operational identity views'
           git push origin HEAD:feature/0.9.0-telegram-ops-read-api
