@@ -338,11 +338,11 @@ Fundação implementada nesta primeira fatia:
 - rotação coordenada dos audits de scheduler/leases por rename atômico, sem truncar em lugar;
 - consultas sanitizadas continuam atravessando segmentos arquivados + arquivo ativo;
 - retenção temporal remove somente segmentos antigos, com armazenamento root-only e sem compressão concorrente;
+- export JSON versionado, sanitizado e limitado para integração externa, sem listener adicional;
 - controlador continua fora do caminho de dados VPN.
 
 Ainda pendente para fechar a 0.8.10:
 
-- export estruturado/integração externa;
 - séries temporais e métricas operacionais adicionais;
 - gate final multi-nó e regressão completa da release.
 - retenção operacional sem persistir segredos.

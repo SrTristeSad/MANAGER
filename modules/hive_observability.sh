@@ -33,11 +33,13 @@ SCHED_ARCHIVE_DIR = os.environ.get("MANAGER_HIVE_SCHEDULER_AUDIT_ARCHIVE_DIR", S
 LEASE_ARCHIVE_DIR = os.environ.get("MANAGER_HIVE_LEASE_AUDIT_ARCHIVE_DIR", LEASE_AUDIT + ".d")
 LOCK_FILE = os.path.join(DATA_DIR, ".lock")
 CONTRACT = "manager-hive-observability-v1"
+EXPORT_CONTRACT = "manager-hive-observability-export-v1"
 HEALTH_CONTRACT = "manager-hive-health-history-v1"
 NODE_RE = re.compile(r"^node-[a-f0-9]{16}$")
 IDENTITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$")
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 500
+MAX_EXPORT_LIMIT = 100
 DEFAULT_WINDOW = 3600
 DEFAULT_RETENTION = 7 * 24 * 3600
 DEFAULT_AUDIT_RETENTION = 14 * 24 * 3600
@@ -469,7 +471,7 @@ def percentile95(values):
     return values[idx]
 
 
-def summary(window):
+def build_summary(window):
     now = int(time.time())
     since = now - window
     health = tail_records(HEALTH_HISTORY, MAX_LIMIT, since=since)
@@ -521,6 +523,65 @@ def summary(window):
         "authority_fenced": fenced,
         "controller_in_user_vpn_path": 0,
     }
+    return result
+
+
+def summary(window):
+    print(json_line(build_summary(window)))
+
+
+def export_scalar(value):
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return round(value, 4) if math.isfinite(value) else 0.0
+    if isinstance(value, str):
+        return value[:160]
+    return None
+
+
+def export_record(obj):
+    out = {}
+    for key, value in obj.items():
+        safe = export_scalar(value)
+        if safe is not None or value is None:
+            out[str(key)[:64]] = safe
+    return out
+
+
+def export_snapshot(window, limit):
+    now = int(time.time())
+    since = now - window
+    health = [export_record(x) for x in tail_records(HEALTH_HISTORY, limit, since=since)]
+    scheduler = [export_record(x) for x in tail_records_many(
+        audit_source_paths("scheduler"), limit, sanitizer=sanitize_scheduler, since=since
+    )]
+    leases = [export_record(x) for x in tail_records_many(
+        audit_source_paths("leases"), limit, sanitizer=sanitize_lease, since=since
+    )]
+    result = {
+        "contract": EXPORT_CONTRACT,
+        "observability_contract": CONTRACT,
+        "generated_epoch": now,
+        "window_seconds": window,
+        "limit_per_stream": limit,
+        "summary": build_summary(window),
+        "streams": {
+            "health": health,
+            "scheduler": scheduler,
+            "leases": leases,
+        },
+        "security": {
+            "allowlisted_fields_only": 1,
+            "contains_private_keys": 0,
+            "contains_credentials": 0,
+            "contains_raw_audit": 0,
+            "contains_internal_paths": 0,
+            "controller_in_user_vpn_path": 0,
+        },
+    }
     print(json_line(result))
 
 
@@ -561,7 +622,7 @@ def prune(value=None):
 
 
 def usage():
-    print("Uso: hive_observability.sh --status|--summary [WINDOW]|--health [NODE|*] [LIMIT]|--scheduler [LIMIT]|--leases [IDENTITY|*] [LIMIT]|--prune [SECONDS]|--audit-status|--audit-maintain [RETENTION] [MAX_BYTES] [force]", file=sys.stderr)
+    print("Uso: hive_observability.sh --status|--summary [WINDOW]|--export [WINDOW] [LIMIT]|--health [NODE|*] [LIMIT]|--scheduler [LIMIT]|--leases [IDENTITY|*] [LIMIT]|--prune [SECONDS]|--audit-status|--audit-maintain [RETENTION] [MAX_BYTES] [force]", file=sys.stderr)
     raise SystemExit(64)
 
 
@@ -582,6 +643,12 @@ elif cmd == "--leases":
     show_leases(args[1] if len(args) > 1 else "*", validate_limit(args[2] if len(args) > 2 else DEFAULT_LIMIT))
 elif cmd == "--summary":
     summary(parse_int(args[1] if len(args) > 1 else DEFAULT_WINDOW, "window_seconds", 60, MAX_RETENTION))
+elif cmd == "--export":
+    if len(args) > 3: usage()
+    export_snapshot(
+        parse_int(args[1] if len(args) > 1 else DEFAULT_WINDOW, "window_seconds", 60, MAX_RETENTION),
+        parse_int(args[2] if len(args) > 2 else DEFAULT_LIMIT, "export_limit", 1, MAX_EXPORT_LIMIT),
+    )
 elif cmd == "--prune":
     prune(args[1] if len(args) > 1 else None)
 elif cmd == "--audit-status":

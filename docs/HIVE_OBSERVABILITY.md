@@ -46,6 +46,7 @@ O padrão de retenção dos audits é 14 dias (`MANAGER_HIVE_OBSERVABILITY_AUDIT
 ```bash
 manager hive observe status
 manager hive observe summary [WINDOW_SECONDS]
+manager hive observe export [WINDOW_SECONDS] [LIMIT]
 manager hive observe health [NODE_ID|*] [LIMIT]
 manager hive observe scheduler [LIMIT]
 manager hive observe leases [IDENTITY_ID|*] [LIMIT]
@@ -63,6 +64,14 @@ manager hive observe audit-maintain [RETENTION_SECONDS] [MAX_BYTES] [force]
 - grants, denies e releases globais;
 - outage, recovery e fencing da autoridade.
 
+## Export estruturado
+
+`manager hive observe export [WINDOW_SECONDS] [LIMIT]` produz um único objeto JSON canônico com contrato `manager-hive-observability-export-v1`. Ele foi desenhado para consumidores externos controlados, como Automation v2, Bot/Mini App ou ferramentas administrativas.
+
+O envelope contém `summary` e três streams limitados (`health`, `scheduler`, `leases`). Scheduler e leases continuam passando pelas mesmas allowlists das consultas locais; o export adiciona limite de 160 caracteres por string e aceita no máximo 100 registros por stream. Não são exportados caminhos internos, audit bruto, chave privada, assinatura, nonce, token, senha ou credencial VPN.
+
+O comando continua exigindo root no host. Esta fatia não abre porta HTTP, socket público ou novo listener: autorização remota permanece responsabilidade do canal de automação autenticado.
+
 ## Isolamento de falhas
 
 Observabilidade é diagnóstica. Se a gravação do histórico falhar, o heartbeat aceito continua válido. O módulo não pode transformar falha de disco de observabilidade em indisponibilidade da Colmeia.
@@ -78,4 +87,4 @@ Observabilidade é diagnóstica. Se a gravação do histórico falhar, o heartbe
 
 ## Escopo desta fatia
 
-A segunda fatia fecha a retenção/rotação coordenada dos audits de scheduler e leases sem mudar quem escreve ou decide no control plane. A 0.8.10 ainda não está fechada: permanecem export estruturado para integração externa, séries temporais/métricas adicionais e o gate final multi-nó da release.
+A terceira fatia adiciona export estruturado, limitado e sanitizado para integração externa sem abrir um novo serviço de rede. A 0.8.10 ainda não está fechada: permanecem séries temporais/métricas operacionais adicionais e o gate final multi-nó da release.
