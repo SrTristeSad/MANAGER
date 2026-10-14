@@ -37,7 +37,7 @@ jobs:
           set -euxo pipefail
           source_url="file://${GITHUB_WORKSPACE}"
           sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
-          test "$(sudo cat /opt/manager/VERSION)" = 0.8.9
+          test "$(sudo cat /opt/manager/VERSION)" = "$(cat VERSION)"
           sudo test -x /opt/manager/modules/hive_observability.sh
           grep -q 'hive_observability.sh' /opt/manager/modules/hive_health.sh
 
@@ -197,13 +197,13 @@ jobs:
           test "$(sudo find /tmp/hive-logs/scheduler.jsonl.d -maxdepth 1 -type f -name '*.jsonl' | wc -l)" -eq 0
           test "$(sudo find /tmp/hive-logs/lease.jsonl.d -maxdepth 1 -type f -name '*.jsonl' | wc -l)" -eq 0
 
-      - name: Verify 0.8.10 remains in development
+      - name: Verify released 0.8.10 milestone
         shell: bash
         run: |
           set -euxo pipefail
-          test "$(cat VERSION)" = 0.8.9
-          grep -q '^### 0.8.10 — observabilidade distribuída 🚧$' docs/ROADMAP.md
-          grep -q 'Ainda pendente para fechar a 0.8.10' docs/ROADMAP.md
+          test "$(cat VERSION)" = 0.8.10
+          grep -q '^### 0.8.10 — observabilidade distribuída ✅$' docs/ROADMAP.md
+          ! grep -q 'Ainda pendente para fechar a 0.8.10' docs/ROADMAP.md
           grep -q 'rotação coordenada dos audits' docs/ROADMAP.md
           test -f docs/HIVE_OBSERVABILITY.md
           git diff --exit-code

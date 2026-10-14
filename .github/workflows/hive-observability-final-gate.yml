@@ -94,7 +94,7 @@ jobs:
           done
           kill -0 "$(cat "${RUNNER_TEMP}/hive-0810-health.pid")"
 
-      - name: Send signed heartbeats from both nodes and build history
+      - name: Send signed heartbeats from both nodes and build history automatically
         shell: bash
         run: |
           set -euxo pipefail
@@ -132,7 +132,7 @@ jobs:
           test "$(sudo stat -c '%a' /tmp/hive-0810-observe/health-history.jsonl)" = 600
           ! sudo grep -Eq 'signature|nonce|private_key|password|token|network_interface|source' /tmp/hive-0810-observe/health-history.jsonl
 
-      - name: Query all observability contracts over two nodes
+      - name: Add control-plane events and query all observability contracts
         shell: bash
         run: |
           set -euxo pipefail
@@ -162,7 +162,7 @@ jobs:
           sudo env "${common[@]}" /opt/manager/manager hive observe metrics 3600 >/tmp/hive-0810-metrics.json
           sudo env "${common[@]}" /opt/manager/manager hive observe series '*' 3600 300 >/tmp/hive-0810-series.json
           sudo env "${common[@]}" /opt/manager/manager hive observe export 3600 50 >/tmp/hive-0810-export.json
-          sudo env "${common[@]}" /opt/manager/manager hive observe health '*' 20 >/tmp/hive-0810-history.out
+          sudo env "${common[@]}" /opt/manager/manager hive observe health '*' 20 >/tmp/hive-0810-health-history.out
           python3 - <<'PY'
           import json
           summary=json.load(open('/tmp/hive-0810-summary.json'))
@@ -187,13 +187,14 @@ jobs:
           assert export['summary']['nodes_observed']==2
           assert export['security']['contains_private_keys']==0
           assert export['security']['contains_credentials']==0
-          for path in ('/tmp/hive-0810-summary.json','/tmp/hive-0810-metrics.json','/tmp/hive-0810-series.json','/tmp/hive-0810-export.json','/tmp/hive-0810-history.out'):
+          for path in ('/tmp/hive-0810-summary.json','/tmp/hive-0810-metrics.json','/tmp/hive-0810-series.json','/tmp/hive-0810-export.json','/tmp/hive-0810-health-history.out'):
               raw=open(path).read()
               assert 'must-not-leak' not in raw
+              assert 'private_key' not in raw or 'contains_private_keys' in raw
               assert 'password' not in raw and 'token' not in raw
           PY
 
-      - name: Fence revoked node before it extends history
+      - name: Fence a revoked node before it can extend observability history
         shell: bash
         run: |
           set -euxo pipefail
@@ -212,7 +213,7 @@ jobs:
           test "$after" = "$before"
           sudo grep -q '"event":"reject"' /tmp/hive-0810-logs/health.jsonl
 
-      - name: Rotate audits and keep queries readable
+      - name: Rotate audits and keep bounded multi-node queries readable
         shell: bash
         run: |
           set -euxo pipefail
@@ -236,7 +237,7 @@ jobs:
           sudo env "${common[@]}" /opt/manager/manager hive observe prune 3600 >/tmp/hive-0810-prune.out
           test "$(sudo stat -c '%a' /tmp/hive-0810-observe/health-history.jsonl)" = 600
 
-      - name: Validate closed release boundary
+      - name: Validate closed 0.8.10 release boundary
         shell: bash
         run: |
           set -euxo pipefail

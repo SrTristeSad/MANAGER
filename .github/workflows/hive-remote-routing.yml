@@ -19,7 +19,7 @@ jobs:
         run: |
           set -euxo pipefail
           sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="file://${GITHUB_WORKSPACE}" bash install.sh
-          test "$(sudo cat /opt/manager/VERSION)" = 0.8.9
+          test "$(sudo cat /opt/manager/VERSION)" = "$(cat VERSION)"
           sudo test -x /opt/manager/modules/hive_remote.sh
           sudo manager automation v2 status | grep -q '^hive_controller_remote_auth=1$'
           sudo manager automation v2 status | grep -q '^hive_controller_private_key_distribution=0$'
