@@ -31,6 +31,13 @@ read -r -p "Restaurar o código anterior? [s/N]: " answer
 
 # Unidades/hooks externos ao /opt precisam ser retirados pelo código que os
 # criou antes da troca. Estados persistentes permanecem em /etc/manager e /var/lib.
+if [[ -x "$INSTALL_DIR/modules/telegram_bot.sh" ]]; then
+  "$INSTALL_DIR/modules/telegram_bot.sh" --detach >/dev/null 2>&1 || true
+else
+  systemctl disable --now manager-telegram-bot.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-telegram-bot.service
+  systemctl daemon-reload >/dev/null 2>&1 || true
+fi
 if [[ -x "$INSTALL_DIR/modules/automation_v2.sh" ]]; then
   "$INSTALL_DIR/modules/automation_v2.sh" --detach >/dev/null 2>&1 || true
 else
@@ -97,6 +104,13 @@ fi
 # Reaplica apenas os componentes disponíveis na versão que acabou de voltar.
 # Isso permite rollback para uma versão anterior sem deixar units/hooks
 # apontando para módulos ausentes.
+if [[ -x "$INSTALL_DIR/modules/telegram_bot.sh" ]]; then
+  "$INSTALL_DIR/modules/telegram_bot.sh" --install >/dev/null 2>&1 || true
+else
+  systemctl disable --now manager-telegram-bot.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-telegram-bot.service
+  systemctl daemon-reload >/dev/null 2>&1 || true
+fi
 if [[ -x "$INSTALL_DIR/modules/products.sh" ]]; then
   "$INSTALL_DIR/modules/products.sh" --install >/dev/null 2>&1 || true
 else
