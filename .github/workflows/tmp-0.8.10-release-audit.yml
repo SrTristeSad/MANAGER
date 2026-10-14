@@ -1,0 +1,25 @@
+name: Temporary 0.8.10 Release Audit
+
+on:
+  push:
+    branches:
+      - release/0.8.10-final-gate
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Audit version and milestone references
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== 0.8.9 references ==='
+          grep -RIn --exclude-dir=.git '0\.8\.9' .github README.md CHANGELOG.md docs VERSION install.sh manager || true
+          echo '=== 0.8.10 references ==='
+          grep -RIn --exclude-dir=.git '0\.8\.10' .github README.md CHANGELOG.md docs VERSION install.sh manager || true
+          echo '=== VERSION equality checks ==='
+          grep -RIn --exclude-dir=.git -E 'VERSION.*0\.8\.(9|10)|cat VERSION.*0\.8\.(9|10)|/opt/manager/VERSION.*0\.8\.(9|10)' .github || true
