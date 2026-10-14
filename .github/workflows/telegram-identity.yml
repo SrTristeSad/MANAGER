@@ -1,0 +1,135 @@
+name: Telegram Identity and RBAC Foundation
+
+on:
+  pull_request:
+    paths:
+      - modules/telegram_identity.sh
+      - modules/automation_principals.sh
+      - manager
+      - install.sh
+      - docs/TELEGRAM.md
+      - docs/ROADMAP.md
+      - .github/workflows/telegram-identity.yml
+  push:
+    branches: [main]
+    paths:
+      - modules/telegram_identity.sh
+      - modules/automation_principals.sh
+      - manager
+      - install.sh
+      - docs/TELEGRAM.md
+      - docs/ROADMAP.md
+      - .github/workflows/telegram-identity.yml
+
+permissions:
+  contents: read
+
+jobs:
+  telegram-identity:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          test "$(sudo cat /opt/manager/VERSION)" = "$(cat VERSION)"
+          sudo test -x /opt/manager/modules/telegram_identity.sh
+          sudo manager telegram identity status | grep -q '^identity_source=telegram_user_id$'
+          sudo manager telegram identity status | grep -q '^username_is_authority=0$'
+          sudo manager telegram identity status | grep -q '^arbitrary_shell=0$'
+
+      - name: Bind immutable Telegram user id to Automation v2 principal
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager automation v2 principal create telegram-admin admin '*'
+          sudo manager automation v2 principal scope telegram-admin '*' '*' 'system.describe,node.usage'
+          sudo manager telegram identity bind 123456789 telegram-admin
+          sudo manager telegram identity show 123456789 | grep -q '^principal_id=telegram-admin$'
+          test "$(sudo stat -c '%a' /etc/manager/telegram)" = 700
+          test "$(sudo stat -c '%a' /etc/manager/telegram/bindings)" = 700
+          test "$(sudo stat -c '%a' /etc/manager/telegram/bindings/123456789.conf)" = 600
+          test "$(sudo stat -c '%a' /var/log/manager/telegram-identity-audit.jsonl)" = 600
+
+      - name: Resolve role and scopes only from Automation v2
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager telegram identity resolve 123456789 >/tmp/telegram-resolve.json
+          python3 - <<'PY'
+          import json
+          x=json.load(open('/tmp/telegram-resolve.json'))
+          assert x['contract']=='manager-telegram-identity-v1'
+          assert x['telegram_user_id']=='123456789'
+          assert x['principal_id']=='telegram-admin'
+          assert x['role']=='admin'
+          assert x['subject']=='*'
+          assert x['node_scope']=='*'
+          assert x['pool_scope']=='*'
+          assert x['action_scope']=='system.describe,node.usage'
+          assert x['authority']=='automation-v2-principal'
+          assert x['username_is_authority']==0
+          assert x['enabled']==1
+          forbidden={'token','bot_token','password','private_key','signature','nonce','username'}
+          assert not (set(x) & forbidden)
+          PY
+
+      - name: Enforce one-to-one bindings and numeric ids
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager automation v2 principal create telegram-admin-2 admin '*'
+          if sudo manager telegram identity bind 123456789 telegram-admin-2; then
+            echo 'duplicate Telegram user.id was accepted' >&2
+            exit 1
+          fi
+          if sudo manager telegram identity bind 987654321 telegram-admin; then
+            echo 'same principal was bound to a second Telegram user.id' >&2
+            exit 1
+          fi
+          if sudo manager telegram identity bind '@username' telegram-admin-2; then
+            echo 'username was accepted as authority' >&2
+            exit 1
+          fi
+          if sudo manager telegram identity bind 0 telegram-admin-2; then
+            echo 'zero Telegram user.id was accepted' >&2
+            exit 1
+          fi
+          if sudo manager telegram identity bind 9223372036854775808 telegram-admin-2; then
+            echo 'out-of-range Telegram user.id was accepted' >&2
+            exit 1
+          fi
+
+      - name: Fail closed when binding or principal is disabled
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager telegram identity disable 123456789
+          if sudo manager telegram identity resolve 123456789; then
+            echo 'disabled Telegram binding resolved successfully' >&2
+            exit 1
+          fi
+          sudo manager telegram identity enable 123456789
+          sudo manager automation v2 principal disable telegram-admin
+          if sudo manager telegram identity resolve 123456789; then
+            echo 'disabled Automation v2 principal resolved successfully' >&2
+            exit 1
+          fi
+          sudo manager automation v2 principal enable telegram-admin
+          sudo manager telegram identity resolve 123456789 >/dev/null
+
+      - name: Keep audit and documentation secret-free
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ! sudo grep -Eqi 'bot_token|private_key|password|signature|nonce|@username' /var/log/manager/telegram-identity-audit.jsonl
+          grep -q '^# MANAGER Telegram Bot + Mini App' docs/TELEGRAM.md
+          grep -q 'manager-telegram-identity-v1' docs/TELEGRAM.md
+          grep -q '^### 0\.9\.0 — identidade Telegram + ponte RBAC 🚧$' docs/ROADMAP.md
+          grep -q 'validação criptográfica do Telegram Bot/WebApp `initData`' docs/ROADMAP.md
+          test "$(cat VERSION)" = 0.8.10
+          git diff --exit-code
