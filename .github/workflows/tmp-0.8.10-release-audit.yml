@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: release/0.8.10-final-gate
-      - name: Apply release patch
+      - name: Apply non-workflow release surface
         shell: bash
         run: |
           set -euxo pipefail
@@ -34,11 +34,14 @@ jobs:
           bash -n manager lib/*.sh install.sh rollback.sh uninstall.sh modules/*.sh
           git diff --check
           test "$(cat VERSION)" = 0.8.10
-          grep -q '^name: Hive Observability 0.8.10 Final Gate$' .github/workflows/hive-observability-final-gate.yml
-          grep -q '^name: Validate MANAGER 0.8.10 Release Metadata$' .github/workflows/0-8-10-release.yml
-          test ! -e .github/workflows/0-8-4-release-docs.yml
+          grep -q '^### 0.8.10 — observabilidade distribuída ✅$' docs/ROADMAP.md
+          grep -q '^## \[0.8.10\] - 2026-10-14$' CHANGELOG.md
+          # GitHub Actions token cannot update workflow files. Restore them here;
+          # permanent workflow changes are applied through the GitHub connector.
+          git restore --source=HEAD --staged --worktree .github/workflows
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git commit -m 'release: prepare MANAGER 0.8.10 final gate'
+          git add VERSION README.md CHANGELOG.md docs/ROADMAP.md docs/HIVE_OBSERVABILITY.md
+          git diff --cached --check
+          git commit -m 'release: prepare MANAGER 0.8.10 documentation'
           git push origin HEAD:release/0.8.10-final-gate
