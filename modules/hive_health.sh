@@ -1011,6 +1011,13 @@ class HealthHandler(socketserver.StreamRequestHandler):
             obj = json_load_bytes(raw)
             _, node_id, node_epoch, metrics = validate_heartbeat(obj, consume=True)
             state, reason, received_at = store_observation(node_id, node_epoch, obj["issued_at"], metrics, source)
+            obs_module = os.path.join(MANAGER_HOME, "modules", "hive_observability.sh")
+            if os.path.isfile(obs_module) and os.access(obs_module, os.X_OK):
+                try:
+                    subprocess.run([obs_module, "--record-health", observation_path(node_id)],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False)
+                except (OSError, subprocess.SubprocessError):
+                    pass
             ack = make_ack(node_id, node_epoch, state, reason, received_at)
             response = {"accepted":1, "ack":ack}
             audit("accepted", source=source, node_id=node_id, node_epoch=node_epoch, state=state, reason=reason)
