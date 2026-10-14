@@ -373,11 +373,20 @@ Fundação implementada:
 - audits de identidade/autenticação não retêm token, initData, hash, signature, query_id, nomes ou username;
 - CLI `manager telegram identity ...` e `manager telegram auth ...`, com documentação em `docs/TELEGRAM.md`.
 
-Ainda pendente para fechar 0.9.0:
+Gateway Mini App implementado nesta fatia:
 
-- gateway Bot/Mini App consumindo apenas ações tipadas/allowlisted;
-- rate limit e idempotência de requisições Telegram;
-- gate end-to-end do gateway Telegram.
+- contrato `manager-telegram-gateway-request-v1` com allowlist e schemas fechados por ação;
+- ponte usa credencial Ed25519 v2 do principal e entra pela Automation v2 normal, sem `local-root` na ação final;
+- `managerd` continua sendo a autoridade de role/subject/node/pool/action scope e revalida RBAC antes da idempotência;
+- rate limit reutiliza o bucket da Automation v2 por principal/ação;
+- `request_id` Telegram é namespaced por principal e reutiliza o cache idempotente já existente; payload divergente com o mesmo ID é conflito;
+- `initData`, bot token e credencial privada não entram em argv, audit ou contrato público do gateway;
+- gate E2E cobre HMAC/freshness -> binding -> gateway -> Ed25519 -> RBAC -> dispatcher, replay idempotente, conflito e rate limit.
+
+Ainda pendente para fechar toda a integração Bot/Mini App da série 0.9:
+
+- ingresso autenticado do Telegram Bot por webhook/long polling reutilizando o mesmo gateway tipado;
+- telas/fluxos de produto posteriores.
 
 Fases seguintes da série 0.9:
 

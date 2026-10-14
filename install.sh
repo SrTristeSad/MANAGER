@@ -108,6 +108,7 @@ FILES=(
   "modules/automation_v2.sh"
   "modules/telegram_identity.sh"
   "modules/telegram_auth.sh"
+  "modules/telegram_gateway.sh"
   "modules/policy_engine.sh"
   "modules/session_engine.sh"
   "modules/protocol_leases.sh"
@@ -284,6 +285,9 @@ fi
 }
 "$INSTALL_DIR/modules/telegram_auth.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] A autenticação Telegram 0.9.0 não pôde inicializar seu estado. Use: manager telegram auth status" >&2
+}
+"$INSTALL_DIR/modules/telegram_gateway.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] O gateway Telegram 0.9.0 não pôde inicializar seu estado. Use: manager telegram gateway status" >&2
 }
 "$INSTALL_DIR/modules/hive_lifecycle.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] A Colmeia iniciou, mas não pôde se vincular ao lifecycle de uninstall/rollback. Revise: /opt/manager/modules/hive_lifecycle.sh --status" >&2
