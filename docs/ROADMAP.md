@@ -325,7 +325,7 @@ Fechamento da fase:
 - nenhuma criptografia própria;
 - gate final integrado e regressão funcional completa: **34/34 workflows** verdes antes do bump formal.
 
-### 0.8.10 — observabilidade distribuída 🚧
+### 0.8.10 — observabilidade distribuída ✅
 
 Fundação implementada nesta primeira fatia:
 
@@ -345,9 +345,13 @@ Fundação implementada nesta primeira fatia:
 - retenção operacional preserva apenas campos allowlisted, sem interface/endereço/segredo;
 - controlador continua fora do caminho de dados VPN.
 
-Ainda pendente para fechar a 0.8.10:
+Fechamento da fase:
 
-- gate final multi-nó e regressão completa da release.
+- gate final multi-nó permanente com duas identidades enrolled, heartbeats Ed25519 reais, TLS 1.3 pinado e histórico automático de observabilidade;
+- fencing comprova que heartbeat de nó revogado não entra no histórico após a revogação;
+- summary, metrics, series e export são validados em conjunto sobre dados de múltiplos nós e eventos do control plane;
+- regressão completa do repositório permanece requisito para merge da release;
+- nenhum listener adicional foi criado pela observabilidade e o controlador continua fora do caminho de dados VPN.
 
 ## 0.9.x — Telegram Bot + Mini App
 
