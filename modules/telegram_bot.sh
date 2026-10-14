@@ -118,7 +118,10 @@ EOF
 enable_bot() {
   local timeout="${1:-$DEFAULT_POLL_TIMEOUT}"
   init_state
-  [[ "$timeout" =~ ^[0-9]+$ ]] && (( 10#$timeout >= 1 && 10#$timeout <= 50 )) || { err "poll timeout inválido (1..50)"; return 64; }
+  if [[ ! "$timeout" =~ ^[0-9]+$ ]] || (( 10#$timeout < 1 || 10#$timeout > 50 )); then
+    err "poll timeout inválido (1..50)"
+    return 64
+  fi
   [[ -r "$TOKEN_FILE" ]] || { err "Bot token não configurado"; return 77; }
   [[ -x "$GATEWAY_MODULE" ]] || { err "Gateway Telegram indisponível"; return 70; }
   write_config 1 "$((10#$timeout))"
@@ -301,7 +304,12 @@ serve() {
 }
 
 case "${1:-}" in
-  --install) init_state; [[ "$(read_field "$CONFIG_FILE" enabled)" == 1 ]] && write_service || true ;;
+  --install)
+    init_state
+    if [[ "$(read_field "$CONFIG_FILE" enabled)" == 1 ]]; then
+      write_service
+    fi
+    ;;
   --status) status ;;
   --enable) enable_bot "${2:-$DEFAULT_POLL_TIMEOUT}" ;;
   --disable) disable_bot ;;
