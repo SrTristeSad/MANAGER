@@ -1,28 +1,29 @@
-name: TEMP patch Telegram readonly operations
+name: TEMP Readonly Patch
 
 on:
   push:
     branches:
-      - feature/0.9.0-telegram-readonly-ops
+      - "feature/0.9.0-telegram-readonly-ops"
+    paths:
+      - ".github/workflows/_tmp_patch_telegram_readonly.yml"
 
 permissions:
   contents: write
 
 jobs:
   patch:
-    if: "${{ !contains(github.event.head_commit.message, '[readonly-patched]') }}"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           ref: feature/0.9.0-telegram-readonly-ops
-      - name: Patch Automation v2 and Telegram gateway
+      - name: Apply deterministic patch
         shell: bash
         run: |
-          python3 - <<'PY'
+          cat > /tmp/patch.py <<'PY'
           from pathlib import Path
 
-          p = Path('modules/automation_v2.sh')
+          p = Path("modules/automation_v2.sh")
           s = p.read_text()
           old = 'NODE_USAGE = os.path.join(MANAGER_HOME, "modules", "node_usage.sh")\n'
           new = old + 'READ_OPS = os.path.join(MANAGER_HOME, "modules", "automation_read_ops.sh")\n'
@@ -63,7 +64,7 @@ jobs:
           s = s.replace(old, new, 1)
           p.write_text(s)
 
-          p = Path('modules/telegram_gateway.sh')
+          p = Path("modules/telegram_gateway.sh")
           s = p.read_text()
           old = "  printf 'typed_actions=system.describe,node.usage,connection.preflight,connection.create,connection.status,connection.revoke\\n'\n"
           new = "  printf 'typed_actions=system.describe,node.usage,operations.identities,operations.products,operations.sessions,operations.nodes,operations.diagnostics,connection.preflight,connection.create,connection.status,connection.revoke\\n'\n"
@@ -76,6 +77,7 @@ jobs:
           s = s.replace(old, new, 1)
           p.write_text(s)
           PY
+          python3 /tmp/patch.py
           chmod +x modules/automation_read_ops.sh
           bash -n modules/automation_read_ops.sh modules/automation_v2.sh modules/telegram_gateway.sh
       - name: Commit patch
@@ -84,5 +86,5 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add modules/automation_read_ops.sh modules/automation_v2.sh modules/telegram_gateway.sh
-          git commit -m 'feat: expose admin read-only operational actions [readonly-patched]'
+          git commit -m "feat: expose admin read-only operational actions"
           git push origin HEAD:feature/0.9.0-telegram-readonly-ops
