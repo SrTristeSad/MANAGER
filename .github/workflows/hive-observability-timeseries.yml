@@ -261,14 +261,16 @@ jobs:
             exit 1
           fi
 
-      - name: Verify milestone remains unreleased
+      - name: Verify released 0.8.10 milestone
         shell: bash
         run: |
           set -euxo pipefail
           test "$(cat VERSION)" = 0.8.10
           grep -q 'manager-hive-observability-metrics-v1' docs/HIVE_OBSERVABILITY.md
           grep -q 'manager-hive-observability-series-v1' docs/HIVE_OBSERVABILITY.md
-          grep -q 'gate final multi-nó e regressão completa da release' docs/ROADMAP.md
+          grep -q 'gate final multi-nó permanente' docs/ROADMAP.md
+          grep -q 'regressão completa do repositório permanece requisito para merge da release' docs/ROADMAP.md
+          ! grep -q 'Ainda pendente para fechar a 0.8.10' docs/ROADMAP.md
           ! grep -q '^- séries temporais e métricas operacionais adicionais;$' docs/ROADMAP.md
           grep -q '^### 0.8.10 — observabilidade distribuída ✅$' docs/ROADMAP.md
           git diff --exit-code
