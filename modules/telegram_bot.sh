@@ -144,7 +144,7 @@ status() {
   printf 'telegram_user_id_source=authenticated-bot-api-update-from-id\n'
   printf 'gateway_contract=manager-telegram-gateway-request-v1\n'
   printf 'authorization_authority=automation-v2\n'
-  printf 'typed_bot_actions=system.describe,node.usage,connection.status\n'
+  printf 'typed_bot_actions=system.describe,node.usage,connection.status,ops.clients,ops.sessions,ops.products,ops.quotas,ops.nodes,ops.diagnostics\n'
   printf 'service_enabled=%s\nservice_active=%s\n' "$enabled" "$active"
   printf 'token_configured=%s\npoll_timeout_seconds=%s\n' "$token" "$timeout"
   printf 'arbitrary_shell=0\n'
@@ -301,6 +301,9 @@ def command_for(text):
         return ('node','node.usage',{})
     if cmd == '/status' and len(parts)==2 and ID_RE.fullmatch(parts[1]):
         return ('status','connection.status',{'id':parts[1]})
+    ops={'/clients':'clients','/sessions':'sessions','/products':'products','/quotas':'quotas','/nodes':'nodes','/diagnostics':'diagnostics'}
+    if cmd in ops and len(parts)==1:
+        name=ops[cmd]; return (name,'ops.'+name,{})
     return ('help','',{})
 
 
@@ -323,7 +326,7 @@ def safe_clone(value):
 
 def format_reply(command, gateway_result=None):
     if command == 'help':
-        return 'Comandos: /describe, /node, /status ID'
+        return 'Comandos: /describe, /node, /status ID, /clients, /sessions, /products, /quotas, /nodes, /diagnostics'
     if not isinstance(gateway_result,dict):
         return 'MANAGER indisponível. Tente novamente.'
     code=gateway_result.get('code',70)

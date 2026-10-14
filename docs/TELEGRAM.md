@@ -201,7 +201,15 @@ Ações inicialmente allowlisted:
 - `connection.preflight`;
 - `connection.create`;
 - `connection.status`;
-- `connection.revoke`.
+- `connection.revoke`;
+- `ops.clients`;
+- `ops.sessions`;
+- `ops.products`;
+- `ops.quotas`;
+- `ops.nodes`;
+- `ops.diagnostics`.
+
+As seis ações `ops.*` são somente leitura e não aceitam parâmetros. Elas retornam o contrato estruturado `manager-automation-ops-read-v1`. O `managerd` injeta no helper apenas a role, subject e escopo de produtos já carregados do principal autenticado; o Telegram não pode enviar ou sobrescrever esses valores. `ops.clients`, `ops.sessions`, `ops.products` e `ops.quotas` filtram resultados pela identidade/owner/produtos do principal. `ops.nodes` e `ops.diagnostics` são admin-only.
 
 Cada ação possui schema fechado de parâmetros. Campo desconhecido, ação fora da allowlist ou parâmetro de tipo incorreto é recusado antes da Automation v2. Não existe campo `command`, `shell`, `script` ou caminho executável controlado pelo Telegram.
 
@@ -244,7 +252,13 @@ Somente mensagens privadas com `message.from.id == message.chat.id` entram no pa
 - `/describe` -> `system.describe`;
 - `/node` -> `node.usage`;
 - `/status ID` -> `connection.status`;
-- `/help` e `/start` retornam a ajuda local.
+- `/help` e `/start` retornam a ajuda local;
+- `/clients` -> `ops.clients`;
+- `/sessions` -> `ops.sessions`;
+- `/products` -> `ops.products`;
+- `/quotas` -> `ops.quotas`;
+- `/nodes` -> `ops.nodes`;
+- `/diagnostics` -> `ops.diagnostics`.
 
 Texto desconhecido nunca vira `action_id`, shell ou comando do sistema. Cada `update_id` vira um `request_id` estável do gateway. O Bot responde pelo método `sendMessage`; se a entrega falhar, o offset não avança e o mesmo update é tentado novamente com o mesmo `request_id`. A Automation v2 revalida RBAC e devolve o resultado idempotente em cache em vez de executar a ação novamente. O offset só avança depois que a resposta é aceita pela Bot API.
 
@@ -259,8 +273,12 @@ manager telegram bot poll-once
 
 A unidade `manager-telegram-bot.service` é opcional e usa long polling. Estado e offset ficam root-only em `/etc/manager/telegram/bot` e `/var/lib/manager/telegram-bot`; o audit sanitizado fica em `/var/log/manager/telegram-bot-audit.jsonl`. O uninstall normal para a unidade e preserva estado; reinstalação/rollback reanexam somente quando aplicável.
 
+## API operacional somente leitura
+
+A primeira camada operacional compartilhada pelo Bot e pelo Mini App expõe `ops.clients`, `ops.sessions`, `ops.products`, `ops.quotas`, `ops.nodes` e `ops.diagnostics`. A resposta é um documento JSON `manager-automation-ops-read-v1`, limitado e sanitizado. Sessões preferem a autoridade global da Colmeia quando ela está ativa; produtos e cotas respeitam o escopo do principal; nós e diagnósticos permanecem restritos a admin. O helper não recebe input arbitrário nem caminho fornecido pelo Telegram.
+
 ## Próximas fatias da 0.9
 
-A fundação de ingresso Bot + Mini App da 0.9.0 fica funcionalmente completa com o long polling. As fases seguintes expandem telas e fluxos de sessões, clientes, produtos, cotas, nós e diagnósticos. Operações de escrita no Bot serão expostas apenas com confirmação explícita na UX. Webhook pode ser adicionado como transporte alternativo futuro sem mudar a autoridade do gateway.
+Com a API operacional de leitura pronta, a próxima fase é a interface visual do Mini App consumindo esses contratos. Operações de escrita no Bot serão expostas apenas com confirmação explícita na UX. Webhook pode ser adicionado como transporte alternativo futuro sem mudar a autoridade do gateway.
 
 O Telegram permanece apenas uma interface do control plane existente, não uma nova autoridade paralela.

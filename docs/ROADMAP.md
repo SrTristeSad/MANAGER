@@ -251,9 +251,17 @@ Ingresso Telegram Bot implementado nesta fatia:
 - bot token permanece fora de argv/audits/respostas;
 - lifecycle de reinstall/uninstall/rollback preserva estado e não deixa unit apontando para código ausente.
 
+API operacional de leitura implementada:
+
+- contrato `manager-automation-ops-read-v1` para clientes, sessões, produtos, cotas, nós e diagnósticos;
+- ações `ops.clients`, `ops.sessions`, `ops.products`, `ops.quotas`, `ops.nodes` e `ops.diagnostics` passam pelo mesmo gateway tipado e pela Automation v2;
+- role, subject e escopo de produtos são injetados pelo `managerd`, nunca aceitos do Telegram;
+- clientes/sessões/produtos/cotas são filtrados por RBAC; nós e diagnósticos são admin-only;
+- views são sanitizadas, limitadas e não expõem token, credencial, segredo, resource de sessão ou shell.
+
 Próximas fatias da série 0.9:
 
-- telas/fluxos de sessões, clientes, produtos, cotas, nós e diagnósticos;
+- telas visuais do Mini App consumindo as views estruturadas;
 - operações de escrita no Bot somente com confirmação explícita de UX;
 - webhook autenticado opcional como transporte alternativo ao long polling;
 - nenhuma execução arbitrária de shell.

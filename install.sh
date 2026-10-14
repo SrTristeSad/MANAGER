@@ -106,6 +106,7 @@ FILES=(
   "modules/automation_principals.sh"
   "modules/automation_credentials.sh"
   "modules/automation_v2.sh"
+  "modules/automation_ops_views.sh"
   "modules/telegram_identity.sh"
   "modules/telegram_auth.sh"
   "modules/telegram_gateway.sh"
