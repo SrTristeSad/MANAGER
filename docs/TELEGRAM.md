@@ -175,13 +175,72 @@ O módulo limita o payload a 16 KiB e 64 campos, usa arquivo temporário root-on
 
 Uma falha de HMAC, freshness, parsing, binding ou principal resulta em fail-closed. Um `user.id` só chega ao `telegram_identity.sh --resolve` depois de HMAC e freshness terem sido aceitos.
 
+## Gateway tipado para Mini App
+
+O gateway 0.9.0 transforma uma requisição autenticada do Mini App em uma chamada normal da Automation v2, sem executar shell e sem duplicar RBAC. O contrato de entrada é:
+
+```text
+manager-telegram-gateway-request-v1
+```
+
+Formato:
+
+```json
+{
+  "contract": "manager-telegram-gateway-request-v1",
+  "request_id": "miniapp-00000001",
+  "action_id": "connection.status",
+  "params": {"id": "maria"}
+}
+```
+
+Ações inicialmente allowlisted:
+
+- `system.describe`;
+- `node.usage`;
+- `connection.preflight`;
+- `connection.create`;
+- `connection.status`;
+- `connection.revoke`.
+
+Cada ação possui schema fechado de parâmetros. Campo desconhecido, ação fora da allowlist ou parâmetro de tipo incorreto é recusado antes da Automation v2. Não existe campo `command`, `shell`, `script` ou caminho executável controlado pelo Telegram.
+
+Fluxo de confiança:
+
+```text
+Telegram.WebApp.initData
+  -> HMAC + freshness
+  -> telegram_user_id
+  -> binding Telegram -> principal
+  -> gateway tipado
+  -> Ed25519 v2 do principal
+  -> managerd
+  -> RBAC + node/pool/action scope
+  -> rate limit
+  -> idempotência
+  -> dispatcher allowlisted
+```
+
+O gateway mantém uma credencial Ed25519 de cliente por principal em `/etc/manager/telegram/gateway/credentials/`, `0600`, enquanto a Automation v2 mantém somente a parte pública em seu registry normal. Essa credencial não concede autoridade nova: principal desabilitado, escopo removido ou ação recusada continuam falhando dentro do `managerd`. Se a credencial do gateway for revogada, a ponte prepara uma nova credencial local antes da próxima chamada; o RBAC continua sendo reavaliado.
+
+O `request_id` externo é namespaced por principal antes de entrar na Automation v2. Repetir o mesmo request com a mesma ação/payload recebe o replay idempotente do cache existente; reutilizar o mesmo ID com payload diferente é conflito. O rate limit também é o token bucket já existente da Automation v2 por `(principal_id, action_id)`, portanto não existe uma segunda política paralela.
+
+CLI:
+
+```bash
+manager telegram gateway status
+manager telegram gateway call /root/initdata.txt /root/request.json
+printf '%s' "$TELEGRAM_INIT_DATA" | manager telegram gateway call-stdin /root/request.json
+```
+
+O contrato de saída é `manager-telegram-gateway-v1`. O audit `/var/log/manager/telegram-gateway-audit.jsonl` registra somente IDs, ação, decisão, código e estado de cache; não recebe bot token, initData, hash, assinatura, query_id, credencial privada ou conteúdo da resposta.
+
 ## Próximas fatias da 0.9
 
-A camada Bot/Mini App ainda precisa:
+A camada Telegram ainda precisa:
 
-1. criar o gateway Bot/Mini App consumindo somente ações tipadas e allowlisted da Automation v2;
-2. aplicar rate limit e idempotência por requisição no gateway;
-3. implementar telas e fluxos de sessões, clientes, produtos, cotas, nós e diagnósticos;
-4. adicionar gate end-to-end do gateway real, mantendo o bot token fora de argv, logs e respostas públicas.
+1. adicionar ingresso autenticado do Telegram Bot (webhook/long polling) para alimentar o mesmo gateway tipado sem confiar em username/chat;
+2. implementar telas e fluxos de sessões, clientes, produtos, cotas, nós e diagnósticos;
+3. expandir o E2E para o transporte real do Bot quando esse ingresso existir.
 
-O Telegram será uma interface do control plane já existente, não uma nova autoridade paralela.
+O Mini App já possui E2E do `initData` até a Automation v2. O Telegram permanece apenas uma interface do control plane existente, não uma nova autoridade paralela.

@@ -1,0 +1,279 @@
+name: Telegram Typed Gateway E2E
+
+on:
+  pull_request:
+    paths:
+      - modules/telegram_gateway.sh
+      - modules/telegram_auth.sh
+      - modules/telegram_identity.sh
+      - modules/automation_v2.sh
+      - modules/automation_credentials.sh
+      - modules/automation_principals.sh
+      - manager
+      - install.sh
+      - docs/TELEGRAM.md
+      - docs/ROADMAP.md
+      - .github/workflows/telegram-gateway.yml
+      - .github/workflows/telegram-initdata-auth.yml
+      - .github/workflows/telegram-identity.yml
+  push:
+    branches: [main]
+    paths:
+      - modules/telegram_gateway.sh
+      - modules/telegram_auth.sh
+      - modules/telegram_identity.sh
+      - modules/automation_v2.sh
+      - modules/automation_credentials.sh
+      - modules/automation_principals.sh
+      - manager
+      - install.sh
+      - docs/TELEGRAM.md
+      - docs/ROADMAP.md
+      - .github/workflows/telegram-gateway.yml
+      - .github/workflows/telegram-initdata-auth.yml
+      - .github/workflows/telegram-identity.yml
+
+permissions:
+  contents: read
+
+jobs:
+  telegram-gateway-e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          test "$(sudo cat /opt/manager/VERSION)" = "$(cat VERSION)"
+          sudo test -x /opt/manager/modules/telegram_gateway.sh
+          sudo manager telegram gateway status >/tmp/gateway-status
+          grep -q '^contract=manager-telegram-gateway-v1$' /tmp/gateway-status
+          grep -q '^request_contract=manager-telegram-gateway-request-v1$' /tmp/gateway-status
+          grep -q '^authorization_authority=automation-v2$' /tmp/gateway-status
+          grep -q '^rate_limit=automation-v2-principal-action$' /tmp/gateway-status
+          grep -q '^idempotency=automation-v2-request-id$' /tmp/gateway-status
+          grep -q '^raw_initdata_argv=0$' /tmp/gateway-status
+          grep -q '^arbitrary_shell=0$' /tmp/gateway-status
+          manager --help | grep -q 'manager telegram gateway call-stdin'
+
+      - name: Prepare Telegram identity, RBAC and bot token
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager automation v2 principal create telegram-gateway-admin admin '*'
+          sudo manager automation v2 principal scope telegram-gateway-admin '*' '*' 'system.describe,node.usage,connection.status,connection.revoke'
+          sudo manager telegram identity bind 123456789 telegram-gateway-admin
+          umask 077
+          printf '%s\n' '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456' >/tmp/telegram-bot-token
+          sudo manager telegram auth token install /tmp/telegram-bot-token
+          rm -f /tmp/telegram-bot-token
+
+      - name: Generate independent initData and typed requests
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          import hashlib,hmac,json,time,urllib.parse
+          token='123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456'
+          fields={
+              'auth_date':str(int(time.time())),
+              'query_id':'GatewaySecretQueryId',
+              'signature':'R2F0ZXdheVNlY3JldFNpZw',
+              'user':json.dumps({'id':123456789,'first_name':'GatewaySecretName','username':'GatewaySecretUser'},separators=(',',':')),
+          }
+          check='\n'.join(f'{k}={fields[k]}' for k in sorted(fields))
+          secret=hmac.new(b'WebAppData',token.encode(),hashlib.sha256).digest()
+          fields['hash']=hmac.new(secret,check.encode(),hashlib.sha256).hexdigest()
+          open('/tmp/initdata-gateway.txt','w',encoding='utf-8').write(urllib.parse.urlencode(fields,quote_via=urllib.parse.quote))
+          requests={
+              'describe': {'contract':'manager-telegram-gateway-request-v1','request_id':'miniapp-00000001','action_id':'system.describe','params':{}},
+              'conflict': {'contract':'manager-telegram-gateway-request-v1','request_id':'miniapp-00000001','action_id':'node.usage','params':{}},
+              'node': {'contract':'manager-telegram-gateway-request-v1','request_id':'miniapp-00000002','action_id':'node.usage','params':{}},
+              'shell': {'contract':'manager-telegram-gateway-request-v1','request_id':'miniapp-00000003','action_id':'shell.exec','params':{}},
+              'badparam': {'contract':'manager-telegram-gateway-request-v1','request_id':'miniapp-00000004','action_id':'system.describe','params':{'command':'id'}},
+          }
+          for name,payload in requests.items():
+              open(f'/tmp/request-{name}.json','w',encoding='utf-8').write(json.dumps(payload,separators=(',',':'))+'\n')
+          PY
+
+      - name: Execute authenticated typed action through Automation v2
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cat /tmp/initdata-gateway.txt | sudo manager telegram gateway call-stdin /tmp/request-describe.json >/tmp/gateway-result.json
+          python3 - <<'PY'
+          import json
+          x=json.load(open('/tmp/gateway-result.json'))
+          assert x['contract']=='manager-telegram-gateway-v1'
+          assert x['request_contract']=='manager-telegram-gateway-request-v1'
+          assert x['telegram_request_id']=='miniapp-00000001'
+          assert x['telegram_user_id']=='123456789'
+          assert x['principal_id']=='telegram-gateway-admin'
+          assert x['action_id']=='system.describe'
+          assert x['ok'] is True and x['code']==0 and x['cached'] is False
+          assert x['authorization_authority']=='automation-v2'
+          assert x['rate_limit_authority']=='automation-v2-principal-action'
+          assert x['idempotency_authority']=='automation-v2-request-id'
+          forbidden={'token','bot_token','hash','signature','query_id','username','first_name','private_key','private_key_pem','initData','init_data','raw_initdata'}
+          assert not (set(x) & forbidden)
+          PY
+          test "$(sudo stat -c '%a' /etc/manager/telegram/gateway)" = 700
+          test "$(sudo stat -c '%a' /etc/manager/telegram/gateway/credentials)" = 700
+          test "$(sudo stat -c '%a' /etc/manager/telegram/gateway/credentials/telegram-gateway-admin.credential)" = 600
+          test "$(sudo stat -c '%a' /var/log/manager/telegram-gateway-audit.jsonl)" = 600
+
+      - name: Preserve idempotency and reject divergent reuse
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cat /tmp/initdata-gateway.txt | sudo manager telegram gateway call-stdin /tmp/request-describe.json >/tmp/gateway-retry.json
+          python3 - <<'PY'
+          import json
+          x=json.load(open('/tmp/gateway-retry.json'))
+          assert x['ok'] is True and x['cached'] is True
+          assert x['telegram_request_id']=='miniapp-00000001'
+          PY
+          set +e
+          cat /tmp/initdata-gateway.txt | sudo manager telegram gateway call-stdin /tmp/request-conflict.json >/tmp/gateway-conflict.json
+          rc=$?
+          set -e
+          test "$rc" = 65
+          python3 - <<'PY'
+          import json
+          x=json.load(open('/tmp/gateway-conflict.json'))
+          assert x['ok'] is False and x['code']==65
+          assert 'request_id' in x['error']
+          PY
+
+      - name: Revalidate Automation v2 action scope before cached or new work
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager automation v2 principal scope telegram-gateway-admin '*' '*' 'system.describe'
+          set +e
+          cat /tmp/initdata-gateway.txt | sudo manager telegram gateway call-stdin /tmp/request-node.json >/tmp/gateway-rbac-deny.json
+          rc=$?
+          set -e
+          test "$rc" = 67
+          python3 - <<'PY'
+          import json
+          x=json.load(open('/tmp/gateway-rbac-deny.json'))
+          assert x['ok'] is False and x['code']==67
+          assert x['principal_id']=='telegram-gateway-admin'
+          PY
+          sudo manager automation v2 principal scope telegram-gateway-admin '*' '*' 'system.describe,node.usage,connection.status,connection.revoke'
+
+      - name: Reject arbitrary or malformed action schemas before dispatch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          set +e
+          cat /tmp/initdata-gateway.txt | sudo manager telegram gateway call-stdin /tmp/request-shell.json >/tmp/gateway-shell-deny.json
+          shell_rc=$?
+          cat /tmp/initdata-gateway.txt | sudo manager telegram gateway call-stdin /tmp/request-badparam.json >/tmp/gateway-param-deny.json
+          param_rc=$?
+          set -e
+          test "$shell_rc" = 64
+          test "$param_rc" = 64
+          grep -q 'ação Telegram não allowlisted' /tmp/gateway-shell-deny.json
+          grep -q 'parâmetros não permitidos' /tmp/gateway-param-deny.json
+
+      - name: Fail closed when Telegram binding is disabled
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager telegram identity disable 123456789
+          set +e
+          cat /tmp/initdata-gateway.txt | sudo manager telegram gateway call-stdin /tmp/request-node.json >/tmp/gateway-binding-deny.json
+          rc=$?
+          set -e
+          test "$rc" != 0
+          python3 - <<'PY'
+          import json
+          x=json.load(open('/tmp/gateway-binding-deny.json'))
+          assert x['ok'] is False
+          PY
+          sudo manager telegram identity enable 123456789
+
+      - name: Enforce Automation v2 principal-action rate limit
+        shell: bash
+        run: |
+          set -euxo pipefail
+          hit_rate_limit=0
+          for i in $(seq 1 16); do
+            python3 - "$i" <<'PY'
+          import json,sys
+          i=int(sys.argv[1])
+          x={'contract':'manager-telegram-gateway-request-v1','request_id':f'rate-limit-{i:08d}','action_id':'connection.revoke','params':{'id':'gateway-rate-nonexistent'}}
+          open('/tmp/request-rate.json','w').write(json.dumps(x,separators=(',',':'))+'\n')
+          PY
+            set +e
+            cat /tmp/initdata-gateway.txt | sudo manager telegram gateway call-stdin /tmp/request-rate.json >/tmp/gateway-rate.json
+            rc=$?
+            set -e
+            if [[ "$rc" == 75 ]]; then
+              hit_rate_limit=1
+              python3 - <<'PY'
+          import json
+          x=json.load(open('/tmp/gateway-rate.json'))
+          assert x['code']==75 and x['ok'] is False
+          assert x.get('retry_after_seconds',0) >= 1
+          PY
+              break
+            fi
+          done
+          test "$hit_rate_limit" = 1
+
+      - name: Recover gateway credential after explicit revocation
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cred=/etc/manager/telegram/gateway/credentials/telegram-gateway-admin.credential
+          old_key="$(sudo python3 -c 'import json; print(json.load(open("/etc/manager/telegram/gateway/credentials/telegram-gateway-admin.credential"))["key_id"])')"
+          sudo manager automation v2 credential revoke telegram-gateway-admin "$old_key"
+          sleep 3
+          python3 - <<'PY'
+          import json
+          x={'contract':'manager-telegram-gateway-request-v1','request_id':'credential-recovery-0001','action_id':'system.describe','params':{}}
+          open('/tmp/request-recovery.json','w').write(json.dumps(x,separators=(',',':'))+'\n')
+          PY
+          cat /tmp/initdata-gateway.txt | sudo manager telegram gateway call-stdin /tmp/request-recovery.json >/tmp/gateway-recovery.json
+          new_key="$(sudo python3 -c 'import json; print(json.load(open("/etc/manager/telegram/gateway/credentials/telegram-gateway-admin.credential"))["key_id"])')"
+          test "$old_key" != "$new_key"
+          python3 - <<'PY'
+          import json
+          x=json.load(open('/tmp/gateway-recovery.json'))
+          assert x['ok'] is True and x['code']==0
+          PY
+
+      - name: Preserve gateway credential across ordinary reinstall
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cred=/etc/manager/telegram/gateway/credentials/telegram-gateway-admin.credential
+          before="$(sudo sha256sum "$cred" | awk '{print $1}')"
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          after="$(sudo sha256sum "$cred" | awk '{print $1}')"
+          test "$before" = "$after"
+          test "$(sudo stat -c '%a' "$cred")" = 600
+          sudo manager telegram gateway status | grep -q '^authorization_authority=automation-v2$'
+
+      - name: Keep gateway audit and documentation secret-free
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ! sudo grep -Fq 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456' /var/log/manager/telegram-gateway-audit.jsonl
+          ! sudo grep -Fq 'GatewaySecretName' /var/log/manager/telegram-gateway-audit.jsonl
+          ! sudo grep -Fq 'GatewaySecretUser' /var/log/manager/telegram-gateway-audit.jsonl
+          ! sudo grep -Eqi 'private_key|bot_token|signature|query_id|raw_initdata|init_data' /var/log/manager/telegram-gateway-audit.jsonl
+          grep -q '^## Gateway tipado para Mini App$' docs/TELEGRAM.md
+          grep -q 'manager-telegram-gateway-request-v1' docs/TELEGRAM.md
+          grep -q 'Gateway Mini App implementado nesta fatia' docs/ROADMAP.md
+          grep -q 'ingresso autenticado do Telegram Bot' docs/ROADMAP.md
+          test "$(cat VERSION)" = 0.8.10
+          git diff --exit-code

@@ -184,6 +184,10 @@ Uso:
   manager telegram auth verify /CAMINHO/INITDATA | verify-stdin
   manager telegram auth resolve /CAMINHO/INITDATA | resolve-stdin
                                   valida initData HMAC/freshness antes do RBAC (0.9.0)
+  manager telegram gateway status
+  manager telegram gateway call /CAMINHO/INITDATA /CAMINHO/REQUEST.json
+  manager telegram gateway call-stdin /CAMINHO/REQUEST.json
+                                  executa ações tipadas via Automation v2 sem shell arbitrário (0.9.0)
   manager --diagnostics           abre o diagnóstico
   manager --version               mostra a versão
   manager --help                  mostra esta ajuda
@@ -672,7 +676,15 @@ case "${1:-}" in
           *) err "Uso: manager telegram auth {status|token|freshness|verify|verify-stdin|resolve|resolve-stdin} ..."; exit 64 ;;
         esac
         ;;
-      *) err "Uso: manager telegram {identity|auth} ..."; exit 64 ;;
+      gateway)
+        case "${3:-status}" in
+          status) exec "$MANAGER_HOME/modules/telegram_gateway.sh" --status ;;
+          call) [[ -n "${4:-}" && -n "${5:-}" ]] || { err "Uso: manager telegram gateway call /CAMINHO/INITDATA /CAMINHO/REQUEST.json"; exit 64; }; exec "$MANAGER_HOME/modules/telegram_gateway.sh" --call "$4" "$5" ;;
+          call-stdin) [[ -n "${4:-}" ]] || { err "Uso: manager telegram gateway call-stdin /CAMINHO/REQUEST.json"; exit 64; }; exec "$MANAGER_HOME/modules/telegram_gateway.sh" --call-stdin "$4" ;;
+          *) err "Uso: manager telegram gateway {status|call|call-stdin} ..."; exit 64 ;;
+        esac
+        ;;
+      *) err "Uso: manager telegram {identity|auth|gateway} ..."; exit 64 ;;
     esac
     ;;
   --diagnostics) exec "$MANAGER_HOME/modules/diagnostics.sh" ;;
@@ -717,7 +729,7 @@ while true; do
   say " ${C_WHITE}AUTOMAÇÃO${C_RESET}"
   say " ${C_CYAN}37${C_RESET}) Legacy v1 / compatibilidade syncpainel"
   say " ${C_CYAN}38${C_RESET}) Automation v2 / RBAC, credenciais e transporte"
-  say " ${C_CYAN}43${C_RESET}) Telegram / identidade, autenticação e RBAC"
+  say " ${C_CYAN}43${C_RESET}) Telegram / identidade, autenticação, gateway e RBAC"
   say ""
   say " ${C_WHITE}COLMEIA${C_RESET}"
   say " ${C_CYAN}39${C_RESET}) Identidade criptográfica / enrollment do nó"
@@ -865,10 +877,12 @@ while true; do
       ;;
     43)
       header
-      say "${C_WHITE}TELEGRAM — IDENTIDADE / AUTENTICAÇÃO / RBAC${C_RESET}\n"
+      say "${C_WHITE}TELEGRAM — IDENTIDADE / AUTENTICAÇÃO / GATEWAY / RBAC${C_RESET}\n"
       "$MANAGER_HOME/modules/telegram_identity.sh" --status || true
       say ""
       "$MANAGER_HOME/modules/telegram_auth.sh" --status 2>/dev/null || true
+      say ""
+      "$MANAGER_HOME/modules/telegram_gateway.sh" --status 2>/dev/null || true
       say ""
       "$MANAGER_HOME/modules/telegram_identity.sh" --list 2>/dev/null || true
       say ""
@@ -878,6 +892,7 @@ while true; do
       say " manager telegram auth token install /root/telegram-bot-token"
       say " manager telegram auth verify /root/initdata.txt"
       say " manager telegram auth resolve /root/initdata.txt"
+      say " manager telegram gateway call-stdin /root/request.json < /root/initdata.txt"
       pause
       ;;
     42)

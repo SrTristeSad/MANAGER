@@ -105,7 +105,6 @@ jobs:
           build('/tmp/initdata-future.txt',now+600)
 
           raw=open('/tmp/initdata-valid.txt',encoding='utf-8').read()
-          # Change authenticated user without recomputing HMAC.
           parsed=urllib.parse.parse_qsl(raw,keep_blank_values=True)
           tampered=[]
           for k,v in parsed:
@@ -238,6 +237,7 @@ jobs:
           grep -q 'manager-telegram-initdata-v1' docs/TELEGRAM.md
           grep -q 'manager-telegram-authenticated-principal-v1' docs/TELEGRAM.md
           grep -q 'HMAC-SHA-256' docs/ROADMAP.md
-          grep -q 'gateway Bot/Mini App consumindo apenas ações tipadas/allowlisted' docs/ROADMAP.md
+          grep -q 'manager-telegram-gateway-request-v1' docs/ROADMAP.md
+          grep -q 'ingresso autenticado do Telegram Bot' docs/ROADMAP.md
           test "$(cat VERSION)" = 0.8.10
           git diff --exit-code
