@@ -1,0 +1,243 @@
+name: Telegram Mini App InitData Authentication
+
+on:
+  pull_request:
+    paths:
+      - modules/telegram_auth.sh
+      - modules/telegram_identity.sh
+      - modules/automation_principals.sh
+      - manager
+      - install.sh
+      - docs/TELEGRAM.md
+      - docs/ROADMAP.md
+      - .github/workflows/telegram-initdata-auth.yml
+  push:
+    branches: [main]
+    paths:
+      - modules/telegram_auth.sh
+      - modules/telegram_identity.sh
+      - modules/automation_principals.sh
+      - manager
+      - install.sh
+      - docs/TELEGRAM.md
+      - docs/ROADMAP.md
+      - .github/workflows/telegram-initdata-auth.yml
+
+permissions:
+  contents: read
+
+jobs:
+  telegram-initdata-auth:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install current MANAGER tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          test "$(sudo cat /opt/manager/VERSION)" = "$(cat VERSION)"
+          sudo test -x /opt/manager/modules/telegram_auth.sh
+          sudo manager telegram auth status >/tmp/telegram-auth-status
+          grep -q '^contract=manager-telegram-initdata-v1$' /tmp/telegram-auth-status
+          grep -q '^token_configured=0$' /tmp/telegram-auth-status
+          grep -q '^raw_initdata_argv=0$' /tmp/telegram-auth-status
+          grep -q '^username_is_authority=0$' /tmp/telegram-auth-status
+          grep -q '^arbitrary_shell=0$' /tmp/telegram-auth-status
+
+      - name: Prepare RBAC binding and install bot token from file
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager automation v2 principal create telegram-miniapp-admin admin '*'
+          sudo manager automation v2 principal scope telegram-miniapp-admin '*' '*' 'system.describe,node.usage'
+          sudo manager telegram identity bind 123456789 telegram-miniapp-admin
+          umask 077
+          printf '%s\n' '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456' >/tmp/telegram-bot-token
+          sudo manager telegram auth token install /tmp/telegram-bot-token
+          rm -f /tmp/telegram-bot-token
+          test "$(sudo stat -c '%a' /etc/manager/telegram)" = 700
+          test "$(sudo stat -c '%a' /etc/manager/telegram/secrets)" = 700
+          test "$(sudo stat -c '%a' /etc/manager/telegram/secrets/bot-token)" = 600
+          test "$(sudo stat -c '%a' /etc/manager/telegram/auth/config.conf)" = 600
+          test "$(sudo stat -c '%a' /var/log/manager/telegram-auth-audit.jsonl)" = 600
+          sudo manager telegram auth status >/tmp/telegram-auth-status
+          grep -q '^token_configured=1$' /tmp/telegram-auth-status
+          grep -q '^token_valid=1$' /tmp/telegram-auth-status
+          grep -q '^bot_id=123456789$' /tmp/telegram-auth-status
+          ! grep -q 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456' /tmp/telegram-auth-status
+
+      - name: Generate independent valid and invalid initData vectors
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          import hashlib,hmac,json,time,urllib.parse
+          token='123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456'
+          uid=123456789
+
+          def build(path, auth_date, user_id=uid, extra=None):
+              fields={
+                  'auth_date':str(auth_date),
+                  'query_id':'AAEAAFakeQueryId',
+                  'signature':'dGVzdC1zaWduYXR1cmU',
+                  'user':json.dumps({
+                      'id':user_id,
+                      'first_name':'SecretFirstName',
+                      'username':'SecretUsername',
+                      'language_code':'pt-br',
+                  },separators=(',',':')),
+              }
+              if extra:
+                  fields.update(extra)
+              check='\n'.join(f'{k}={fields[k]}' for k in sorted(fields))
+              secret=hmac.new(b'WebAppData',token.encode(),hashlib.sha256).digest()
+              digest=hmac.new(secret,check.encode(),hashlib.sha256).hexdigest()
+              fields['hash']=digest
+              with open(path,'w',encoding='utf-8') as f:
+                  f.write(urllib.parse.urlencode(fields,quote_via=urllib.parse.quote))
+
+          now=int(time.time())
+          build('/tmp/initdata-valid.txt',now)
+          build('/tmp/initdata-stale.txt',now-600)
+          build('/tmp/initdata-future.txt',now+600)
+
+          raw=open('/tmp/initdata-valid.txt',encoding='utf-8').read()
+          # Change authenticated user without recomputing HMAC.
+          parsed=urllib.parse.parse_qsl(raw,keep_blank_values=True)
+          tampered=[]
+          for k,v in parsed:
+              if k=='user':
+                  obj=json.loads(v); obj['id']=987654321
+                  v=json.dumps(obj,separators=(',',':'))
+              tampered.append((k,v))
+          open('/tmp/initdata-tampered.txt','w',encoding='utf-8').write(
+              urllib.parse.urlencode(tampered,quote_via=urllib.parse.quote)
+          )
+          open('/tmp/initdata-duplicate.txt','w',encoding='utf-8').write(raw+'&auth_date='+str(now))
+          open('/tmp/initdata-malformed.txt','w',encoding='utf-8').write(raw+'&broken=%ZZ')
+          PY
+
+      - name: Verify HMAC and freshness before trusting user id
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager telegram auth verify /tmp/initdata-valid.txt >/tmp/verified.json
+          cat /tmp/initdata-valid.txt | sudo manager telegram auth verify-stdin >/tmp/verified-stdin.json
+          python3 - <<'PY'
+          import json
+          forbidden={'token','bot_token','hash','signature','query_id','username','first_name','user','raw_initdata','init_data'}
+          for path in ('/tmp/verified.json','/tmp/verified-stdin.json'):
+              x=json.load(open(path))
+              assert x['contract']=='manager-telegram-initdata-v1'
+              assert x['telegram_user_id']=='123456789'
+              assert x['hash_valid']==1 and x['fresh']==1
+              assert x['auth_method']=='hmac-sha256-webappdata'
+              assert x['username_is_authority']==0
+              assert not (set(x) & forbidden)
+          PY
+          if sudo manager telegram auth verify /tmp/initdata-tampered.txt; then
+            echo 'tampered initData was accepted' >&2; exit 1
+          fi
+          if sudo manager telegram auth verify /tmp/initdata-stale.txt; then
+            echo 'expired initData was accepted' >&2; exit 1
+          fi
+          if sudo manager telegram auth verify /tmp/initdata-future.txt; then
+            echo 'future initData was accepted' >&2; exit 1
+          fi
+          if sudo manager telegram auth verify /tmp/initdata-duplicate.txt; then
+            echo 'duplicate query field was accepted' >&2; exit 1
+          fi
+          if sudo manager telegram auth verify /tmp/initdata-malformed.txt; then
+            echo 'malformed percent escape was accepted' >&2; exit 1
+          fi
+
+      - name: Reject payload when bot token does not match
+        shell: bash
+        run: |
+          set -euxo pipefail
+          umask 077
+          printf '%s\n' '987654321:ZYXWVUTSRQPONMLKJIHGFEDCBAabcdef123456' >/tmp/wrong-token
+          sudo manager telegram auth token install /tmp/wrong-token
+          rm -f /tmp/wrong-token
+          if sudo manager telegram auth verify /tmp/initdata-valid.txt; then
+            echo 'payload signed for another bot token was accepted' >&2; exit 1
+          fi
+          printf '%s\n' '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456' >/tmp/right-token
+          sudo manager telegram auth token install /tmp/right-token
+          rm -f /tmp/right-token
+          sudo manager telegram auth verify /tmp/initdata-valid.txt >/dev/null
+
+      - name: Resolve verified Telegram id through existing Automation v2 RBAC
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager telegram auth resolve /tmp/initdata-valid.txt >/tmp/resolved.json
+          cat /tmp/initdata-valid.txt | sudo manager telegram auth resolve-stdin >/tmp/resolved-stdin.json
+          python3 - <<'PY'
+          import json
+          forbidden={'token','bot_token','hash','signature','query_id','username','first_name','user','raw_initdata','init_data'}
+          for path in ('/tmp/resolved.json','/tmp/resolved-stdin.json'):
+              x=json.load(open(path))
+              assert x['contract']=='manager-telegram-authenticated-principal-v1'
+              assert x['telegram_user_id']=='123456789'
+              assert x['principal_id']=='telegram-miniapp-admin'
+              assert x['role']=='admin'
+              assert x['subject']=='*'
+              assert x['node_scope']=='*'
+              assert x['pool_scope']=='*'
+              assert x['action_scope']=='system.describe,node.usage'
+              assert x['auth_method']=='hmac-sha256-webappdata'
+              assert x['identity_authority']=='automation-v2-principal'
+              assert x['username_is_authority']==0
+              assert not (set(x) & forbidden)
+          PY
+
+      - name: Fail closed when binding or principal is disabled
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo manager telegram identity disable 123456789
+          sudo manager telegram auth verify /tmp/initdata-valid.txt >/dev/null
+          if sudo manager telegram auth resolve /tmp/initdata-valid.txt; then
+            echo 'disabled Telegram binding resolved authenticated initData' >&2; exit 1
+          fi
+          sudo manager telegram identity enable 123456789
+          sudo manager automation v2 principal disable telegram-miniapp-admin
+          if sudo manager telegram auth resolve /tmp/initdata-valid.txt; then
+            echo 'disabled Automation v2 principal resolved authenticated initData' >&2; exit 1
+          fi
+          sudo manager automation v2 principal enable telegram-miniapp-admin
+          sudo manager telegram auth resolve /tmp/initdata-valid.txt >/dev/null
+
+      - name: Preserve token across ordinary reinstall
+        shell: bash
+        run: |
+          set -euxo pipefail
+          before="$(sudo sha256sum /etc/manager/telegram/secrets/bot-token | awk '{print $1}')"
+          source_url="file://${GITHUB_WORKSPACE}"
+          sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
+          after="$(sudo sha256sum /etc/manager/telegram/secrets/bot-token | awk '{print $1}')"
+          test "$before" = "$after"
+          test "$(sudo stat -c '%a' /etc/manager/telegram/secrets/bot-token)" = 600
+          sudo manager telegram auth verify /tmp/initdata-valid.txt >/dev/null
+
+      - name: Keep outputs audits docs and release boundary secret-free
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ! sudo grep -Fq 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456' /var/log/manager/telegram-auth-audit.jsonl
+          ! sudo grep -Fq 'SecretUsername' /var/log/manager/telegram-auth-audit.jsonl
+          ! sudo grep -Fq 'SecretFirstName' /var/log/manager/telegram-auth-audit.jsonl
+          ! sudo grep -Eq '"(hash|signature|query_id|raw_initdata|init_data)"' /var/log/manager/telegram-auth-audit.jsonl
+          ! grep -Fq 'SecretUsername' /tmp/verified.json /tmp/resolved.json
+          ! grep -Fq 'SecretFirstName' /tmp/verified.json /tmp/resolved.json
+          grep -q '^## Autenticação criptográfica do Mini App$' docs/TELEGRAM.md
+          grep -q 'manager-telegram-initdata-v1' docs/TELEGRAM.md
+          grep -q 'manager-telegram-authenticated-principal-v1' docs/TELEGRAM.md
+          grep -q 'HMAC-SHA-256' docs/ROADMAP.md
+          grep -q 'gateway Bot/Mini App consumindo apenas ações tipadas/allowlisted' docs/ROADMAP.md
+          test "$(cat VERSION)" = 0.8.10
+          git diff --exit-code
