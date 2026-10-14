@@ -34,6 +34,8 @@ LEASE_ARCHIVE_DIR = os.environ.get("MANAGER_HIVE_LEASE_AUDIT_ARCHIVE_DIR", LEASE
 LOCK_FILE = os.path.join(DATA_DIR, ".lock")
 CONTRACT = "manager-hive-observability-v1"
 EXPORT_CONTRACT = "manager-hive-observability-export-v1"
+SERIES_CONTRACT = "manager-hive-observability-series-v1"
+METRICS_CONTRACT = "manager-hive-observability-metrics-v1"
 HEALTH_CONTRACT = "manager-hive-health-history-v1"
 NODE_RE = re.compile(r"^node-[a-f0-9]{16}$")
 IDENTITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$")
@@ -41,6 +43,10 @@ DEFAULT_LIMIT = 50
 MAX_LIMIT = 500
 MAX_EXPORT_LIMIT = 100
 DEFAULT_WINDOW = 3600
+DEFAULT_BUCKET = 300
+MIN_BUCKET = 60
+MAX_BUCKET = 24 * 3600
+MAX_SERIES_BUCKETS = 1000
 DEFAULT_RETENTION = 7 * 24 * 3600
 DEFAULT_AUDIT_RETENTION = 14 * 24 * 3600
 DEFAULT_AUDIT_MAX_BYTES = 4 * 1024 * 1024
@@ -150,6 +156,17 @@ def safe_number(value, default=0.0):
     return n if math.isfinite(n) else default
 
 
+def service_state_value(value):
+    value = str(value)
+    return value if value in {"active", "inactive", "unavailable", "unknown"} else "unknown"
+
+
+def safe_protocols(value):
+    if not isinstance(value, list):
+        return []
+    return sorted({x for x in value if isinstance(x, str) and x in {"ssh", "wireguard", "openvpn"}})
+
+
 def health_record(obj):
     node_id = obj.get("node_id", "")
     if not isinstance(node_id, str) or not NODE_RE.fullmatch(node_id):
@@ -180,7 +197,21 @@ def health_record(obj):
         "capacity": max(0, int(safe_number(metrics.get("capacity", 0)))),
         "weight": max(0, int(safe_number(metrics.get("weight", 0)))),
         "cpu_percent": round(safe_number(metrics.get("cpu_percent", 0)), 2),
+        "cpu_count": max(1, int(safe_number(metrics.get("cpu_count", 1), 1))),
+        "load1": round(max(0.0, safe_number(metrics.get("load1", 0))), 3),
+        "load5": round(max(0.0, safe_number(metrics.get("load5", 0))), 3),
+        "load15": round(max(0.0, safe_number(metrics.get("load15", 0))), 3),
         "memory_used_percent": round(safe_number(metrics.get("memory_used_percent", 0)), 2),
+        "network_rx_bytes": max(0, int(safe_number(metrics.get("network_rx_bytes", 0)))),
+        "network_tx_bytes": max(0, int(safe_number(metrics.get("network_tx_bytes", 0)))),
+        "session_identities": max(0, int(safe_number(metrics.get("session_identities", 0)))),
+        "node_enabled": 1 if int(safe_number(metrics.get("node_enabled", 0))) == 1 else 0,
+        "protocols": safe_protocols(metrics.get("protocols", [])),
+        "service_ssh": service_state_value(metrics.get("service_ssh", "unknown")),
+        "service_wireguard": service_state_value(metrics.get("service_wireguard", "unknown")),
+        "service_openvpn": service_state_value(metrics.get("service_openvpn", "unknown")),
+        "hive_network_configured": 1 if int(safe_number(metrics.get("hive_network_configured", 0))) == 1 else 0,
+        "hive_network_service": service_state_value(metrics.get("hive_network_service", "unknown")),
         "rtt_ms": round(safe_number(metrics.get("previous_rtt_ms", -1), -1), 2),
         "hive_network_peer_count": max(0, int(safe_number(metrics.get("hive_network_peer_count", 0)))),
     }
@@ -585,6 +616,317 @@ def export_snapshot(window, limit):
     print(json_line(result))
 
 
+def iter_window_records(paths, since, predicate=None, sanitizer=None):
+    for path in paths:
+        for obj in iter_jsonl(path) or ():
+            try:
+                epoch = int(obj.get("epoch", obj.get("received_at", 0)))
+            except (TypeError, ValueError):
+                continue
+            if epoch < since:
+                continue
+            if predicate and not predicate(obj):
+                continue
+            if sanitizer:
+                obj = sanitizer(obj)
+                if obj is None:
+                    continue
+            yield obj
+
+
+def stats(values):
+    vals = []
+    for value in values:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            vals.append(number)
+    if not vals:
+        return (-1.0, -1.0, -1.0)
+    return (round(sum(vals) / len(vals), 2), round(percentile95(vals), 2), round(max(vals), 2))
+
+
+def event_counts(kind, since):
+    counts = {}
+    failovers = 0
+    for item in iter_window_records(audit_source_paths(kind), since):
+        event = str(item.get("event", ""))
+        if event:
+            counts[event] = counts.get(event, 0) + 1
+        if kind == "scheduler" and event == "select" and item.get("reason") == "sticky-failover":
+            failovers += 1
+    return counts, failovers
+
+
+def observed_network_delta(item, previous):
+    node_id = str(item.get("node_id", ""))
+    if not NODE_RE.fullmatch(node_id):
+        return 0, 0
+    if "network_rx_bytes" not in item or "network_tx_bytes" not in item:
+        return 0, 0
+    try:
+        epoch = int(item.get("epoch", 0))
+        node_epoch = int(item.get("node_epoch", 0))
+        rx = int(item.get("network_rx_bytes", 0))
+        tx = int(item.get("network_tx_bytes", 0))
+    except (TypeError, ValueError):
+        return 0, 0
+    if epoch < 0 or node_epoch < 1 or rx < 0 or tx < 0:
+        return 0, 0
+    prior = previous.get(node_id)
+    drx = dtx = 0
+    if prior and epoch >= prior[0] and node_epoch == prior[1]:
+        if rx >= prior[2]:
+            drx = rx - prior[2]
+        if tx >= prior[3]:
+            dtx = tx - prior[3]
+    if prior is None or epoch >= prior[0]:
+        previous[node_id] = (epoch, node_epoch, rx, tx)
+    return drx, dtx
+
+
+def build_operational_metrics(window):
+    now = int(time.time())
+    since = now - window
+    cpu = []
+    memory = []
+    rtt = []
+    load_per_cpu = []
+    sessions = []
+    identities = []
+    utilization = []
+    latest = {}
+    health_samples = 0
+    service_issue_samples = 0
+    hive_network_issue_samples = 0
+    network_rx_delta = 0
+    network_tx_delta = 0
+    previous_network = {}
+    for item in iter_window_records([HEALTH_HISTORY], since):
+        if item.get("contract") != HEALTH_CONTRACT:
+            continue
+        health_samples += 1
+        node_id = str(item.get("node_id", ""))
+        if NODE_RE.fullmatch(node_id):
+            previous_latest = latest.get(node_id)
+            try:
+                item_epoch = int(item.get("epoch", 0))
+                previous_epoch = int(previous_latest.get("epoch", 0)) if previous_latest else -1
+            except (TypeError, ValueError):
+                item_epoch = 0
+                previous_epoch = -1
+            if item_epoch >= previous_epoch:
+                latest[node_id] = item
+        cpu.append(safe_number(item.get("cpu_percent", 0)))
+        memory.append(safe_number(item.get("memory_used_percent", 0)))
+        value = safe_number(item.get("rtt_ms", -1), -1)
+        if value >= 0:
+            rtt.append(value)
+        if "load1" in item:
+            cpu_count = max(1.0, safe_number(item.get("cpu_count", 1), 1))
+            load_per_cpu.append(max(0.0, safe_number(item.get("load1", 0))) / cpu_count)
+        sessions.append(max(0.0, safe_number(item.get("sessions", 0))))
+        if "session_identities" in item:
+            identities.append(max(0.0, safe_number(item.get("session_identities", 0))))
+        max_sessions = max(0.0, safe_number(item.get("max_sessions", 0)))
+        if max_sessions > 0:
+            utilization.append(min(10000.0, max(0.0, safe_number(item.get("sessions", 0))) * 100.0 / max_sessions))
+        protocols = safe_protocols(item.get("protocols", []))
+        mapping = {"ssh": "service_ssh", "wireguard": "service_wireguard", "openvpn": "service_openvpn"}
+        if protocols and any(service_state_value(item.get(mapping[p], "unknown")) != "active" for p in protocols):
+            service_issue_samples += 1
+        if int(safe_number(item.get("hive_network_configured", 0))) == 1 and service_state_value(item.get("hive_network_service", "unknown")) != "active":
+            hive_network_issue_samples += 1
+        drx, dtx = observed_network_delta(item, previous_network)
+        network_rx_delta += drx
+        network_tx_delta += dtx
+
+    states = {"HEALTHY": 0, "DEGRADED": 0, "DRAINING": 0, "OFFLINE": 0}
+    for item in latest.values():
+        state = str(item.get("state", "DEGRADED"))
+        states[state if state in states else "DEGRADED"] += 1
+    cpu_avg, cpu_p95, cpu_max = stats(cpu)
+    mem_avg, mem_p95, mem_max = stats(memory)
+    rtt_avg, rtt_p95, rtt_max = stats(rtt)
+    load_avg, load_p95, load_max = stats(load_per_cpu)
+    sess_avg, sess_p95, sess_max = stats(sessions)
+    ids_avg, ids_p95, ids_max = stats(identities)
+    util_avg, util_p95, util_max = stats(utilization)
+    sched_counts, failovers = event_counts("scheduler", since)
+    lease_counts, _ = event_counts("leases", since)
+    selections = sched_counts.get("select", 0)
+    grants = lease_counts.get("grant", 0)
+    denies = lease_counts.get("deny", 0)
+    admission_total = grants + denies
+    healthy_pct = round(states["HEALTHY"] * 100.0 / len(latest), 2) if latest else -1.0
+    failover_pct = round(failovers * 100.0 / selections, 2) if selections else 0.0
+    deny_pct = round(denies * 100.0 / admission_total, 2) if admission_total else 0.0
+    return {
+        "contract": METRICS_CONTRACT,
+        "observability_contract": CONTRACT,
+        "generated_epoch": now,
+        "window_seconds": window,
+        "health_samples": health_samples,
+        "nodes_observed": len(latest),
+        "nodes_healthy": states["HEALTHY"],
+        "nodes_degraded": states["DEGRADED"],
+        "nodes_draining": states["DRAINING"],
+        "nodes_offline": states["OFFLINE"],
+        "nodes_healthy_percent": healthy_pct,
+        "cpu_avg_percent": cpu_avg,
+        "cpu_p95_percent": cpu_p95,
+        "cpu_max_percent": cpu_max,
+        "memory_avg_percent": mem_avg,
+        "memory_p95_percent": mem_p95,
+        "memory_max_percent": mem_max,
+        "rtt_avg_ms": rtt_avg,
+        "rtt_p95_ms": rtt_p95,
+        "rtt_max_ms": rtt_max,
+        "load1_per_cpu_avg": load_avg,
+        "load1_per_cpu_p95": load_p95,
+        "load1_per_cpu_max": load_max,
+        "sessions_avg": sess_avg,
+        "sessions_p95": sess_p95,
+        "sessions_peak": sess_max,
+        "session_identities_avg": ids_avg,
+        "session_identities_p95": ids_p95,
+        "session_identities_peak": ids_max,
+        "session_limit_utilization_avg_percent": util_avg,
+        "session_limit_utilization_p95_percent": util_p95,
+        "session_limit_utilization_peak_percent": util_max,
+        "network_rx_delta_bytes": network_rx_delta,
+        "network_tx_delta_bytes": network_tx_delta,
+        "network_rx_rate_bps": round(network_rx_delta * 8.0 / window, 2),
+        "network_tx_rate_bps": round(network_tx_delta * 8.0 / window, 2),
+        "service_issue_samples": service_issue_samples,
+        "hive_network_issue_samples": hive_network_issue_samples,
+        "scheduler_selections": selections,
+        "scheduler_failovers": failovers,
+        "scheduler_failover_percent": failover_pct,
+        "drains": sched_counts.get("drain", 0),
+        "undrains": sched_counts.get("undrain", 0),
+        "lease_grants": grants,
+        "lease_denies": denies,
+        "lease_deny_percent": deny_pct,
+        "lease_releases": lease_counts.get("release", 0),
+        "authority_outages": lease_counts.get("node-authority-outage", 0),
+        "authority_recoveries": lease_counts.get("node-authority-recovered", 0),
+        "authority_fenced": lease_counts.get("node-authority-fenced", 0),
+        "controller_in_user_vpn_path": 0,
+    }
+
+
+def operational_metrics(window):
+    print(json_line(build_operational_metrics(window)))
+
+
+def bucket_stats(values):
+    avg, p95, maximum = stats(values)
+    return {"avg": avg, "p95": p95, "max": maximum}
+
+
+def build_series(node_filter, window, bucket_seconds):
+    if node_filter not in ("", "*") and not NODE_RE.fullmatch(node_filter):
+        die("node_id inválido.", 64)
+    bucket_count = math.ceil(window / bucket_seconds) + 1
+    if bucket_count > MAX_SERIES_BUCKETS:
+        die(f"janela/bucket excede {MAX_SERIES_BUCKETS} buckets.", 64)
+    now = int(time.time())
+    since = now - window
+    buckets = {}
+    previous_network = {}
+    nodes = set()
+    total_samples = 0
+    for item in iter_window_records([HEALTH_HISTORY], since):
+        if item.get("contract") != HEALTH_CONTRACT:
+            continue
+        node_id = str(item.get("node_id", ""))
+        if node_filter not in ("", "*") and node_id != node_filter:
+            continue
+        try:
+            epoch = int(item.get("epoch", 0))
+        except (TypeError, ValueError):
+            continue
+        if epoch < since or epoch > now + 300:
+            continue
+        start = (epoch // bucket_seconds) * bucket_seconds
+        row = buckets.setdefault(start, {
+            "nodes": set(), "samples": 0, "cpu": [], "memory": [], "rtt": [], "load": [],
+            "sessions": [], "utilization": [], "states": {"HEALTHY": 0, "DEGRADED": 0, "DRAINING": 0, "OFFLINE": 0},
+            "network_rx": 0, "network_tx": 0,
+        })
+        total_samples += 1
+        if NODE_RE.fullmatch(node_id):
+            nodes.add(node_id)
+            row["nodes"].add(node_id)
+        row["samples"] += 1
+        row["cpu"].append(safe_number(item.get("cpu_percent", 0)))
+        row["memory"].append(safe_number(item.get("memory_used_percent", 0)))
+        rtt_value = safe_number(item.get("rtt_ms", -1), -1)
+        if rtt_value >= 0:
+            row["rtt"].append(rtt_value)
+        if "load1" in item:
+            cpu_count = max(1.0, safe_number(item.get("cpu_count", 1), 1))
+            row["load"].append(max(0.0, safe_number(item.get("load1", 0))) / cpu_count)
+        row["sessions"].append(max(0.0, safe_number(item.get("sessions", 0))))
+        max_sessions = max(0.0, safe_number(item.get("max_sessions", 0)))
+        if max_sessions > 0:
+            row["utilization"].append(min(10000.0, max(0.0, safe_number(item.get("sessions", 0))) * 100.0 / max_sessions))
+        state = str(item.get("state", "DEGRADED"))
+        row["states"][state if state in row["states"] else "DEGRADED"] += 1
+        drx, dtx = observed_network_delta(item, previous_network)
+        row["network_rx"] += drx
+        row["network_tx"] += dtx
+    series_rows = []
+    for start in sorted(buckets):
+        row = buckets[start]
+        series_rows.append({
+            "start_epoch": start,
+            "end_epoch": start + bucket_seconds,
+            "samples": row["samples"],
+            "nodes_observed": len(row["nodes"]),
+            "state_healthy_samples": row["states"]["HEALTHY"],
+            "state_degraded_samples": row["states"]["DEGRADED"],
+            "state_draining_samples": row["states"]["DRAINING"],
+            "state_offline_samples": row["states"]["OFFLINE"],
+            "cpu_percent": bucket_stats(row["cpu"]),
+            "memory_percent": bucket_stats(row["memory"]),
+            "rtt_ms": bucket_stats(row["rtt"]),
+            "load1_per_cpu": bucket_stats(row["load"]),
+            "sessions": bucket_stats(row["sessions"]),
+            "session_limit_utilization_percent": bucket_stats(row["utilization"]),
+            "network_rx_delta_bytes": row["network_rx"],
+            "network_tx_delta_bytes": row["network_tx"],
+        })
+    return {
+        "contract": SERIES_CONTRACT,
+        "observability_contract": CONTRACT,
+        "generated_epoch": now,
+        "window_seconds": window,
+        "bucket_seconds": bucket_seconds,
+        "node_filter": node_filter or "*",
+        "samples": total_samples,
+        "nodes_observed": len(nodes),
+        "returned_buckets": len(series_rows),
+        "max_buckets": MAX_SERIES_BUCKETS,
+        "series": series_rows,
+        "security": {
+            "allowlisted_fields_only": 1,
+            "contains_private_keys": 0,
+            "contains_credentials": 0,
+            "contains_raw_audit": 0,
+            "contains_internal_paths": 0,
+            "controller_in_user_vpn_path": 0,
+        },
+    }
+
+
+def series(node_filter, window, bucket_seconds):
+    print(json_line(build_series(node_filter, window, bucket_seconds)))
+
+
 def status():
     init_dirs()
     health_count = sum(1 for _ in iter_jsonl(HEALTH_HISTORY) or ())
@@ -622,7 +964,7 @@ def prune(value=None):
 
 
 def usage():
-    print("Uso: hive_observability.sh --status|--summary [WINDOW]|--export [WINDOW] [LIMIT]|--health [NODE|*] [LIMIT]|--scheduler [LIMIT]|--leases [IDENTITY|*] [LIMIT]|--prune [SECONDS]|--audit-status|--audit-maintain [RETENTION] [MAX_BYTES] [force]", file=sys.stderr)
+    print("Uso: hive_observability.sh --status|--summary [WINDOW]|--metrics [WINDOW]|--series [NODE|*] [WINDOW] [BUCKET]|--export [WINDOW] [LIMIT]|--health [NODE|*] [LIMIT]|--scheduler [LIMIT]|--leases [IDENTITY|*] [LIMIT]|--prune [SECONDS]|--audit-status|--audit-maintain [RETENTION] [MAX_BYTES] [force]", file=sys.stderr)
     raise SystemExit(64)
 
 
@@ -643,6 +985,16 @@ elif cmd == "--leases":
     show_leases(args[1] if len(args) > 1 else "*", validate_limit(args[2] if len(args) > 2 else DEFAULT_LIMIT))
 elif cmd == "--summary":
     summary(parse_int(args[1] if len(args) > 1 else DEFAULT_WINDOW, "window_seconds", 60, MAX_RETENTION))
+elif cmd == "--metrics":
+    if len(args) > 2: usage()
+    operational_metrics(parse_int(args[1] if len(args) > 1 else DEFAULT_WINDOW, "window_seconds", 60, MAX_RETENTION))
+elif cmd == "--series":
+    if len(args) > 4: usage()
+    series(
+        args[1] if len(args) > 1 else "*",
+        parse_int(args[2] if len(args) > 2 else DEFAULT_WINDOW, "window_seconds", 60, MAX_RETENTION),
+        parse_int(args[3] if len(args) > 3 else DEFAULT_BUCKET, "bucket_seconds", MIN_BUCKET, MAX_BUCKET),
+    )
 elif cmd == "--export":
     if len(args) > 3: usage()
     export_snapshot(

@@ -339,13 +339,15 @@ Fundação implementada nesta primeira fatia:
 - consultas sanitizadas continuam atravessando segmentos arquivados + arquivo ativo;
 - retenção temporal remove somente segmentos antigos, com armazenamento root-only e sem compressão concorrente;
 - export JSON versionado, sanitizado e limitado para integração externa, sem listener adicional;
+- séries temporais por buckets com CPU/RAM/RTT/load/sessões/utilização e deltas observados de rede;
+- métricas operacionais por janela com p95/pico, taxa de failover/deny, estado dos nós e eventos de autoridade;
+- contadores de rede tratam reboot/reset e mudança de `node_epoch` como nova baseline, sem delta negativo;
+- retenção operacional preserva apenas campos allowlisted, sem interface/endereço/segredo;
 - controlador continua fora do caminho de dados VPN.
 
 Ainda pendente para fechar a 0.8.10:
 
-- séries temporais e métricas operacionais adicionais;
 - gate final multi-nó e regressão completa da release.
-- retenção operacional sem persistir segredos.
 
 ## 0.9.x — Telegram Bot + Mini App
 

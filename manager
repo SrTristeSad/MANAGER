@@ -96,6 +96,8 @@ Uso:
                                   heartbeat assinado e saúde distribuída dos nós
   manager hive observe status
   manager hive observe summary [WINDOW_SECONDS]
+  manager hive observe metrics [WINDOW_SECONDS]
+  manager hive observe series [NODE_ID|*] [WINDOW_SECONDS] [BUCKET_SECONDS]
   manager hive observe export [WINDOW_SECONDS] [LIMIT]
   manager hive observe health [NODE_ID|*] [LIMIT]
   manager hive observe scheduler [LIMIT]
@@ -487,6 +489,8 @@ case "${1:-}" in
         case "${3:-status}" in
           status) exec "$MANAGER_HOME/modules/hive_observability.sh" --status ;;
           summary) exec "$MANAGER_HOME/modules/hive_observability.sh" --summary "${4:-3600}" ;;
+          metrics) exec "$MANAGER_HOME/modules/hive_observability.sh" --metrics "${4:-3600}" ;;
+          series) exec "$MANAGER_HOME/modules/hive_observability.sh" --series "${4:-*}" "${5:-3600}" "${6:-300}" ;;
           export) exec "$MANAGER_HOME/modules/hive_observability.sh" --export "${4:-3600}" "${5:-50}" ;;
           health) exec "$MANAGER_HOME/modules/hive_observability.sh" --health "${4:-*}" "${5:-50}" ;;
           scheduler) exec "$MANAGER_HOME/modules/hive_observability.sh" --scheduler "${4:-50}" ;;
@@ -494,7 +498,7 @@ case "${1:-}" in
           prune) if [[ -n "${4:-}" ]]; then exec "$MANAGER_HOME/modules/hive_observability.sh" --prune "$4"; else exec "$MANAGER_HOME/modules/hive_observability.sh" --prune; fi ;;
           audit-status) exec "$MANAGER_HOME/modules/hive_observability.sh" --audit-status ;;
           audit-maintain) exec "$MANAGER_HOME/modules/hive_observability.sh" --audit-maintain "${4:-}" "${5:-}" "${6:-}" ;;
-          *) err "Uso: manager hive observe {status|summary [WINDOW]|export [WINDOW] [LIMIT]|health [NODE|*] [LIMIT]|scheduler [LIMIT]|leases [ID|*] [LIMIT]|prune [SECONDS]|audit-status|audit-maintain [RETENTION] [MAX_BYTES] [force]}"; exit 64 ;;
+          *) err "Uso: manager hive observe {status|summary [WINDOW]|metrics [WINDOW]|series [NODE|*] [WINDOW] [BUCKET]|export [WINDOW] [LIMIT]|health [NODE|*] [LIMIT]|scheduler [LIMIT]|leases [ID|*] [LIMIT]|prune [SECONDS]|audit-status|audit-maintain [RETENTION] [MAX_BYTES] [force]}"; exit 64 ;;
         esac
         ;;
       node)
