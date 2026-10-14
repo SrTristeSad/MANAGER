@@ -178,6 +178,12 @@ Uso:
   manager telegram identity enable|disable TELEGRAM_USER_ID
   manager telegram identity resolve TELEGRAM_USER_ID
                                   vínculo Telegram user.id -> principal Automation v2 (0.9.0)
+  manager telegram auth status
+  manager telegram auth token install /CAMINHO/BOT_TOKEN
+  manager telegram auth freshness set MAX_AGE [FUTURE_SKEW]
+  manager telegram auth verify /CAMINHO/INITDATA | verify-stdin
+  manager telegram auth resolve /CAMINHO/INITDATA | resolve-stdin
+                                  valida initData HMAC/freshness antes do RBAC (0.9.0)
   manager --diagnostics           abre o diagnóstico
   manager --version               mostra a versão
   manager --help                  mostra esta ajuda
@@ -644,7 +650,29 @@ case "${1:-}" in
           *) err "Uso: manager telegram identity {status|list|show|bind|enable|disable|resolve} ..."; exit 64 ;;
         esac
         ;;
-      *) err "Uso: manager telegram identity ..."; exit 64 ;;
+      auth)
+        case "${3:-status}" in
+          status) exec "$MANAGER_HOME/modules/telegram_auth.sh" --status ;;
+          token)
+            case "${4:-}" in
+              install) [[ -n "${5:-}" ]] || { err "Uso: manager telegram auth token install /CAMINHO/BOT_TOKEN"; exit 64; }; exec "$MANAGER_HOME/modules/telegram_auth.sh" --token-install "$5" ;;
+              *) err "Uso: manager telegram auth token install /CAMINHO/BOT_TOKEN"; exit 64 ;;
+            esac
+            ;;
+          freshness)
+            case "${4:-}" in
+              set) [[ -n "${5:-}" ]] || { err "Uso: manager telegram auth freshness set MAX_AGE_SECONDS [FUTURE_SKEW_SECONDS]"; exit 64; }; exec "$MANAGER_HOME/modules/telegram_auth.sh" --freshness-set "$5" "${6:-30}" ;;
+              *) err "Uso: manager telegram auth freshness set MAX_AGE_SECONDS [FUTURE_SKEW_SECONDS]"; exit 64 ;;
+            esac
+            ;;
+          verify) [[ -n "${4:-}" ]] || { err "Uso: manager telegram auth verify /CAMINHO/INITDATA"; exit 64; }; exec "$MANAGER_HOME/modules/telegram_auth.sh" --verify "$4" ;;
+          verify-stdin) exec "$MANAGER_HOME/modules/telegram_auth.sh" --verify-stdin ;;
+          resolve) [[ -n "${4:-}" ]] || { err "Uso: manager telegram auth resolve /CAMINHO/INITDATA"; exit 64; }; exec "$MANAGER_HOME/modules/telegram_auth.sh" --resolve "$4" ;;
+          resolve-stdin) exec "$MANAGER_HOME/modules/telegram_auth.sh" --resolve-stdin ;;
+          *) err "Uso: manager telegram auth {status|token|freshness|verify|verify-stdin|resolve|resolve-stdin} ..."; exit 64 ;;
+        esac
+        ;;
+      *) err "Uso: manager telegram {identity|auth} ..."; exit 64 ;;
     esac
     ;;
   --diagnostics) exec "$MANAGER_HOME/modules/diagnostics.sh" ;;
@@ -689,7 +717,7 @@ while true; do
   say " ${C_WHITE}AUTOMAÇÃO${C_RESET}"
   say " ${C_CYAN}37${C_RESET}) Legacy v1 / compatibilidade syncpainel"
   say " ${C_CYAN}38${C_RESET}) Automation v2 / RBAC, credenciais e transporte"
-  say " ${C_CYAN}43${C_RESET}) Telegram / identidade e RBAC"
+  say " ${C_CYAN}43${C_RESET}) Telegram / identidade, autenticação e RBAC"
   say ""
   say " ${C_WHITE}COLMEIA${C_RESET}"
   say " ${C_CYAN}39${C_RESET}) Identidade criptográfica / enrollment do nó"
@@ -837,15 +865,19 @@ while true; do
       ;;
     43)
       header
-      say "${C_WHITE}TELEGRAM — IDENTIDADE / RBAC${C_RESET}\n"
+      say "${C_WHITE}TELEGRAM — IDENTIDADE / AUTENTICAÇÃO / RBAC${C_RESET}\n"
       "$MANAGER_HOME/modules/telegram_identity.sh" --status || true
+      say ""
+      "$MANAGER_HOME/modules/telegram_auth.sh" --status 2>/dev/null || true
       say ""
       "$MANAGER_HOME/modules/telegram_identity.sh" --list 2>/dev/null || true
       say ""
       say "Fluxo via CLI:"
       say " manager automation v2 principal create telegram-admin admin '*'"
       say " manager telegram identity bind TELEGRAM_USER_ID telegram-admin"
-      say " manager telegram identity resolve TELEGRAM_USER_ID"
+      say " manager telegram auth token install /root/telegram-bot-token"
+      say " manager telegram auth verify /root/initdata.txt"
+      say " manager telegram auth resolve /root/initdata.txt"
       pause
       ;;
     42)

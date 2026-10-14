@@ -96,15 +96,13 @@ Por segurança:
 - trocar `@username` não muda autoridade;
 - username não é persistido como identidade;
 - nenhuma ação Telegram recebe shell/comando/caminho arbitrário.
-
-## Próximas fatias da 0.9
+\n## Autenticação criptográfica do Mini App\n\nO backend não confia em `Telegram.WebApp.initDataUnsafe`. O Mini App deve enviar o valor bruto de `Telegram.WebApp.initData`, e o MANAGER valida esse valor antes de aceitar qualquer `user.id`.\n\nA validação segue o contrato do Telegram Mini Apps:\n\n1. parseia o query string bruto e rejeita campos duplicados ou malformados;\n2. remove somente `hash` do data-check-string e ordena os demais pares `key=value`;\n3. deriva a chave `HMAC-SHA-256(key=WebAppData, message=bot_token)`;\n4. calcula `HMAC-SHA-256` do data-check-string e compara o `hash` em tempo constante;\n5. valida `auth_date` com freshness obrigatória;\n6. somente depois lê `user.id`;\n7. somente depois resolve esse ID no binding `manager-telegram-identity-v1` e no RBAC da Automation v2.\n\nO contrato criptográfico é:\n\n```text\nmanager-telegram-initdata-v1\n```\n\nE o contexto já autenticado + autorizado usa:\n\n```text\nmanager-telegram-authenticated-principal-v1\n```\n\nPor padrão, `initData` pode ter no máximo 300 segundos de idade e até 30 segundos de tolerância para relógio futuro. O operador pode ajustar esses limites dentro dos intervalos seguros definidos pelo módulo.\n\n### Bot token\n\nO token nunca é aceito diretamente em argv. Ele deve vir de um arquivo local legível por root:\n\n```bash\nmanager telegram auth token install /root/telegram-bot-token\nmanager telegram auth status\n```\n\nO MANAGER copia o token para:\n\n```text\n/etc/manager/telegram/secrets/bot-token\n```\n\nO diretório é `0700` e o token é `0600`. O status mostra apenas se o token está configurado/válido e o `bot_id`; a parte secreta não aparece. Instalar novamente a partir de outro arquivo faz uma substituição atômica do token.\n\n### Freshness\n\n```bash\nmanager telegram auth freshness set 300 30\n```\n\nO primeiro valor é a idade máxima em segundos (`30..86400`). O segundo é a tolerância máxima de relógio futuro (`0..300`). Dados vencidos ou muito adiantados são recusados antes do RBAC.\n\n### Verificação e resolve\n\nPara operação manual:\n\n```bash\nmanager telegram auth verify /root/initdata.txt\nmanager telegram auth resolve /root/initdata.txt\n```\n\nPara o futuro gateway, prefira stdin para não colocar material de autenticação em argv:\n\n```bash\nprintf '%s' "$TELEGRAM_INIT_DATA" | manager telegram auth verify-stdin\nprintf '%s' "$TELEGRAM_INIT_DATA" | manager telegram auth resolve-stdin\n```\n\nO módulo limita o payload, usa arquivo temporário root-only apenas durante a chamada stdin e o remove ao terminar. `initData`, `hash`, `signature`, `query_id`, nomes e username não entram no audit.\n\nAudit:\n\n```text\n/var/log/manager/telegram-auth-audit.jsonl\n```\n\nUma falha de HMAC, freshness, parsing, binding ou principal resulta em fail-closed. Um `user.id` só chega ao `telegram_identity.sh --resolve` depois de a assinatura HMAC e a freshness terem sido aceitas.\n\n## Próximas fatias da 0.9
 
 A camada Bot/Mini App ainda precisa:
 
-1. validar criptograficamente Telegram Bot/WebApp `initData` antes de confiar no `user.id`;
-2. transformar interações em ações tipadas e allowlisted da Automation v2;
+1. criar o gateway Bot/Mini App consumindo somente ações tipadas e allowlisted da Automation v2;
+2. aplicar rate limit e idempotência por requisição no gateway;
 3. implementar telas/fluxos de sessões, clientes, produtos, cotas, nós e diagnósticos;
-4. aplicar rate limit, freshness, idempotência e audit no gateway Telegram;
-5. manter bot token fora de argv, logs e respostas públicas.
+4. adicionar gate end-to-end do gateway real, mantendo o bot token fora de argv, logs e respostas públicas.
 
 O Telegram será uma interface do control plane já existente, não uma nova autoridade paralela.

@@ -357,7 +357,7 @@ Fechamento da fase:
 
 ### 0.9.0 — identidade Telegram + ponte RBAC 🚧
 
-Fundação implementada nesta primeira fatia:
+Fundação implementada:
 
 - `user.id` numérico do Telegram é a identidade externa estável; username/nome/chat não concedem autoridade;
 - binding root-only `telegram_user_id -> principal_id` sem duplicar roles ou ACL;
@@ -365,15 +365,19 @@ Fundação implementada nesta primeira fatia:
 - um principal e um `user.id` formam vínculo 1:1 nesta fundação;
 - binding ou principal desabilitado falham fechado;
 - resolve estruturado `manager-telegram-identity-v1` sem segredo e sem shell arbitrário;
-- audit local de bind/enable/disable/resolve/deny sem bot token ou credencial privada;
-- CLI `manager telegram identity ...` e documentação em `docs/TELEGRAM.md`.
+- validação HMAC-SHA-256 do `Telegram.WebApp.initData` usando chave derivada do bot token;
+- `auth_date` obrigatório com freshness configurável e fail-closed para payload vencido/futuro;
+- bot token instalado por arquivo, persistido root-only e nunca aceito em argv;
+- `user.id` só entra no resolve RBAC depois de HMAC + freshness válidos;
+- contratos `manager-telegram-initdata-v1` e `manager-telegram-authenticated-principal-v1`;
+- audits de identidade/autenticação não retêm token, initData, hash, signature, query_id, nomes ou username;
+- CLI `manager telegram identity ...` e `manager telegram auth ...`, com documentação em `docs/TELEGRAM.md`.
 
 Ainda pendente para fechar 0.9.0:
 
-- validação criptográfica do Telegram Bot/WebApp `initData` antes de aceitar o `user.id` remoto;
 - gateway Bot/Mini App consumindo apenas ações tipadas/allowlisted;
-- freshness, rate limit, idempotência e audit de requisições Telegram;
-- gate end-to-end da autenticação Telegram.
+- rate limit e idempotência de requisições Telegram;
+- gate end-to-end do gateway Telegram.
 
 Fases seguintes da série 0.9:
 
