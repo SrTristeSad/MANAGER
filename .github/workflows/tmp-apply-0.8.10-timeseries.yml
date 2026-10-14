@@ -1,0 +1,412 @@
+name: Temporary Apply 0.8.10 Operational Timeseries
+
+on:
+  push:
+    branches:
+      - feature/0.8.10-operational-timeseries
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feature/0.8.10-operational-timeseries
+      - name: Apply product and documentation changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p=Path(path)
+              text=p.read_text()
+              if text.count(old) != 1:
+                  raise SystemExit(f'{path}: expected anchor exactly once, found {text.count(old)}')
+              p.write_text(text.replace(old,new,1))
+
+          p=Path('modules/hive_observability.sh')
+          text=p.read_text()
+          old='''EXPORT_CONTRACT = "manager-hive-observability-export-v1"\nHEALTH_CONTRACT = "manager-hive-health-history-v1"\n'''
+          new='''EXPORT_CONTRACT = "manager-hive-observability-export-v1"\nSERIES_CONTRACT = "manager-hive-observability-series-v1"\nMETRICS_CONTRACT = "manager-hive-observability-metrics-v1"\nHEALTH_CONTRACT = "manager-hive-health-history-v1"\n'''
+          if text.count(old) != 1: raise SystemExit('contract anchor mismatch')
+          text=text.replace(old,new,1)
+          old='''MAX_EXPORT_LIMIT = 100\nDEFAULT_WINDOW = 3600\nDEFAULT_RETENTION = 7 * 24 * 3600\n'''
+          new='''MAX_EXPORT_LIMIT = 100\nDEFAULT_WINDOW = 3600\nDEFAULT_BUCKET = 300\nMIN_BUCKET = 60\nMAX_BUCKET = 24 * 3600\nMAX_SERIES_BUCKETS = 1000\nDEFAULT_RETENTION = 7 * 24 * 3600\n'''
+          if text.count(old) != 1: raise SystemExit('limit anchor mismatch')
+          text=text.replace(old,new,1)
+          old='''def safe_number(value, default=0.0):\n    if isinstance(value, bool):\n        return default\n    try:\n        n = float(value)\n    except (TypeError, ValueError):\n        return default\n    return n if math.isfinite(n) else default\n\n\ndef health_record(obj):\n'''
+          new='''def safe_number(value, default=0.0):\n    if isinstance(value, bool):\n        return default\n    try:\n        n = float(value)\n    except (TypeError, ValueError):\n        return default\n    return n if math.isfinite(n) else default\n\n\ndef service_state_value(value):\n    value = str(value)\n    return value if value in {"active", "inactive", "unavailable", "unknown"} else "unknown"\n\n\ndef safe_protocols(value):\n    if not isinstance(value, list):\n        return []\n    return sorted({x for x in value if isinstance(x, str) and x in {"ssh", "wireguard", "openvpn"}})\n\n\ndef health_record(obj):\n'''
+          if text.count(old) != 1: raise SystemExit('safe_number anchor mismatch')
+          text=text.replace(old,new,1)
+          old='''        "cpu_percent": round(safe_number(metrics.get("cpu_percent", 0)), 2),\n        "memory_used_percent": round(safe_number(metrics.get("memory_used_percent", 0)), 2),\n        "rtt_ms": round(safe_number(metrics.get("previous_rtt_ms", -1), -1), 2),\n        "hive_network_peer_count": max(0, int(safe_number(metrics.get("hive_network_peer_count", 0)))),\n    }\n'''
+          new='''        "cpu_percent": round(safe_number(metrics.get("cpu_percent", 0)), 2),\n        "cpu_count": max(1, int(safe_number(metrics.get("cpu_count", 1), 1))),\n        "load1": round(max(0.0, safe_number(metrics.get("load1", 0))), 3),\n        "load5": round(max(0.0, safe_number(metrics.get("load5", 0))), 3),\n        "load15": round(max(0.0, safe_number(metrics.get("load15", 0))), 3),\n        "memory_used_percent": round(safe_number(metrics.get("memory_used_percent", 0)), 2),\n        "network_rx_bytes": max(0, int(safe_number(metrics.get("network_rx_bytes", 0)))),\n        "network_tx_bytes": max(0, int(safe_number(metrics.get("network_tx_bytes", 0)))),\n        "session_identities": max(0, int(safe_number(metrics.get("session_identities", 0)))),\n        "node_enabled": 1 if int(safe_number(metrics.get("node_enabled", 0))) == 1 else 0,\n        "protocols": safe_protocols(metrics.get("protocols", [])),\n        "service_ssh": service_state_value(metrics.get("service_ssh", "unknown")),\n        "service_wireguard": service_state_value(metrics.get("service_wireguard", "unknown")),\n        "service_openvpn": service_state_value(metrics.get("service_openvpn", "unknown")),\n        "hive_network_configured": 1 if int(safe_number(metrics.get("hive_network_configured", 0))) == 1 else 0,\n        "hive_network_service": service_state_value(metrics.get("hive_network_service", "unknown")),\n        "rtt_ms": round(safe_number(metrics.get("previous_rtt_ms", -1), -1), 2),\n        "hive_network_peer_count": max(0, int(safe_number(metrics.get("hive_network_peer_count", 0)))),\n    }\n'''
+          if text.count(old) != 1: raise SystemExit('health_record anchor mismatch')
+          text=text.replace(old,new,1)
+          anchor='''def status():\n'''
+          if text.count(anchor) != 1: raise SystemExit('status anchor mismatch')
+          additions=r'''def iter_window_records(paths, since, predicate=None, sanitizer=None):
+    for path in paths:
+        for obj in iter_jsonl(path) or ():
+            try:
+                epoch = int(obj.get("epoch", obj.get("received_at", 0)))
+            except (TypeError, ValueError):
+                continue
+            if epoch < since:
+                continue
+            if predicate and not predicate(obj):
+                continue
+            if sanitizer:
+                obj = sanitizer(obj)
+                if obj is None:
+                    continue
+            yield obj
+
+
+def stats(values):
+    vals = []
+    for value in values:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            vals.append(number)
+    if not vals:
+        return (-1.0, -1.0, -1.0)
+    return (round(sum(vals) / len(vals), 2), round(percentile95(vals), 2), round(max(vals), 2))
+
+
+def event_counts(kind, since):
+    counts = {}
+    failovers = 0
+    for item in iter_window_records(audit_source_paths(kind), since):
+        event = str(item.get("event", ""))
+        if event:
+            counts[event] = counts.get(event, 0) + 1
+        if kind == "scheduler" and event == "select" and item.get("reason") == "sticky-failover":
+            failovers += 1
+    return counts, failovers
+
+
+def observed_network_delta(item, previous):
+    node_id = str(item.get("node_id", ""))
+    if not NODE_RE.fullmatch(node_id):
+        return 0, 0
+    if "network_rx_bytes" not in item or "network_tx_bytes" not in item:
+        return 0, 0
+    try:
+        epoch = int(item.get("epoch", 0))
+        node_epoch = int(item.get("node_epoch", 0))
+        rx = int(item.get("network_rx_bytes", 0))
+        tx = int(item.get("network_tx_bytes", 0))
+    except (TypeError, ValueError):
+        return 0, 0
+    if epoch < 0 or node_epoch < 1 or rx < 0 or tx < 0:
+        return 0, 0
+    prior = previous.get(node_id)
+    drx = dtx = 0
+    if prior and epoch >= prior[0] and node_epoch == prior[1]:
+        if rx >= prior[2]:
+            drx = rx - prior[2]
+        if tx >= prior[3]:
+            dtx = tx - prior[3]
+    if prior is None or epoch >= prior[0]:
+        previous[node_id] = (epoch, node_epoch, rx, tx)
+    return drx, dtx
+
+
+def build_operational_metrics(window):
+    now = int(time.time())
+    since = now - window
+    cpu = []
+    memory = []
+    rtt = []
+    load_per_cpu = []
+    sessions = []
+    identities = []
+    utilization = []
+    latest = {}
+    health_samples = 0
+    service_issue_samples = 0
+    hive_network_issue_samples = 0
+    network_rx_delta = 0
+    network_tx_delta = 0
+    previous_network = {}
+    for item in iter_window_records([HEALTH_HISTORY], since):
+        if item.get("contract") != HEALTH_CONTRACT:
+            continue
+        health_samples += 1
+        node_id = str(item.get("node_id", ""))
+        if NODE_RE.fullmatch(node_id):
+            previous_latest = latest.get(node_id)
+            try:
+                item_epoch = int(item.get("epoch", 0))
+                previous_epoch = int(previous_latest.get("epoch", 0)) if previous_latest else -1
+            except (TypeError, ValueError):
+                item_epoch = 0
+                previous_epoch = -1
+            if item_epoch >= previous_epoch:
+                latest[node_id] = item
+        cpu.append(safe_number(item.get("cpu_percent", 0)))
+        memory.append(safe_number(item.get("memory_used_percent", 0)))
+        value = safe_number(item.get("rtt_ms", -1), -1)
+        if value >= 0:
+            rtt.append(value)
+        if "load1" in item:
+            cpu_count = max(1.0, safe_number(item.get("cpu_count", 1), 1))
+            load_per_cpu.append(max(0.0, safe_number(item.get("load1", 0))) / cpu_count)
+        sessions.append(max(0.0, safe_number(item.get("sessions", 0))))
+        if "session_identities" in item:
+            identities.append(max(0.0, safe_number(item.get("session_identities", 0))))
+        max_sessions = max(0.0, safe_number(item.get("max_sessions", 0)))
+        if max_sessions > 0:
+            utilization.append(min(10000.0, max(0.0, safe_number(item.get("sessions", 0))) * 100.0 / max_sessions))
+        protocols = safe_protocols(item.get("protocols", []))
+        mapping = {"ssh": "service_ssh", "wireguard": "service_wireguard", "openvpn": "service_openvpn"}
+        if protocols and any(service_state_value(item.get(mapping[p], "unknown")) != "active" for p in protocols):
+            service_issue_samples += 1
+        if int(safe_number(item.get("hive_network_configured", 0))) == 1 and service_state_value(item.get("hive_network_service", "unknown")) != "active":
+            hive_network_issue_samples += 1
+        drx, dtx = observed_network_delta(item, previous_network)
+        network_rx_delta += drx
+        network_tx_delta += dtx
+
+    states = {"HEALTHY": 0, "DEGRADED": 0, "DRAINING": 0, "OFFLINE": 0}
+    for item in latest.values():
+        state = str(item.get("state", "DEGRADED"))
+        states[state if state in states else "DEGRADED"] += 1
+    cpu_avg, cpu_p95, cpu_max = stats(cpu)
+    mem_avg, mem_p95, mem_max = stats(memory)
+    rtt_avg, rtt_p95, rtt_max = stats(rtt)
+    load_avg, load_p95, load_max = stats(load_per_cpu)
+    sess_avg, sess_p95, sess_max = stats(sessions)
+    ids_avg, ids_p95, ids_max = stats(identities)
+    util_avg, util_p95, util_max = stats(utilization)
+    sched_counts, failovers = event_counts("scheduler", since)
+    lease_counts, _ = event_counts("leases", since)
+    selections = sched_counts.get("select", 0)
+    grants = lease_counts.get("grant", 0)
+    denies = lease_counts.get("deny", 0)
+    admission_total = grants + denies
+    healthy_pct = round(states["HEALTHY"] * 100.0 / len(latest), 2) if latest else -1.0
+    failover_pct = round(failovers * 100.0 / selections, 2) if selections else 0.0
+    deny_pct = round(denies * 100.0 / admission_total, 2) if admission_total else 0.0
+    return {
+        "contract": METRICS_CONTRACT,
+        "observability_contract": CONTRACT,
+        "generated_epoch": now,
+        "window_seconds": window,
+        "health_samples": health_samples,
+        "nodes_observed": len(latest),
+        "nodes_healthy": states["HEALTHY"],
+        "nodes_degraded": states["DEGRADED"],
+        "nodes_draining": states["DRAINING"],
+        "nodes_offline": states["OFFLINE"],
+        "nodes_healthy_percent": healthy_pct,
+        "cpu_avg_percent": cpu_avg,
+        "cpu_p95_percent": cpu_p95,
+        "cpu_max_percent": cpu_max,
+        "memory_avg_percent": mem_avg,
+        "memory_p95_percent": mem_p95,
+        "memory_max_percent": mem_max,
+        "rtt_avg_ms": rtt_avg,
+        "rtt_p95_ms": rtt_p95,
+        "rtt_max_ms": rtt_max,
+        "load1_per_cpu_avg": load_avg,
+        "load1_per_cpu_p95": load_p95,
+        "load1_per_cpu_max": load_max,
+        "sessions_avg": sess_avg,
+        "sessions_p95": sess_p95,
+        "sessions_peak": sess_max,
+        "session_identities_avg": ids_avg,
+        "session_identities_p95": ids_p95,
+        "session_identities_peak": ids_max,
+        "session_limit_utilization_avg_percent": util_avg,
+        "session_limit_utilization_p95_percent": util_p95,
+        "session_limit_utilization_peak_percent": util_max,
+        "network_rx_delta_bytes": network_rx_delta,
+        "network_tx_delta_bytes": network_tx_delta,
+        "network_rx_rate_bps": round(network_rx_delta * 8.0 / window, 2),
+        "network_tx_rate_bps": round(network_tx_delta * 8.0 / window, 2),
+        "service_issue_samples": service_issue_samples,
+        "hive_network_issue_samples": hive_network_issue_samples,
+        "scheduler_selections": selections,
+        "scheduler_failovers": failovers,
+        "scheduler_failover_percent": failover_pct,
+        "drains": sched_counts.get("drain", 0),
+        "undrains": sched_counts.get("undrain", 0),
+        "lease_grants": grants,
+        "lease_denies": denies,
+        "lease_deny_percent": deny_pct,
+        "lease_releases": lease_counts.get("release", 0),
+        "authority_outages": lease_counts.get("node-authority-outage", 0),
+        "authority_recoveries": lease_counts.get("node-authority-recovered", 0),
+        "authority_fenced": lease_counts.get("node-authority-fenced", 0),
+        "controller_in_user_vpn_path": 0,
+    }
+
+
+def operational_metrics(window):
+    print(json_line(build_operational_metrics(window)))
+
+
+def bucket_stats(values):
+    avg, p95, maximum = stats(values)
+    return {"avg": avg, "p95": p95, "max": maximum}
+
+
+def build_series(node_filter, window, bucket_seconds):
+    if node_filter not in ("", "*") and not NODE_RE.fullmatch(node_filter):
+        die("node_id inválido.", 64)
+    bucket_count = math.ceil(window / bucket_seconds) + 1
+    if bucket_count > MAX_SERIES_BUCKETS:
+        die(f"janela/bucket excede {MAX_SERIES_BUCKETS} buckets.", 64)
+    now = int(time.time())
+    since = now - window
+    buckets = {}
+    previous_network = {}
+    nodes = set()
+    total_samples = 0
+    for item in iter_window_records([HEALTH_HISTORY], since):
+        if item.get("contract") != HEALTH_CONTRACT:
+            continue
+        node_id = str(item.get("node_id", ""))
+        if node_filter not in ("", "*") and node_id != node_filter:
+            continue
+        try:
+            epoch = int(item.get("epoch", 0))
+        except (TypeError, ValueError):
+            continue
+        if epoch < since or epoch > now + 300:
+            continue
+        start = (epoch // bucket_seconds) * bucket_seconds
+        row = buckets.setdefault(start, {
+            "nodes": set(), "samples": 0, "cpu": [], "memory": [], "rtt": [], "load": [],
+            "sessions": [], "utilization": [], "states": {"HEALTHY": 0, "DEGRADED": 0, "DRAINING": 0, "OFFLINE": 0},
+            "network_rx": 0, "network_tx": 0,
+        })
+        total_samples += 1
+        if NODE_RE.fullmatch(node_id):
+            nodes.add(node_id)
+            row["nodes"].add(node_id)
+        row["samples"] += 1
+        row["cpu"].append(safe_number(item.get("cpu_percent", 0)))
+        row["memory"].append(safe_number(item.get("memory_used_percent", 0)))
+        rtt_value = safe_number(item.get("rtt_ms", -1), -1)
+        if rtt_value >= 0:
+            row["rtt"].append(rtt_value)
+        if "load1" in item:
+            cpu_count = max(1.0, safe_number(item.get("cpu_count", 1), 1))
+            row["load"].append(max(0.0, safe_number(item.get("load1", 0))) / cpu_count)
+        row["sessions"].append(max(0.0, safe_number(item.get("sessions", 0))))
+        max_sessions = max(0.0, safe_number(item.get("max_sessions", 0)))
+        if max_sessions > 0:
+            row["utilization"].append(min(10000.0, max(0.0, safe_number(item.get("sessions", 0))) * 100.0 / max_sessions))
+        state = str(item.get("state", "DEGRADED"))
+        row["states"][state if state in row["states"] else "DEGRADED"] += 1
+        drx, dtx = observed_network_delta(item, previous_network)
+        row["network_rx"] += drx
+        row["network_tx"] += dtx
+    series_rows = []
+    for start in sorted(buckets):
+        row = buckets[start]
+        series_rows.append({
+            "start_epoch": start,
+            "end_epoch": start + bucket_seconds,
+            "samples": row["samples"],
+            "nodes_observed": len(row["nodes"]),
+            "state_healthy_samples": row["states"]["HEALTHY"],
+            "state_degraded_samples": row["states"]["DEGRADED"],
+            "state_draining_samples": row["states"]["DRAINING"],
+            "state_offline_samples": row["states"]["OFFLINE"],
+            "cpu_percent": bucket_stats(row["cpu"]),
+            "memory_percent": bucket_stats(row["memory"]),
+            "rtt_ms": bucket_stats(row["rtt"]),
+            "load1_per_cpu": bucket_stats(row["load"]),
+            "sessions": bucket_stats(row["sessions"]),
+            "session_limit_utilization_percent": bucket_stats(row["utilization"]),
+            "network_rx_delta_bytes": row["network_rx"],
+            "network_tx_delta_bytes": row["network_tx"],
+        })
+    return {
+        "contract": SERIES_CONTRACT,
+        "observability_contract": CONTRACT,
+        "generated_epoch": now,
+        "window_seconds": window,
+        "bucket_seconds": bucket_seconds,
+        "node_filter": node_filter or "*",
+        "samples": total_samples,
+        "nodes_observed": len(nodes),
+        "returned_buckets": len(series_rows),
+        "max_buckets": MAX_SERIES_BUCKETS,
+        "series": series_rows,
+        "security": {
+            "allowlisted_fields_only": 1,
+            "contains_private_keys": 0,
+            "contains_credentials": 0,
+            "contains_raw_audit": 0,
+            "contains_internal_paths": 0,
+            "controller_in_user_vpn_path": 0,
+        },
+    }
+
+
+def series(node_filter, window, bucket_seconds):
+    print(json_line(build_series(node_filter, window, bucket_seconds)))
+
+
+'''
+          text=text.replace(anchor,additions+anchor,1)
+          old='''def usage():\n    print("Uso: hive_observability.sh --status|--summary [WINDOW]|--export [WINDOW] [LIMIT]|--health [NODE|*] [LIMIT]|--scheduler [LIMIT]|--leases [IDENTITY|*] [LIMIT]|--prune [SECONDS]|--audit-status|--audit-maintain [RETENTION] [MAX_BYTES] [force]", file=sys.stderr)\n'''
+          new='''def usage():\n    print("Uso: hive_observability.sh --status|--summary [WINDOW]|--metrics [WINDOW]|--series [NODE|*] [WINDOW] [BUCKET]|--export [WINDOW] [LIMIT]|--health [NODE|*] [LIMIT]|--scheduler [LIMIT]|--leases [IDENTITY|*] [LIMIT]|--prune [SECONDS]|--audit-status|--audit-maintain [RETENTION] [MAX_BYTES] [force]", file=sys.stderr)\n'''
+          if text.count(old) != 1: raise SystemExit('usage anchor mismatch')
+          text=text.replace(old,new,1)
+          old='''elif cmd == "--summary":\n    summary(parse_int(args[1] if len(args) > 1 else DEFAULT_WINDOW, "window_seconds", 60, MAX_RETENTION))\nelif cmd == "--export":\n'''
+          new='''elif cmd == "--summary":\n    summary(parse_int(args[1] if len(args) > 1 else DEFAULT_WINDOW, "window_seconds", 60, MAX_RETENTION))\nelif cmd == "--metrics":\n    if len(args) > 2: usage()\n    operational_metrics(parse_int(args[1] if len(args) > 1 else DEFAULT_WINDOW, "window_seconds", 60, MAX_RETENTION))\nelif cmd == "--series":\n    if len(args) > 4: usage()\n    series(\n        args[1] if len(args) > 1 else "*",\n        parse_int(args[2] if len(args) > 2 else DEFAULT_WINDOW, "window_seconds", 60, MAX_RETENTION),\n        parse_int(args[3] if len(args) > 3 else DEFAULT_BUCKET, "bucket_seconds", MIN_BUCKET, MAX_BUCKET),\n    )\nelif cmd == "--export":\n'''
+          if text.count(old) != 1: raise SystemExit('dispatch anchor mismatch')
+          text=text.replace(old,new,1)
+          p.write_text(text)
+
+          replace_once('manager', '''  manager hive observe summary [WINDOW_SECONDS]\n  manager hive observe export [WINDOW_SECONDS] [LIMIT]\n''', '''  manager hive observe summary [WINDOW_SECONDS]\n  manager hive observe metrics [WINDOW_SECONDS]\n  manager hive observe series [NODE_ID|*] [WINDOW_SECONDS] [BUCKET_SECONDS]\n  manager hive observe export [WINDOW_SECONDS] [LIMIT]\n''')
+          replace_once('manager', '''          summary) exec "$MANAGER_HOME/modules/hive_observability.sh" --summary "${4:-3600}" ;;\n          export) exec "$MANAGER_HOME/modules/hive_observability.sh" --export "${4:-3600}" "${5:-50}" ;;\n''', '''          summary) exec "$MANAGER_HOME/modules/hive_observability.sh" --summary "${4:-3600}" ;;\n          metrics) exec "$MANAGER_HOME/modules/hive_observability.sh" --metrics "${4:-3600}" ;;\n          series) exec "$MANAGER_HOME/modules/hive_observability.sh" --series "${4:-*}" "${5:-3600}" "${6:-300}" ;;\n          export) exec "$MANAGER_HOME/modules/hive_observability.sh" --export "${4:-3600}" "${5:-50}" ;;\n''')
+          replace_once('manager', '''          *) err "Uso: manager hive observe {status|summary [WINDOW]|export [WINDOW] [LIMIT]|health [NODE|*] [LIMIT]|scheduler [LIMIT]|leases [ID|*] [LIMIT]|prune [SECONDS]|audit-status|audit-maintain [RETENTION] [MAX_BYTES] [force]}"; exit 64 ;;\n''', '''          *) err "Uso: manager hive observe {status|summary [WINDOW]|metrics [WINDOW]|series [NODE|*] [WINDOW] [BUCKET]|export [WINDOW] [LIMIT]|health [NODE|*] [LIMIT]|scheduler [LIMIT]|leases [ID|*] [LIMIT]|prune [SECONDS]|audit-status|audit-maintain [RETENTION] [MAX_BYTES] [force]}"; exit 64 ;;\n''')
+
+          doc=Path('docs/HIVE_OBSERVABILITY.md').read_text()
+          doc=doc.replace('''manager hive observe summary [WINDOW_SECONDS]\nmanager hive observe export [WINDOW_SECONDS] [LIMIT]\n''','''manager hive observe summary [WINDOW_SECONDS]\nmanager hive observe metrics [WINDOW_SECONDS]\nmanager hive observe series [NODE_ID|*] [WINDOW_SECONDS] [BUCKET_SECONDS]\nmanager hive observe export [WINDOW_SECONDS] [LIMIT]\n''',1)
+          marker='''## Export estruturado\n'''
+          section='''## Séries temporais e métricas operacionais\n\n`manager hive observe metrics [WINDOW_SECONDS]` agrega toda a janela observada, sem o limite de tail usado pelas consultas humanas. O contrato `manager-hive-observability-metrics-v1` inclui CPU/RAM/RTT, load normalizado por CPU, sessões e pico, utilização do limite local, deltas/rates observados de RX/TX, amostras com serviço degradado, saúde mais recente dos nós e taxas de failover/deny do control plane.\n\n`manager hive observe series [NODE_ID|*] [WINDOW_SECONDS] [BUCKET_SECONDS]` produz o contrato `manager-hive-observability-series-v1`. Cada bucket contém média/p95/máximo de CPU, RAM, RTT, load por CPU, sessões e utilização, além de estados de health e deltas observados de rede. O padrão é janela de 1 hora com buckets de 5 minutos; buckets aceitam 60 segundos a 24 horas e a saída é limitada a 1.000 buckets.\n\nOs contadores de rede continuam vindo do heartbeat assinado. O primeiro ponto observado de cada nó é baseline; redução de contador ou mudança de `node_epoch` também cria nova baseline, portanto reset/reboot nunca vira delta negativo ou tráfego artificial. Registros antigos de health que não possuem as métricas novas continuam legíveis.\n\nO histórico passa a preservar apenas os campos operacionais adicionais necessários: load, `cpu_count`, contadores RX/TX, número de identidades em sessão, protocolos e estados allowlisted de serviço. Interface de rede, endereço de origem, assinatura, nonce, token, chave e credencial continuam excluídos.\n\n'''
+          if marker not in doc: raise SystemExit('docs export marker missing')
+          doc=doc.replace(marker,section+marker,1)
+          doc=doc.replace('''## Escopo desta fatia\n\nA terceira fatia adiciona export estruturado, limitado e sanitizado para integração externa sem abrir um novo serviço de rede. A 0.8.10 ainda não está fechada: permanecem séries temporais/métricas operacionais adicionais e o gate final multi-nó da release.\n''','''## Escopo desta fatia\n\nA quarta fatia adiciona séries temporais e métricas operacionais derivadas das mesmas fontes autenticadas e sanitizadas. A 0.8.10 ainda não está fechada: permanece o gate final multi-nó com regressão completa e o bump formal da release.\n''',1)
+          Path('docs/HIVE_OBSERVABILITY.md').write_text(doc)
+
+          replace_once('docs/ROADMAP.md', '''- export JSON versionado, sanitizado e limitado para integração externa, sem listener adicional;\n- controlador continua fora do caminho de dados VPN.\n\nAinda pendente para fechar a 0.8.10:\n\n- séries temporais e métricas operacionais adicionais;\n- gate final multi-nó e regressão completa da release.\n- retenção operacional sem persistir segredos.\n''', '''- export JSON versionado, sanitizado e limitado para integração externa, sem listener adicional;\n- séries temporais por buckets com CPU/RAM/RTT/load/sessões/utilização e deltas observados de rede;\n- métricas operacionais por janela com p95/pico, taxa de failover/deny, estado dos nós e eventos de autoridade;\n- contadores de rede tratam reboot/reset e mudança de `node_epoch` como nova baseline, sem delta negativo;\n- retenção operacional preserva apenas campos allowlisted, sem interface/endereço/segredo;\n- controlador continua fora do caminho de dados VPN.\n\nAinda pendente para fechar a 0.8.10:\n\n- gate final multi-nó e regressão completa da release.\n''')
+          PY
+
+          bash -n manager
+          bash -n modules/hive_observability.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          text=Path('modules/hive_observability.sh').read_text()
+          marker='python3 - "$@" <<\'PY\'\n'
+          start=text.index(marker)+len(marker)
+          end=text.rindex('\nPY')
+          compile(text[start:end], 'hive_observability embedded python', 'exec')
+          PY
+          grep -q 'manager-hive-observability-metrics-v1' modules/hive_observability.sh
+          grep -q 'manager-hive-observability-series-v1' modules/hive_observability.sh
+          grep -q 'manager hive observe metrics' manager
+          grep -q 'manager hive observe series' docs/HIVE_OBSERVABILITY.md
+          test "$(cat VERSION)" = 0.8.9
+          git diff --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add manager modules/hive_observability.sh docs/HIVE_OBSERVABILITY.md docs/ROADMAP.md
+          git commit -m 'feat: add Hive operational metrics and timeseries'
+          git push origin HEAD:feature/0.8.10-operational-timeseries
