@@ -185,7 +185,8 @@ Uso:
   manager telegram auth resolve /CAMINHO/INITDATA | resolve-stdin
                                   valida initData HMAC/freshness antes do RBAC (0.9.0)
   manager telegram gateway status
-  manager telegram gateway call /CAMINHO/INITDATA /CAMINHO/REQUEST.json | call-stdin /CAMINHO/REQUEST.json
+  manager telegram gateway call /CAMINHO/INITDATA /CAMINHO/REQUEST.json
+  manager telegram gateway call-stdin /CAMINHO/REQUEST.json
                                   gateway tipado Telegram -> Automation v2 (0.9.0)
   manager telegram bot status|enable [POLL_TIMEOUT]|disable|poll-once
                                   ingresso Telegram Bot por long polling HTTPS (0.9.x)
