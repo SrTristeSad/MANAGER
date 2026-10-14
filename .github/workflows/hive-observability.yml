@@ -106,6 +106,40 @@ jobs:
           ! grep -Eq 'scheduler-secret|scheduler-token|secret|token' /tmp/scheduler.out
           ! grep -Eq 'lease-secret|lease-token|password|private_key|token' /tmp/leases.out
 
+      - name: Rotate scheduler and lease audits without losing query history
+        shell: bash
+        run: |
+          set -euxo pipefail
+          common=(
+            MANAGER_HIVE_OBSERVABILITY_DATA_DIR=/tmp/hive-observe
+            MANAGER_HIVE_HEALTH_DATA_DIR=/tmp/hive-health
+            MANAGER_HIVE_SCHEDULER_AUDIT_FILE=/tmp/hive-logs/scheduler.jsonl
+            MANAGER_HIVE_LEASE_AUDIT_FILE=/tmp/hive-logs/lease.jsonl
+            MANAGER_HIVE_OBSERVABILITY_AUDIT_FILE=/tmp/hive-logs/observe.jsonl
+          )
+          sudo env "${common[@]}" /opt/manager/manager hive observe audit-maintain 3600 1024 force >/tmp/audit-maintain.out
+          grep -q '^scheduler_rotated=1$' /tmp/audit-maintain.out
+          grep -q '^leases_rotated=1$' /tmp/audit-maintain.out
+          sudo test -f /tmp/hive-logs/scheduler.jsonl
+          sudo test -f /tmp/hive-logs/lease.jsonl
+          test "$(sudo stat -c '%a' /tmp/hive-logs/scheduler.jsonl)" = 600
+          test "$(sudo stat -c '%a' /tmp/hive-logs/lease.jsonl)" = 600
+          test "$(sudo find /tmp/hive-logs/scheduler.jsonl.d -maxdepth 1 -type f -name '*.jsonl' | wc -l)" -eq 1
+          test "$(sudo find /tmp/hive-logs/lease.jsonl.d -maxdepth 1 -type f -name '*.jsonl' | wc -l)" -eq 1
+          test "$(sudo find /tmp/hive-logs/scheduler.jsonl.d -maxdepth 1 -type f -name '*.jsonl' -exec stat -c '%a' {} \;)" = 600
+          test "$(sudo find /tmp/hive-logs/lease.jsonl.d -maxdepth 1 -type f -name '*.jsonl' -exec stat -c '%a' {} \;)" = 600
+          sudo env "${common[@]}" /opt/manager/modules/hive_observability.sh --scheduler 10 >/tmp/scheduler-after-rotate.out
+          sudo env "${common[@]}" /opt/manager/modules/hive_observability.sh --leases maria 10 >/tmp/leases-after-rotate.out
+          grep -q 'sticky-failover' /tmp/scheduler-after-rotate.out
+          grep -q 'global-session-limit' /tmp/leases-after-rotate.out
+          ! grep -Eq 'scheduler-secret|scheduler-token|secret|token' /tmp/scheduler-after-rotate.out
+          ! grep -Eq 'lease-secret|lease-token|password|private_key|token' /tmp/leases-after-rotate.out
+          sudo env "${common[@]}" /opt/manager/manager hive observe audit-status >/tmp/audit-status.out
+          grep -q '^scheduler_archive_segments=1$' /tmp/audit-status.out
+          grep -q '^leases_archive_segments=1$' /tmp/audit-status.out
+          grep -q '^rotation_strategy=atomic-rename$' /tmp/audit-status.out
+          grep -q '^archive_compression=0$' /tmp/audit-status.out
+
       - name: Aggregate failover drain latency and lease metrics
         shell: bash
         run: |
@@ -154,6 +188,14 @@ jobs:
             exit 1
           fi
           test "$(sudo wc -l /tmp/hive-observe/health-history.jsonl | awk '{print $1}')" -eq 1
+          sudo find /tmp/hive-logs/scheduler.jsonl.d /tmp/hive-logs/lease.jsonl.d -type f -name '*.jsonl' -exec touch -d '2 hours ago' {} +
+          sudo env "${common[@]}" /opt/manager/modules/hive_observability.sh --audit-maintain 3600 1024 >/tmp/audit-prune.out
+          grep -q '^scheduler_pruned=1$' /tmp/audit-prune.out
+          grep -q '^leases_pruned=1$' /tmp/audit-prune.out
+          sudo test -f /tmp/hive-logs/scheduler.jsonl
+          sudo test -f /tmp/hive-logs/lease.jsonl
+          test "$(sudo find /tmp/hive-logs/scheduler.jsonl.d -maxdepth 1 -type f -name '*.jsonl' | wc -l)" -eq 0
+          test "$(sudo find /tmp/hive-logs/lease.jsonl.d -maxdepth 1 -type f -name '*.jsonl' | wc -l)" -eq 0
 
       - name: Verify 0.8.10 remains in development
         shell: bash
@@ -162,5 +204,6 @@ jobs:
           test "$(cat VERSION)" = 0.8.9
           grep -q '^### 0.8.10 — observabilidade distribuída 🚧$' docs/ROADMAP.md
           grep -q 'Ainda pendente para fechar a 0.8.10' docs/ROADMAP.md
+          grep -q 'rotação coordenada dos audits' docs/ROADMAP.md
           test -f docs/HIVE_OBSERVABILITY.md
           git diff --exit-code
