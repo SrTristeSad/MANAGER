@@ -385,6 +385,7 @@ Gateway Mini App implementado nesta fatia:
 
 Ingresso Telegram Bot implementado nesta fatia:
 
+- ingresso autenticado do Telegram Bot por long polling HTTPS, reutilizando o gateway tipado;
 - long polling HTTPS com a Telegram Bot API sem listener público adicional;
 - `from.id` numérico é resolvido no binding existente e nunca substituído por username/chat/nome;
 - comandos Bot são mapeados para o mesmo contrato `manager-telegram-gateway-request-v1`;
