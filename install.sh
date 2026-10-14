@@ -106,9 +106,11 @@ FILES=(
   "modules/automation_principals.sh"
   "modules/automation_credentials.sh"
   "modules/automation_v2.sh"
+  "modules/automation_read_ops.sh"
   "modules/telegram_identity.sh"
   "modules/telegram_auth.sh"
   "modules/telegram_gateway.sh"
+  "modules/telegram_operations.sh"
   "modules/telegram_bot.sh"
   "modules/policy_engine.sh"
   "modules/session_engine.sh"
@@ -289,6 +291,9 @@ fi
 }
 "$INSTALL_DIR/modules/telegram_gateway.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O gateway Telegram 0.9.0 não pôde inicializar seu estado. Use: manager telegram gateway status" >&2
+}
+"$INSTALL_DIR/modules/telegram_operations.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] O gateway operacional read-only do Telegram não pôde inicializar seu estado." >&2
 }
 "$INSTALL_DIR/modules/telegram_bot.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O ingresso Telegram Bot não pôde reanexar seu estado. Use: manager telegram bot status" >&2
