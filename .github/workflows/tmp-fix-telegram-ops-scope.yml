@@ -24,24 +24,35 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          def replace(path, old, new):
-              p=Path(path)
-              s=p.read_text()
-              if old not in s:
-                  raise SystemExit(f'missing patch anchor: {path}')
-              p.write_text(s.replace(old,new,1))
+          p=Path('modules/automation_principals.sh')
+          s=p.read_text()
+          old='system.describe|node.usage|connection.preflight|connection.create|connection.status|connection.revoke)'
+          new='system.describe|node.usage|connection.preflight|connection.create|connection.status|connection.revoke|ops.clients|ops.sessions|ops.products|ops.quotas|ops.nodes|ops.diagnostics)'
+          if s.count(old) != 1:
+              raise SystemExit(f'action allowlist anchor count={s.count(old)}')
+          p.write_text(s.replace(old,new,1))
 
-          replace(
-              'modules/automation_principals.sh',
-              '''        case "$item" in\n          system.describe|node.usage|connection.preflight|connection.create|connection.status|connection.revoke) ;;\n          *) return 1 ;;\n        esac\n''',
-              '''        case "$item" in\n          system.describe|node.usage|connection.preflight|connection.create|connection.status|connection.revoke|ops.clients|ops.sessions|ops.products|ops.quotas|ops.nodes|ops.diagnostics) ;;\n          *) return 1 ;;\n        esac\n'''
+          p=Path('.github/workflows/telegram-ops-read.yml')
+          s=p.read_text()
+          marker="actions='ops.clients,ops.sessions,ops.products,ops.quotas,ops.nodes,ops.diagnostics'"
+          if s.count(marker) != 1:
+              raise SystemExit(f'fixture marker count={s.count(marker)}')
+          indent='          '
+          fixture=(
+              "sudo install -d -m 0700 /etc/manager/access/resellers\n"
+              "cat >/tmp/resellerA.conf <<'EOF'\n"
+              "id=resellerA\n"
+              "role=reseller\n"
+              "parent=\n"
+              "quota=100\n"
+              "enabled=1\n"
+              "created_epoch=1\n"
+              "updated_epoch=1\n"
+              "EOF\n"
+              "sudo install -m 0600 /tmp/resellerA.conf /etc/manager/access/resellers/resellerA.conf\n\n"
           )
-
-          replace(
-              '.github/workflows/telegram-ops-read.yml',
-              '''          actions='ops.clients,ops.sessions,ops.products,ops.quotas,ops.nodes,ops.diagnostics'\n          sudo manager automation v2 principal create ops-admin admin '*'\n''',
-              '''          sudo install -d -m 0700 /etc/manager/access/resellers\n          cat >/tmp/resellerA.conf <<'EOF'\n          id=resellerA\n          role=reseller\n          parent=\n          quota=100\n          enabled=1\n          created_epoch=1\n          updated_epoch=1\n          EOF\n          sudo install -m 0600 /tmp/resellerA.conf /etc/manager/access/resellers/resellerA.conf\n\n          actions='ops.clients,ops.sessions,ops.products,ops.quotas,ops.nodes,ops.diagnostics'\n          sudo manager automation v2 principal create ops-admin admin '*'\n'''
-          )
+          fixture=indent + fixture.replace('\n','\n'+indent)
+          p.write_text(s.replace(indent+marker, fixture+marker, 1))
           PY
           bash -n modules/automation_principals.sh
           git diff --check
