@@ -36,6 +36,6 @@ jobs:
           set -euxo pipefail
           ! grep -q '^### 0\.8\.10 — observabilidade distribuída 🚧$' docs/ROADMAP.md
           ! grep -q 'Ainda pendente para fechar a 0.8.10' docs/ROADMAP.md
-          grep -q '^## 0\.9\.x — Telegram Bot + Mini App$' docs/ROADMAP.md
+          grep -q '^## 0\.9\.x — Telegram Bot + Mini App' docs/ROADMAP.md
           grep -q 'controlador continua fora do caminho de dados VPN' docs/ROADMAP.md
           git diff --exit-code
