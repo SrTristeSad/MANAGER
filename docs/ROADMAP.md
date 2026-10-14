@@ -329,10 +329,21 @@ Implementado nesta primeira fatia:
 - chaves privadas antigas não são arquivadas; somente chaves públicas e documentos de transição ficam disponíveis para audit/fencing;
 - OpenSSL Ed25519 continua sendo a única primitiva usada; nenhuma criptografia própria foi criada.
 
+Implementado nesta segunda fatia:
+
+- rotação da chave WireGuard da malha `mgh0` com par novo gerado somente no nó e chave privada staged em `0600`;
+- request de rotação assinado pela identidade Ed25519 enrolled do nó e cercado por `controller_epoch`, `node_epoch`, `config_epoch` e `network_generation`;
+- autorização do controlador assinada por Ed25519, com nonce/freshness, digest do request e transição exata de geração;
+- ativação em duas fases: o stage não altera a topologia; o activate incrementa `config_epoch` e `network_generation` e só então gera bundles assinados para todos os nós ativos;
+- commit local transacional: a nova chave entra apenas junto do novo bundle; falha ao aplicar restaura a chave anterior e reconcilia a topologia anterior;
+- retry/crash recovery idempotente e replay cache persistente;
+- histórico contém apenas chaves públicas/documentos assinados; nenhuma chave privada WireGuard antiga é arquivada;
+- controlador continua fora do caminho de dados VPN.
+
 Pendente para fechar a 0.8.9:
 
-- rotação da chave WireGuard da malha `mgh0` com transição staged e redistribuição de topologia;
-- consolidar os gates de anti-replay/fencing entre todos os fluxos distribuídos e executar a regressão final da release.
+- consolidar os gates de anti-replay/fencing entre todos os fluxos distribuídos e executar a regressão final da release;
+- somente depois disso fazer o bump formal de `VERSION` para 0.8.9.
 
 ### 0.8.10 — observabilidade distribuída
 

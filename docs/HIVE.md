@@ -1061,4 +1061,43 @@ Estado principal:
 
 Uninstall/reinstall normal preserva esse estado porque ele faz parte de `/etc/manager/hive`; purge remove junto com o restante da confiança da Colmeia.
 
-A rotação da chave WireGuard privada da malha `mgh0` continua pendente para a próxima fatia da 0.8.9.
+### Rotação da chave WireGuard da malha `mgh0`
+
+A segunda fatia da 0.8.9 adiciona uma troca em duas fases. A chave privada nova nasce somente no nó e fica staged em arquivo `0600`; ela nunca é enviada ao controlador. O request contém apenas chave pública antiga/nova e é assinado pela identidade Ed25519 enrolled do nó.
+
+Fluxo operacional:
+
+```bash
+# 1. no nó que terá a chave WireGuard trocada
+manager hive network rotate prepare /root/wg-rotation.request.json
+
+# 2. no controlador: valida request e emite autorização, sem alterar a topologia
+manager hive network controller rotate stage   /root/wg-rotation.request.json   /root/wg-rotation.authorization.json
+
+# 3. no controlador: ativa a nova geração e produz um bundle para cada nó ativo
+mkdir -m 700 /root/wg-rotation-bundles
+manager hive network controller rotate activate   WGROT_ID   /root/wg-rotation-bundles
+
+# 4. no nó rotacionado: troca a chave e aplica o bundle correspondente como uma transação
+manager hive network rotate commit   /root/wg-rotation.authorization.json   /root/wg-rotation-bundles/NODE_ID.network.json
+
+# 5. nos demais nós: aplicar seus bundles normalmente
+manager hive network accept /root/wg-rotation-bundles/OUTRO_NODE.network.json
+```
+
+O `stage` é deliberadamente não destrutivo. Se `controller_epoch`, `node_epoch`, `config_epoch`, `network_generation` ou a chave ativa mudarem antes de `activate`, a autorização fica cercada e é recusada.
+
+No `activate`, o controlador incrementa exatamente uma geração de `network_generation` para o nó rotacionado e um `config_epoch` global. Os bundles são assinados para toda a malha ativa, portanto peers antigos passam a conhecer a nova chave pública somente através da nova topologia autoritativa.
+
+No `commit`, o nó verifica a autorização pinada e o bundle antes da troca. A nova chave privada é colocada em produção apenas durante a mesma transação que aplica a nova topologia. Se `hive_network.sh --accept` falhar, a chave privada/pública anterior é restaurada e a topologia anterior é reconciliada. Depois do sucesso, a chave privada antiga não é arquivada.
+
+A operação é fail-closed e coordenada, mas não promete handover WireGuard sem perda de pacote: peers que ainda não aplicaram o bundle novo podem perder temporariamente conectividade com o nó rotacionado. O restante da malha não precisa ser derrubado, e o controlador continua fora do tráfego VPN dos usuários.
+
+Estado adicional:
+
+```text
+/etc/manager/hive/network/rotation/
+/etc/manager/hive/controller/network/rotation/
+```
+
+Os contratos usam nonce persistente, freshness, `rotation_id`, `controller_epoch`, `node_epoch`, `config_epoch` e `network_generation`. Retries idênticos são idempotentes; payload divergente ou geração antiga é recusado.

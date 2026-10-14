@@ -90,6 +90,7 @@ FILES=(
   "modules/hive_identity.sh"
   "modules/hive_key_rotation.sh"
   "modules/hive_network.sh"
+  "modules/hive_wg_rotation.sh"
   "modules/hive_health.sh"
   "modules/hive_scheduler.sh"
   "modules/hive_leases.sh"
@@ -219,6 +220,9 @@ chmod 0644 "$ETC_DIR/installed-version"
 }
 "$INSTALL_DIR/modules/hive_network.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] A rede privada da Colmeia não pôde ser inicializada/reconciliada. Use: manager hive network status" >&2
+}
+"$INSTALL_DIR/modules/hive_wg_rotation.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] O estado de rotação WireGuard da Colmeia não pôde ser lido. Use: manager hive network rotate status" >&2
 }
 "$INSTALL_DIR/modules/hive_health.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O heartbeat/saúde da Colmeia não pôde ser reanexado. Use: manager hive health status" >&2
