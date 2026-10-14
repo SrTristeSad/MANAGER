@@ -33,6 +33,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          grep -q '^### 0\.8\.10 — observabilidade distribuída$' docs/ROADMAP.md
+          grep -q '^### 0\.8\.10 — observabilidade distribuída 🚧$' docs/ROADMAP.md
+          grep -q 'Ainda pendente para fechar a 0.8.10' docs/ROADMAP.md
           ! grep -q '^## \[0.8.10\]' CHANGELOG.md
           test "$(cat VERSION)" = "0.8.9"
