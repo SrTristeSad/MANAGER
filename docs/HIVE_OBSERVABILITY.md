@@ -46,6 +46,8 @@ O padrão de retenção dos audits é 14 dias (`MANAGER_HIVE_OBSERVABILITY_AUDIT
 ```bash
 manager hive observe status
 manager hive observe summary [WINDOW_SECONDS]
+manager hive observe metrics [WINDOW_SECONDS]
+manager hive observe series [NODE_ID|*] [WINDOW_SECONDS] [BUCKET_SECONDS]
 manager hive observe export [WINDOW_SECONDS] [LIMIT]
 manager hive observe health [NODE_ID|*] [LIMIT]
 manager hive observe scheduler [LIMIT]
@@ -63,6 +65,16 @@ manager hive observe audit-maintain [RETENTION_SECONDS] [MAX_BYTES] [force]
 - drain/undrain;
 - grants, denies e releases globais;
 - outage, recovery e fencing da autoridade.
+
+## Séries temporais e métricas operacionais
+
+`manager hive observe metrics [WINDOW_SECONDS]` agrega toda a janela observada, sem o limite de tail usado pelas consultas humanas. O contrato `manager-hive-observability-metrics-v1` inclui CPU/RAM/RTT, load normalizado por CPU, sessões e pico, utilização do limite local, deltas/rates observados de RX/TX, amostras com serviço degradado, saúde mais recente dos nós e taxas de failover/deny do control plane.
+
+`manager hive observe series [NODE_ID|*] [WINDOW_SECONDS] [BUCKET_SECONDS]` produz o contrato `manager-hive-observability-series-v1`. Cada bucket contém média/p95/máximo de CPU, RAM, RTT, load por CPU, sessões e utilização, além de estados de health e deltas observados de rede. O padrão é janela de 1 hora com buckets de 5 minutos; buckets aceitam 60 segundos a 24 horas e a saída é limitada a 1.000 buckets.
+
+Os contadores de rede continuam vindo do heartbeat assinado. O primeiro ponto observado de cada nó é baseline; redução de contador ou mudança de `node_epoch` também cria nova baseline, portanto reset/reboot nunca vira delta negativo ou tráfego artificial. Registros antigos de health que não possuem as métricas novas continuam legíveis.
+
+O histórico passa a preservar apenas os campos operacionais adicionais necessários: load, `cpu_count`, contadores RX/TX, número de identidades em sessão, protocolos e estados allowlisted de serviço. Interface de rede, endereço de origem, assinatura, nonce, token, chave e credencial continuam excluídos.
 
 ## Export estruturado
 
@@ -87,4 +99,4 @@ Observabilidade é diagnóstica. Se a gravação do histórico falhar, o heartbe
 
 ## Escopo desta fatia
 
-A terceira fatia adiciona export estruturado, limitado e sanitizado para integração externa sem abrir um novo serviço de rede. A 0.8.10 ainda não está fechada: permanecem séries temporais/métricas operacionais adicionais e o gate final multi-nó da release.
+A quarta fatia adiciona séries temporais e métricas operacionais derivadas das mesmas fontes autenticadas e sanitizadas. A 0.8.10 ainda não está fechada: permanece o gate final multi-nó com regressão completa e o bump formal da release.
