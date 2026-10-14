@@ -100,7 +100,9 @@ Uso:
   manager hive observe scheduler [LIMIT]
   manager hive observe leases [IDENTITY_ID|*] [LIMIT]
   manager hive observe prune [RETENTION_SECONDS]
-                                  histórico/summary sanitizado do control plane (0.8.10)
+  manager hive observe audit-status
+  manager hive observe audit-maintain [RETENTION_SECONDS] [MAX_BYTES] [force]
+                                  histórico/summary e retenção sanitizada do control plane (0.8.10)
   manager hive node status|list
   manager hive node show NODE
   manager hive node placement NODE NAME COUNTRY REGION POOL
@@ -488,7 +490,9 @@ case "${1:-}" in
           scheduler) exec "$MANAGER_HOME/modules/hive_observability.sh" --scheduler "${4:-50}" ;;
           leases) exec "$MANAGER_HOME/modules/hive_observability.sh" --leases "${4:-*}" "${5:-50}" ;;
           prune) if [[ -n "${4:-}" ]]; then exec "$MANAGER_HOME/modules/hive_observability.sh" --prune "$4"; else exec "$MANAGER_HOME/modules/hive_observability.sh" --prune; fi ;;
-          *) err "Uso: manager hive observe {status|summary [WINDOW]|health [NODE|*] [LIMIT]|scheduler [LIMIT]|leases [ID|*] [LIMIT]|prune [SECONDS]}"; exit 64 ;;
+          audit-status) exec "$MANAGER_HOME/modules/hive_observability.sh" --audit-status ;;
+          audit-maintain) exec "$MANAGER_HOME/modules/hive_observability.sh" --audit-maintain "${4:-}" "${5:-}" "${6:-}" ;;
+          *) err "Uso: manager hive observe {status|summary [WINDOW]|health [NODE|*] [LIMIT]|scheduler [LIMIT]|leases [ID|*] [LIMIT]|prune [SECONDS]|audit-status|audit-maintain [RETENTION] [MAX_BYTES] [force]}"; exit 64 ;;
         esac
         ;;
       node)

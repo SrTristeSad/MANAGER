@@ -335,11 +335,13 @@ Fundação implementada nesta primeira fatia:
 - summary por janela com failover sticky, drain/undrain, RTT médio/p95, grants/denies/releases e estado de autoridade;
 - retenção temporal do histórico de health, root-only, sem chaves/credenciais/assinaturas/nonces;
 - observabilidade failure-isolated: erro no histórico não invalida heartbeat aceito;
+- rotação coordenada dos audits de scheduler/leases por rename atômico, sem truncar em lugar;
+- consultas sanitizadas continuam atravessando segmentos arquivados + arquivo ativo;
+- retenção temporal remove somente segmentos antigos, com armazenamento root-only e sem compressão concorrente;
 - controlador continua fora do caminho de dados VPN.
 
 Ainda pendente para fechar a 0.8.10:
 
-- retenção/rotação coordenada dos audits existentes;
 - export estruturado/integração externa;
 - séries temporais e métricas operacionais adicionais;
 - gate final multi-nó e regressão completa da release.
