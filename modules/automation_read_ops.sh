@@ -60,10 +60,9 @@ def kv(text):
 
 def int_value(value, default=0):
     try:
-        n = int(str(value))
+        return int(str(value))
     except (TypeError, ValueError):
         return default
-    return n
 
 
 def emit(kind, items=None, summary=None):
@@ -97,18 +96,16 @@ def identities():
         if arc == 0:
             a = kv(assignment)
             item["product_id"] = a.get("product_id", "")[:64]
-            item["quota_used_bytes"] = max(0, int_value(a.get("used_bytes", 0)))
+            item["quota_used_bytes"] = max(0, int_value(a.get("quota_used_bytes", 0)))
             item["quota_bytes"] = max(0, int_value(a.get("quota_bytes", 0)))
-            item["quota_exceeded"] = 1 if a.get("exceeded") == "1" else 0
-            item["quota_enforceable"] = 1 if a.get("enforceable") == "1" else 0
-            item["quota_period"] = a.get("cycle", "")[:64]
+            item["quota_exceeded"] = 1 if a.get("quota_exceeded") == "1" else 0
+            item["quota_enforceable"] = 1 if a.get("quota_enforceable") == "1" else 0
+            item["quota_period"] = a.get("quota_cycle", "")[:64]
         else:
-            item["product_id"] = ""
-            item["quota_used_bytes"] = 0
-            item["quota_bytes"] = 0
-            item["quota_exceeded"] = 0
-            item["quota_enforceable"] = 0
-            item["quota_period"] = ""
+            item.update({
+                "product_id": "", "quota_used_bytes": 0, "quota_bytes": 0,
+                "quota_exceeded": 0, "quota_enforceable": 0, "quota_period": "",
+            })
         items.append(item)
     emit("identities", items=items)
 
@@ -178,8 +175,10 @@ def nodes():
         data = json.loads(text)
     except json.JSONDecodeError:
         die("export da Colmeia inválido", 70)
+    streams = data.get("streams", {}) if isinstance(data, dict) else {}
+    health = streams.get("health", []) if isinstance(streams, dict) else []
     latest = {}
-    for row in data.get("health", []) if isinstance(data, dict) else []:
+    for row in health:
         if not isinstance(row, dict):
             continue
         node_id = row.get("node_id")
@@ -191,13 +190,13 @@ def nodes():
     allowed = {
         "epoch", "node_id", "node_epoch", "state", "reason", "sessions", "max_sessions",
         "capacity", "weight", "cpu_percent", "memory_used_percent", "load1", "rtt_ms",
-        "protocols", "service_ssh", "service_wireguard", "service_openvpn",
-        "hive_network_service", "hive_network_peer_count",
+        "service_ssh", "service_wireguard", "service_openvpn", "hive_network_service",
+        "hive_network_peer_count",
     }
     items = []
     for node_id in sorted(latest)[:MAX_ITEMS]:
         row = latest[node_id]
-        items.append({k: row[k] for k in allowed if k in row and isinstance(row[k], (str, int, float, bool, list))})
+        items.append({k: row[k] for k in allowed if k in row and isinstance(row[k], (str, int, float, bool))})
     emit("nodes", items=items)
 
 
@@ -259,7 +258,7 @@ def status():
     print("read_only=1")
     print("max_items=" + str(MAX_ITEMS))
     print("secret_fields=0")
-    print("actions=operations.identities,operations.products,operations.sessions,operations.nodes,operations.diagnostics")
+    print("operations=identities,products,sessions,nodes,diagnostics")
 
 
 cmd = sys.argv[1] if len(sys.argv) > 1 else "--status"
