@@ -207,10 +207,12 @@ manager hive node select wireguard BR-SP PREMIUM maria '*'
 ### 0.8.10 — observabilidade distribuída ✅
 
 - histórico sanitizado de health/capacidade, scheduler e leases;
-- rotação/retenção segura dos audits;
-- export estruturado;
+- rotação/retenção segura dos audits, com rotação coordenada dos audits por rename atômico;
+- export estruturado, incluindo export JSON versionado para integrações externas;
 - métricas e séries temporais;
-- gate final multi-nó com TLS 1.3, Ed25519 e fencing.
+- gate final multi-nó com TLS 1.3, Ed25519 e fencing;
+- gate final multi-nó permanente preserva o fechamento end-to-end da release;
+- regressão completa do repositório permanece requisito para merge da release.
 
 ## 0.9.x — Telegram Bot + Mini App 🚧
 
@@ -225,6 +227,9 @@ Fundação implementada:
 - validação HMAC-SHA-256 do `Telegram.WebApp.initData` com freshness;
 - bot token instalado por arquivo root-only e nunca aceito em argv;
 - contratos `manager-telegram-initdata-v1` e `manager-telegram-authenticated-principal-v1`;
+
+Gateway Mini App implementado nesta fatia:
+
 - gateway `manager-telegram-gateway-request-v1` aceita somente ações tipadas/allowlisted;
 - gateway delega à Automation v2 usando credencial Ed25519 do principal, preservando RBAC, rate limit e idempotência;
 - `managerd` continua sendo a autoridade de role/subject/node/pool/action scope e revalida RBAC antes da idempotência;
@@ -232,6 +237,7 @@ Fundação implementada:
 
 Ingresso Telegram Bot implementado nesta fatia:
 
+- contrato de ingresso `manager-telegram-bot-ingress-v1`;
 - ingresso autenticado do Telegram Bot por long polling HTTPS, reutilizando o gateway tipado;
 - long polling HTTPS com a Telegram Bot API sem listener público adicional;
 - somente chat privado com `from.id == chat.id` entra no parser;
