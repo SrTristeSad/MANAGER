@@ -237,6 +237,13 @@ O contrato de saída é `manager-telegram-gateway-v1`. O audit `/var/log/manager
 
 ## Ingresso do Telegram Bot por long polling
 
+O Bot também pode expor as **consultas operacionais somente leitura já existentes** por comandos fixos:
+`/clients` (identidades), `/products`, `/sessions`, `/nodes` e `/diagnostics`.
+Esses comandos encaminham a solicitação ao `manager-telegram-operations-v1`, não ao shell.
+A autorização continua exigindo a capability administrativa `node.usage` na Automation v2, com role admin e escopos compatíveis.
+Revendedores/subrevendedores não recebem listagens globais: a liberação depende de paginação e filtragem por owner/produto no `managerd`.
+As respostas no Bot exibem um resumo de até oito registros entre os primeiros cem retornados pelo backend; o limite não representa a quantidade global. Não existem comandos de escrita nesta integração.
+
 O Bot usa `getUpdates` por HTTPS contra `https://api.telegram.org`, portanto não abre porta pública, não exige webhook e não altera firewall. O bot token é lido do mesmo arquivo root-only usado pela autenticação do Mini App e nunca aparece em argv, audit ou mensagens de erro.
 
 Somente mensagens privadas com `message.from.id == message.chat.id` entram no parser. O `user.id` vem da resposta autenticada da Bot API e é resolvido no mesmo binding `telegram_user_id -> principal_id`; username, nome, texto livre e `chat.id` não concedem autoridade. O ingresso inicial expõe somente comandos fixos de leitura:
