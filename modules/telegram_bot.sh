@@ -431,7 +431,7 @@ def format_reply(command, gateway_result=None):
         return format_operational_reply(gateway_result)
     if gateway_result.get('action_id') == 'ops.read':
         payload = gateway_result.get('result')
-        return format_scoped_reply(payload.get('view') if isinstance(payload, dict) else None)
+        return format_scoped_reply(payload if isinstance(payload, dict) else None)
     payload={'action_id':gateway_result.get('action_id'),'cached':bool(gateway_result.get('cached',False))}
     if isinstance(gateway_result.get('result'),dict):
         payload['result']=safe_clone(gateway_result['result'])
