@@ -241,7 +241,7 @@ O Bot também pode expor as **consultas operacionais somente leitura já existen
 `/clients` (identidades), `/products`, `/sessions`, `/nodes` e `/diagnostics`.
 `/clients`, `/products` e `/sessions`, além de `/quotas`, usam a ação tipada `ops.read`, com páginas de até oito registros e escopos do principal autenticado. Exemplo: `/clients 2` apresenta a segunda página **já filtrada**.
 Revendedores veem clientes próprios e de subrevendedores ativos dentro dos produtos permitidos; subrevendedores veem somente seus clientes; usuários veem a própria identidade. `/nodes` e `/diagnostics` permanecem exclusivamente administrativos, usando o gateway `manager-telegram-operations-v1` com `node.usage`.
-O Mini App pode consumir `ops.read` pelo gateway já existente, mas ainda não dispõe das telas visuais. Nenhum dos comandos executa shell ou cria/revoga acessos.
+O Mini App visual agora consome `ops.read` via serviço HTTP local opt-in e proxy HTTPS do operador. Veja `docs/TELEGRAM_MINIAPP.md`. Nenhum dos comandos executa shell ou cria/revoga acessos.
 
 O Bot usa `getUpdates` por HTTPS contra `https://api.telegram.org`, portanto não abre porta pública, não exige webhook e não altera firewall. O bot token é lido do mesmo arquivo root-only usado pela autenticação do Mini App e nunca aparece em argv, audit ou mensagens de erro.
 
@@ -267,6 +267,6 @@ A unidade `manager-telegram-bot.service` é opcional e usa long polling. Estado 
 
 ## Próximas fatias da 0.9
 
-A fundação de ingresso Bot + Mini App da 0.9.0 fica funcionalmente completa com o long polling. As fases seguintes expandem telas e fluxos de sessões, clientes, produtos, cotas, nós e diagnósticos. Operações de escrita no Bot serão expostas apenas com confirmação explícita na UX. Webhook pode ser adicionado como transporte alternativo futuro sem mudar a autoridade do gateway.
+A fundação de ingresso Bot + Mini App da 0.9.0 fica funcionalmente completa com o long polling. A interface visual de clientes, sessões, produtos e cotas está disponível; as fases seguintes ampliam recursos administrativos de nós e diagnósticos. Operações de escrita no Bot serão expostas apenas com confirmação explícita na UX. Webhook pode ser adicionado como transporte alternativo futuro sem mudar a autoridade do gateway.
 
 O Telegram permanece apenas uma interface do control plane existente, não uma nova autoridade paralela.
