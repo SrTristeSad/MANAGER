@@ -190,6 +190,8 @@ Uso:
                                   executa ações tipadas via Automation v2 sem shell arbitrário (0.9.0)
   manager telegram bot status|enable|disable|poll-once
                                   ingresso Bot API por long polling, sem listener público (0.9.0)
+  manager telegram miniapp status|configure https://DOMINIO [PORT]|enable|disable
+                                  Mini App visual em loopback (requer proxy HTTPS externo)
   manager --diagnostics           abre o diagnóstico
   manager --version               mostra a versão
   manager --help                  mostra esta ajuda
@@ -695,7 +697,16 @@ case "${1:-}" in
           *) err "Uso: manager telegram bot {status|enable|disable|poll-once}"; exit 64 ;;
         esac
         ;;
-      *) err "Uso: manager telegram {identity|auth|gateway|bot} ..."; exit 64 ;;
+      miniapp)
+        case "${3:-status}" in
+          status) exec "$MANAGER_HOME/modules/telegram_miniapp.sh" --status ;;
+          configure) [[ -n "${4:-}" ]] || { err "Uso: manager telegram miniapp configure https://DOMINIO [PORT]"; exit 64; }; exec "$MANAGER_HOME/modules/telegram_miniapp.sh" --configure "$4" "${5:-18768}" ;;
+          enable) exec "$MANAGER_HOME/modules/telegram_miniapp.sh" --enable ;;
+          disable) exec "$MANAGER_HOME/modules/telegram_miniapp.sh" --disable ;;
+          *) err "Uso: manager telegram miniapp {status|configure|enable|disable}"; exit 64 ;;
+        esac
+        ;;
+      *) err "Uso: manager telegram {identity|auth|gateway|bot|miniapp} ..."; exit 64 ;;
     esac
     ;;
   --diagnostics) exec "$MANAGER_HOME/modules/diagnostics.sh" ;;
