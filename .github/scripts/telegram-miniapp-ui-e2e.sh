@@ -173,7 +173,15 @@ assert call('/api/read',{'init_data':init_data(123456789),'view':'nodes','page':
 assert call('/api/read',{'init_data':init_data(123456789),'view':'diagnostics','page':0,'limit':8,'params':{}})['status']==400
 assert call('/api/read',{'init_data':init_data(123456789),'view':'clients','page':0,'limit':8},method='PUT')['status']==405
 
-# No replay of owner access after revocation; backend must recheck scope.
+# Removing node.usage immediately revokes both admin-only views, not ops.read.
+import subprocess
+subprocess.run(['sudo','manager','automation','v2','principal','scope',
+                'app-admin','*','*','ops.read'], check=True, capture_output=True)
+for operation in ('nodes','diagnostics'):
+    code, denied = scoped(123456789, operation)
+    assert code == 403, (operation, code, denied)
+code, allowed = scoped(123456789,'clients')
+assert code == 200 and allowed['ok'] is True, (code, allowed)
 print('miniapp-http-e2e=passed')
 PY
 
