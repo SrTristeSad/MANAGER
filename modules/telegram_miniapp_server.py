@@ -173,7 +173,7 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, TypeError):
                 return self.reply(503, {"ok": False, "error": "backend-unavailable"})
             if result.returncode != 0 or not data.get("ok"):
-                http_code = {64: 400, 65: 409, 66: 403, 67: 403, 75: 429, 77: 403}.get(status, 503)
+                http_code = {64: 403, 65: 409, 66: 403, 67: 403, 75: 429, 77: 403}.get(status, 503)
                 return self.reply(http_code, {"ok": False, "error": "access-denied" if http_code == 403 else "request-failed"})
             result_data = data.get("result")
             view_data = result_data.get("view") if isinstance(result_data, dict) else None
