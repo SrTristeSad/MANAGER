@@ -53,6 +53,22 @@ sudo manager telegram miniapp enable
 sudo manager telegram miniapp status | grep -q '^enabled=1$'
 sudo manager telegram miniapp status | grep -q '^active=1$'
 
+# systemd may report active before Python accepts connections on the loopback port.
+python3 - <<'PY'
+import socket
+import time
+deadline = time.monotonic() + 15
+while True:
+    try:
+        with socket.create_connection(('127.0.0.1', 18769), timeout=0.4):
+            break
+    except OSError:
+        if time.monotonic() >= deadline:
+            raise SystemExit('Mini App HTTP listener not ready')
+        time.sleep(0.2)
+PY
+sudo ss -ltnH | awk '$4=="127.0.0.1:18769" {found=1} $4=="0.0.0.0:18769" || $4=="[::]:18769" {exposed=1} END {exit(found && !exposed ? 0 : 1)}'
+
 python3 - <<'PY'
 import hashlib
 import hmac
