@@ -128,7 +128,8 @@ assert status==status2==200
 assert p0['data']['has_more'] is True and p0['data']['next_page']==1
 assert p1['data']['items'][0]['identity_id']!=p0['data']['items'][0]['identity_id']
 
-assert scoped(323456789)[0]==403
+deny_status,deny_payload=scoped(323456789)
+assert deny_status==403,(deny_status,deny_payload)
 assert scoped(123456789,init='tampered')[0]==403
 assert scoped(123456789,view='nodes')[0]==400
 assert scoped(123456789,limit=999)[0]==400
