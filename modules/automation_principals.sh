@@ -56,7 +56,7 @@ normalize_remote_scope() {
         ;;
       action)
         case "$item" in
-          system.describe|node.usage|connection.preflight|connection.create|connection.status|connection.revoke) ;;
+          system.describe|node.usage|connection.preflight|connection.create|connection.status|connection.revoke|ops.read) ;;
           *) return 1 ;;
         esac
         ;;
