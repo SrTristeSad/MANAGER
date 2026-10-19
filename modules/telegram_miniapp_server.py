@@ -18,7 +18,8 @@ from pathlib import Path
 
 CONTRACT = "manager-telegram-miniapp-http-v1"
 REQUEST_CONTRACT = "manager-telegram-gateway-request-v1"
-VIEWS = {"clients", "sessions", "products", "quotas"}
+VIEWS = {"clients", "sessions", "products", "quotas", "nodes", "diagnostics"}
+ADMIN_VIEWS = {"nodes", "diagnostics"}
 MAX_BODY = 16384
 MAX_REPLY = 262144
 SEM = threading.BoundedSemaphore(6)
@@ -26,6 +27,7 @@ HOME = Path(os.environ.get("MANAGER_HOME", "/opt/manager"))
 STATE = Path(os.environ.get("MANAGER_ETC", "/etc/manager")) / "telegram" / "miniapp"
 ASSETS = HOME / "web" / "telegram"
 GATEWAY = HOME / "modules" / "telegram_gateway.sh"
+ADMIN_GATEWAY = HOME / "modules" / "telegram_operations.sh"
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,95}$")
 ASSET_MAP = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -135,16 +137,30 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("view or type")
                 if not (0 <= page <= 100000 and 1 <= limit <= 25):
                     raise ValueError("pagination")
+                if view == "diagnostics" and page != 0:
+                    raise ValueError("diagnostic summary does not paginate")
             except (ValueError, UnicodeError, TypeError, KeyError):
                 return self.reply(400, {"ok": False, "error": "invalid-request"})
-            if not GATEWAY.is_file() or not os.access(GATEWAY, os.X_OK):
+            administrative = view in ADMIN_VIEWS
+            module = ADMIN_GATEWAY if administrative else GATEWAY
+            if not module.is_file() or not os.access(module, os.X_OK):
                 return self.reply(503, {"ok": False, "error": "gateway-unavailable"})
-            request = {
-                "contract": REQUEST_CONTRACT,
-                "request_id": "miniapp-" + os.urandom(12).hex(),
-                "action_id": "ops.read",
-                "params": {"view": view, "page": str(page), "limit": str(limit)},
-            }
+            if administrative:
+                # The legacy admin-only read gateway authorizes node.usage in managerd.
+                # It exposes a bounded sanitized snapshot, not arbitrary commands.
+                request = {
+                    "contract": "manager-telegram-operations-request-v1",
+                    "request_id": "miniapp-admin-" + os.urandom(12).hex(),
+                    "operation": view,
+                    "params": {},
+                }
+            else:
+                request = {
+                    "contract": REQUEST_CONTRACT,
+                    "request_id": "miniapp-" + os.urandom(12).hex(),
+                    "action_id": "ops.read",
+                    "params": {"view": view, "page": str(page), "limit": str(limit)},
+                }
             STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
                                              prefix=".request-", suffix=".json",
@@ -155,7 +171,7 @@ class Handler(BaseHTTPRequestHandler):
                 fp.write("\n")
             try:
                 result = subprocess.run(
-                    [str(GATEWAY), "--call-stdin", path],
+                    [str(module), "--call-stdin", path],
                     input=init_data + "\n", capture_output=True,
                     text=True, timeout=215, check=False,
                 )
@@ -165,7 +181,8 @@ class Handler(BaseHTTPRequestHandler):
                 if len(result.stdout) > MAX_REPLY:
                     raise ValueError("oversized gateway result")
                 data = json.loads(result.stdout)
-                if not isinstance(data, dict) or data.get("contract") != "manager-telegram-gateway-v1":
+                expected_contract = "manager-telegram-operations-v1" if administrative else "manager-telegram-gateway-v1"
+                if not isinstance(data, dict) or data.get("contract") != expected_contract:
                     raise ValueError("unexpected contract")
                 status = data.get("code")
                 if type(status) is not int or not 0 <= status <= 255:
@@ -176,6 +193,52 @@ class Handler(BaseHTTPRequestHandler):
                 http_code = {64: 403, 65: 409, 66: 403, 67: 403, 75: 429, 77: 403}.get(status, 503)
                 return self.reply(http_code, {"ok": False, "error": "access-denied" if http_code == 403 else "request-failed"})
             result_data = data.get("result")
+            if administrative:
+                if (data.get("operation") != view or
+                        data.get("authorization_capability") != "node.usage" or
+                        not isinstance(result_data, dict) or
+                        result_data.get("contract") != "manager-automation-read-ops-v1" or
+                        result_data.get("kind") != view):
+                    return self.reply(503, {"ok": False, "error": "backend-unavailable"})
+                if view == "nodes":
+                    snapshot = result_data.get("items")
+                    if (not isinstance(snapshot, list) or len(snapshot) > 100 or
+                            not all(isinstance(row, dict) for row in snapshot)):
+                        return self.reply(503, {"ok": False, "error": "backend-unavailable"})
+                    # Pagination is applied to the admin gateway's 100-item maximum.
+                    # It is not global pagination: an indicator warns about the cap.
+                    start = page * limit
+                    items = snapshot[start:start + limit]
+                    end = start + limit
+                    payload = {
+                        "contract": "manager-telegram-miniapp-admin-view-v1",
+                        "view": view, "page": page, "limit": limit,
+                        "items": items, "count": len(items),
+                        "has_more": end < len(snapshot),
+                        "next_page": page + 1 if end < len(snapshot) else None,
+                        "capped": len(snapshot) >= 100,
+                    }
+                else:
+                    summary = result_data.get("summary")
+                    if not isinstance(summary, dict):
+                        return self.reply(503, {"ok": False, "error": "backend-unavailable"})
+                    keys = {
+                        "load1", "load5", "load15", "memory_used_percent",
+                        "root_disk_used_percent", "reboot_required",
+                        "default_ipv4_route", "ssh", "wireguard", "openvpn",
+                        "automation_v2", "telegram_bot",
+                    }
+                    if not all(isinstance(value, (str, int, float)) and not isinstance(value, bool)
+                               for key, value in summary.items() if key in keys):
+                        return self.reply(503, {"ok": False, "error": "backend-unavailable"})
+                    payload = {
+                        "contract": "manager-telegram-miniapp-admin-view-v1",
+                        "view": view, "page": 0, "limit": limit,
+                        "items": [], "count": 0, "has_more": False, "next_page": None,
+                        "summary": {key: summary[key] for key in keys if key in summary},
+                        "capped": False,
+                    }
+                return self.reply(200, {"ok": True, "data": payload})
             view_data = result_data.get("view") if isinstance(result_data, dict) else None
             if not isinstance(view_data, dict) or view_data.get("contract") != "manager-automation-scoped-reads-v1" or view_data.get("view") != view:
                 return self.reply(503, {"ok": False, "error": "backend-unavailable"})
