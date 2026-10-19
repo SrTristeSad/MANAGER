@@ -164,8 +164,9 @@ assert p1['data']['items'][0]['identity_id']!=p0['data']['items'][0]['identity_i
 
 deny_status,deny_payload=scoped(323456789)
 assert deny_status==403,(deny_status,deny_payload)
-assert scoped(123456789,init='tampered')[0]==403
-assert scoped(123456789,view='nodes')[0]==400
+bad_auth_code,bad_auth_payload=scoped(123456789,init='tampered')
+assert bad_auth_code==403,(bad_auth_code,bad_auth_payload)
+assert scoped(123456789,view='not-allowlisted')[0]==400
 assert scoped(123456789,limit=999)[0]==400
 assert call('/api/read',{'init_data':init_data(123456789),'view':'clients','page':0,'limit':8,'owner':'resellerB'})['status']==400
 assert call('/api/read',{'init_data':init_data(123456789),'view':'nodes','page':0,'limit':8,'operation':'diagnostics'})['status']==400
