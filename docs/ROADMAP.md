@@ -256,7 +256,7 @@ Próximas fatias da série 0.9:
 - comandos Bot read-only de clientes, produtos, sessões, nós e diagnósticos usando o gateway operacional existente (admin-only, sem shell) ✅;
 - paginação e filtragem de owner/produto/escopo para consultas de revendedores, subrevendedores e usuários pela ação `ops.read` ✅;
 - Mini App visual responsivo de clientes, sessões, produtos e cotas: HTTP local opt-in, HTTPS externo, initData HMAC, gateway e paginação por role ✅;
-- próximas telas administrativas de nós e diagnósticos, respeitando a capability de leitura administrativa;
+- telas administrativas de nós e diagnósticos com leitura somente administrativa e capability `node.usage` ✅;
 - operações de escrita no Bot somente com confirmação explícita de UX;
 - webhook autenticado opcional como transporte alternativo ao long polling;
 - nenhuma execução arbitrária de shell.
