@@ -51,156 +51,9 @@ sudo manager telegram auth token install /tmp/miniapp-bot-token
 rm -f /tmp/miniapp-bot-token
 sudo manager telegram miniapp enable
 sudo manager telegram miniapp status | grep -q '^enabled=1$'
-sudo manager telegram miniapp status | grep -q '^active=1
-import hmac
-import http.client
-import json
-import time
-import urllib.parse
+sudo manager telegram miniapp status | grep -q '^active=1$'
 
-TOKEN="123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456"
-HOST="mini.example.invalid"
-ORIGIN="https://"+HOST
-
-def init_data(uid):
-    data={'auth_date':str(int(time.time())),
-          'user':json.dumps({'id':uid,'first_name':'Test Runner'},separators=(',',':'))}
-    check='\n'.join(f'{k}={data[k]}' for k in sorted(data))
-    key=hmac.new(b'WebAppData',TOKEN.encode(),hashlib.sha256).digest()
-    data['hash']=hmac.new(key,check.encode(),hashlib.sha256).hexdigest()
-    return urllib.parse.urlencode(data,quote_via=urllib.parse.quote)
-
-def call(path='/', obj=None, *, origin=ORIGIN, host=HOST, method=None, content_type='application/json'):
-    connection=http.client.HTTPConnection('127.0.0.1',18769,timeout=30)
-    verb=method or ('GET' if obj is None else 'POST')
-    body=b'' if obj is None else json.dumps(obj).encode()
-    headers={'Host':host}
-    if verb=='POST':
-        headers.update({'Origin':origin, 'Content-Type':content_type})
-    connection.request(verb,path,body=body,headers=headers)
-    response=connection.getresponse()
-    raw=response.read()
-    meta={'status':response.status,'headers':dict(response.getheaders()),'body':raw}
-    connection.close()
-    return meta
-
-def scoped(uid,view='clients',page=0,limit=8, init=None):
-    response=call('/api/read',{'init_data':init if init is not None else init_data(uid),
-                               'view':view,'page':page,'limit':limit})
-    try: parsed=json.loads(response['body'])
-    except ValueError: raise AssertionError('Not JSON')
-    return response['status'],parsed
-
-for path,mime in (('/','text/html'),('/app.css','text/css'),('/app.js','application/javascript')):
-    result=call(path)
-    assert result['status']==200
-    assert mime in result['headers']['Content-Type']
-    assert result['headers']['Cache-Control'].startswith('no-store')
-    assert b'initDataUnsafe' not in result['body']
-    assert result['body']
-assert b'/app.js' in call('/')['body']
-assert call('/api/anything')['status']==404
-assert call('/api/read',{'init_data':'x','view':'clients','page':0,'limit':8},origin='https://evil.test')['status']==403
-assert call('/api/read',{'init_data':'x','view':'clients','page':0,'limit':8},host='evil.test')['status']==403
-assert call('/api/read',{'init_data':'x','view':'clients','page':0,'limit':8},content_type='text/plain')['status']==415
-assert call('/some-hidden-file')['status']==404
-
-status,full=scoped(123456789)
-assert status==200 and full['ok'] is True, full
-ids={x['identity_id'] for x in full['data']['items']}
-assert ids=={'clientA','clientB','clientC'},ids
-for kind in ('sessions','products','quotas'):
-    status,payload=scoped(123456789,kind)
-    assert status==200 and payload['ok'] is True, (kind,payload)
-status,reseller=scoped(223456789)
-assert status==200 and {x['identity_id'] for x in reseller['data']['items']}=={'clientA'},reseller
-status,plans=scoped(223456789,'products')
-assert status==200 and {x['product_id'] for x in plans['data']['items']}=={'PLAN_A'},plans
-status,quotas=scoped(223456789,'quotas')
-assert status==200 and {x['identity_id'] for x in quotas['data']['items']}=={'clientA'},quotas
-
-# Administrative snapshots reuse node.usage and never grant global visibility to resellers.
-status,nodes=scoped(123456789,'nodes')
-assert status==200 and nodes['ok'],(status,nodes)
-assert nodes['data']['contract']=='manager-telegram-miniapp-admin-view-v1'
-assert nodes['data']['view']=='nodes' and nodes['data']['page']==0
-assert nodes['data']['limit']==8 and nodes['data']['count']==len(nodes['data']['items'])
-assert len(nodes['data']['items'])<=8
-assert isinstance(nodes['data']['has_more'],bool)
-assert isinstance(nodes['data']['capped'],bool)
-assert nodes['data']['has_more'] is False or nodes['data']['next_page']==1
-for node in nodes['data']['items']:
-    assert isinstance(node,dict)
-    assert 'password' not in node and 'private_key' not in node and 'token' not in node
-status,node_page=scoped(123456789,'nodes',page=1,limit=1)
-assert status==200 and node_page['data']['page']==1 and len(node_page['data']['items'])<=1
-
-status,diagnostics=scoped(123456789,'diagnostics')
-assert status==200 and diagnostics['ok'],(status,diagnostics)
-assert diagnostics['data']['contract']=='manager-telegram-miniapp-admin-view-v1'
-assert diagnostics['data']['view']=='diagnostics'
-assert diagnostics['data']['has_more'] is False
-summary=diagnostics['data']['summary']
-assert 0<=summary['memory_used_percent']<=100
-assert 0<=summary['root_disk_used_percent']<=100
-for key in ('ssh','wireguard','openvpn','automation_v2','telegram_bot'):
-    assert summary[key] in ('active','inactive','failed','activating','deactivating','unknown')
-assert not ({'password','token','private_key','request_id','telegram_user_id','principal_id'} & set(summary))
-assert scoped(123456789,'diagnostics',page=1)[0]==400
-
-for who in (223456789,323456789):
-    for op in ('nodes','diagnostics'):
-        code,data=scoped(who,op)
-        assert code==403,(who,op,code,data)
-# RBAC revalidation: removing the admin capability blocks even fresh snapshots.
-status,p0=scoped(123456789,page=0,limit=1)
-status2,p1=scoped(123456789,page=1,limit=1)
-assert status==status2==200
-assert p0['data']['has_more'] is True and p0['data']['next_page']==1
-assert p1['data']['items'][0]['identity_id']!=p0['data']['items'][0]['identity_id']
-
-deny_status,deny_payload=scoped(323456789)
-assert deny_status==403,(deny_status,deny_payload)
-bad_auth_code,bad_auth_payload=scoped(123456789,init='tampered')
-assert bad_auth_code==403,(bad_auth_code,bad_auth_payload)
-assert scoped(123456789,view='not-allowlisted')[0]==400
-assert scoped(123456789,limit=999)[0]==400
-assert call('/api/read',{'init_data':init_data(123456789),'view':'clients','page':0,'limit':8,'owner':'resellerB'})['status']==400
-assert call('/api/read',{'init_data':init_data(123456789),'view':'nodes','page':0,'limit':8,'operation':'diagnostics'})['status']==400
-assert call('/api/read',{'init_data':init_data(123456789),'view':'diagnostics','page':0,'limit':8,'params':{}})['status']==400
-assert call('/api/read',{'init_data':init_data(123456789),'view':'clients','page':0,'limit':8},method='PUT')['status']==405
-
-# Removing node.usage immediately revokes both admin-only views, not ops.read.
-import subprocess
-subprocess.run(['sudo','manager','automation','v2','principal','scope',
-                'app-admin','*','*','ops.read'], check=True, capture_output=True)
-for operation in ('nodes','diagnostics'):
-    code, denied = scoped(123456789, operation)
-    assert code == 403, (operation, code, denied)
-code, allowed = scoped(123456789,'clients')
-assert code == 200 and allowed['ok'] is True, (code, allowed)
-print('miniapp-http-e2e=passed')
-PY
-
-sudo manager telegram miniapp disable
-sudo manager telegram miniapp status | grep -q '^enabled=0$'
-sudo /opt/manager/modules/telegram_miniapp.sh --detach
-sudo test ! -f /etc/systemd/system/manager-telegram-miniapp.service
-sudo /opt/manager/modules/telegram_miniapp.sh --install
-sudo test -f /etc/systemd/system/manager-telegram-miniapp.service
-sudo manager telegram miniapp status | grep -q '^enabled=0$'
-
-test "$(cat VERSION)" = 0.8.10
-bash -n modules/telegram_miniapp.sh install.sh rollback.sh uninstall.sh manager
-python3 - <<'PY'
-import ast,pathlib
-ast.parse(pathlib.Path('modules/telegram_miniapp_server.py').read_text())
-PY
-node --check web/telegram/app.js
-git diff --exit-code
-
-
-# systemd reports active before the Python listener starts accepting requests.
+# systemd may report active before Python accepts connections on the loopback port.
 python3 - <<'PY'
 import socket
 import time
@@ -211,11 +64,10 @@ while True:
             break
     except OSError:
         if time.monotonic() >= deadline:
-            raise SystemExit('Mini App loopback listener did not become ready')
+            raise SystemExit('Mini App HTTP listener not ready')
         time.sleep(0.2)
 PY
-# Confirm readiness did not come from a publicly bound socket.
-sudo ss -ltnH | awk '$4=="127.0.0.1:18769" {local=1} $4=="0.0.0.0:18769" || $4=="[::]:18769" {public=1} END {exit(local && !public ? 0 : 1)}'
+sudo ss -ltnH | awk '$4=="127.0.0.1:18769" {found=1} $4=="0.0.0.0:18769" || $4=="[::]:18769" {exposed=1} END {exit(found && !exposed ? 0 : 1)}'
 
 python3 - <<'PY'
 import hashlib
