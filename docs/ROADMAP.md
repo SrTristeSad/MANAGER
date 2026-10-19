@@ -254,8 +254,8 @@ Ingresso Telegram Bot implementado nesta fatia:
 Próximas fatias da série 0.9:
 
 - comandos Bot read-only de clientes, produtos, sessões, nós e diagnósticos usando o gateway operacional existente (admin-only, sem shell) ✅;
-- paginação e filtragem de owner/produto/escopo para expor consultas a revendedores sem dados cruzados;
-- telas/fluxos de sessões, clientes, produtos, cotas, nós e diagnósticos;
+- paginação e filtragem de owner/produto/escopo para consultas de revendedores, subrevendedores e usuários pela ação `ops.read` ✅;
+- telas visuais do Telegram Mini App para sessões, clientes, produtos, cotas, nós e diagnósticos;
 - operações de escrita no Bot somente com confirmação explícita de UX;
 - webhook autenticado opcional como transporte alternativo ao long polling;
 - nenhuma execução arbitrária de shell.

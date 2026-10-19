@@ -26,13 +26,14 @@ sudo test -f /etc/systemd/system/manager-telegram-bot.service
 ! sudo systemctl is-enabled --quiet manager-telegram-bot.service
 
 sudo manager automation v2 principal create telegram-bot-admin admin '*'
-sudo manager automation v2 principal scope telegram-bot-admin '*' '*' 'system.describe,node.usage,connection.status'
+sudo manager automation v2 principal scope telegram-bot-admin '*' '*' 'system.describe,node.usage,connection.status,ops.read'
 sudo manager telegram identity bind 123456789 telegram-bot-admin
 sudo /opt/manager/modules/connection_engine.sh --create bot-ops-user '' 0 2 ssh
 sudo /opt/manager/modules/products.sh --create bot-ops-plan 'Bot Operations' 1 30 2 ssh 1048576 monthly warn '*' '*' '*'
 sudo /opt/manager/modules/products.sh --assign bot-ops-user bot-ops-plan
+sudo /opt/manager/modules/connection_engine.sh --create bot-ops-other '' 0 2 ssh
 sudo manager automation v2 principal create telegram-bot-read-user user bot-ops-user
-sudo manager automation v2 principal scope telegram-bot-read-user '*' '*' 'node.usage'
+sudo manager automation v2 principal scope telegram-bot-read-user '*' '*' 'ops.read'
 sudo manager telegram identity bind 555444333 telegram-bot-read-user
 BOT_ID=123456789
 TOKEN_SECRET="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456"
@@ -168,7 +169,7 @@ assert r['decision']=='deny'
 assert r['code'] != 0
 PY
 
-# All operational reads reuse the admin-only Telegram operations gateway.
+# Bot read commands use the scoped Automation v2 gateway for clients/products/sessions.
 for next_offset in 106 107 108 109 110; do
   sudo env GITHUB_ACTIONS=true MANAGER_TELEGRAM_ALLOW_TEST_API=1 MANAGER_TELEGRAM_BOT_API_BASE=http://127.0.0.1:18766 manager telegram bot poll-once >/dev/null
   test "$(sudo cat /var/lib/manager/telegram-bot/offset)" = "$next_offset"
@@ -177,12 +178,12 @@ sudo cat /var/log/manager/telegram-bot-audit.jsonl >/tmp/bot-audit.jsonl
 python3 - <<'PY'
 import json
 rows=[json.loads(x) for x in open('/tmp/bot-audit.jsonl')]
-names={105:'identities',106:'products',107:'sessions',108:'nodes',109:'diagnostics'}
+names={105:'ops.read',106:'ops.read',107:'ops.read',108:'read:nodes',109:'read:diagnostics'}
 for update_id, op in names.items():
     matches=[x for x in rows if x.get('update_id')==update_id]
     assert matches, (update_id, op)
     entry=matches[-1]
-    assert entry['action_id']=='read:'+op and entry['decision']=='allow' and entry['code']==0, entry
+    assert entry['action_id']==op and entry['decision']=='allow' and entry['code']==0, entry
 sends=[json.loads(line)['text'] for line in open('/tmp/fake-bot-sends.jsonl')]
 for title in ('Clientes', 'Produtos', 'Sessões', 'Nós', 'Diagnóstico do nó'):
     assert any(title in sent for sent in sends), title
@@ -191,7 +192,7 @@ assert any('bot-ops-plan' in sent for sent in sends)
 assert not any('private_key' in sent or 'bot_token' in sent for sent in sends)
 PY
 
-# Extra parameters are never dispatched; non-admin cannot read global collections.
+# Extra parameters never reach the gateway; users only see their own identity.
 before="$(sudo grep -c 'gateway-call' /var/log/manager/telegram-gateway-audit.jsonl || true)"
 sudo env GITHUB_ACTIONS=true MANAGER_TELEGRAM_ALLOW_TEST_API=1 MANAGER_TELEGRAM_BOT_API_BASE=http://127.0.0.1:18766 manager telegram bot poll-once >/dev/null
 test "$(sudo cat /var/lib/manager/telegram-bot/offset)" = 111
@@ -205,9 +206,10 @@ import json
 rows=[json.loads(x) for x in open('/tmp/bot-audit.jsonl')]
 r=[x for x in rows if x.get('update_id')==111][-1]
 assert r['telegram_user_id']=='555444333'
-assert r['action_id']=='read:identities' and r['decision']=='deny' and r['code']==67
-sends=[json.loads(x)['text'] for x in open('/tmp/fake-bot-sends.jsonl')]
-assert any('Ação recusada pela política' in x for x in sends)
+assert r['action_id']=='ops.read' and r['decision']=='allow' and r['code']==0
+sends=[json.loads(x) for x in open('/tmp/fake-bot-sends.jsonl')]
+mine=[x['text'] for x in sends if x['chat_id']=='555444333']
+assert len(mine)==1 and 'bot-ops-user' in mine[0] and 'bot-ops-other' not in mine[0]
 PY
 
 before_offset="$(sudo cat /var/lib/manager/telegram-bot/offset)"

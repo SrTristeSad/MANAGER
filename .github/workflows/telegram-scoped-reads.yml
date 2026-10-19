@@ -1,0 +1,38 @@
+name: Telegram Scoped Operational Reads E2E
+
+on:
+  pull_request:
+    paths:
+      - modules/automation_scoped_reads.sh
+      - modules/automation_v2.sh
+      - modules/automation_principals.sh
+      - modules/telegram_gateway.sh
+      - modules/telegram_bot.sh
+      - install.sh
+      - .github/scripts/telegram-scoped-reads-e2e.sh
+      - .github/workflows/telegram-scoped-reads.yml
+      - docs/TELEGRAM_OPERATIONS.md
+      - docs/TELEGRAM.md
+  push:
+    branches: [main]
+    paths:
+      - modules/automation_scoped_reads.sh
+      - modules/automation_v2.sh
+      - modules/automation_principals.sh
+      - modules/telegram_gateway.sh
+      - modules/telegram_bot.sh
+      - install.sh
+      - .github/scripts/telegram-scoped-reads-e2e.sh
+      - .github/workflows/telegram-scoped-reads.yml
+
+permissions:
+  contents: read
+
+jobs:
+  scoped-read-e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify scoped reads, RBAC, pagination and revocation
+        shell: bash
+        run: bash .github/scripts/telegram-scoped-reads-e2e.sh

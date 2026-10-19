@@ -344,6 +344,7 @@ AUDIT_FILE = "/var/log/manager/automation-v2-audit.jsonl"
 SOCKET_FILE = "/run/manager-automation-v2/manager.sock"
 CONNECTION_ACTIONS = os.path.join(MANAGER_HOME, "modules", "connection_actions.sh")
 NODE_USAGE = os.path.join(MANAGER_HOME, "modules", "node_usage.sh")
+SCOPED_READS = os.path.join(MANAGER_HOME, "modules", "automation_scoped_reads.sh")
 RESELLERS_DIR = os.path.join(MANAGER_ETC, "access", "resellers")
 IDENTITY_DIR = os.path.join(MANAGER_ETC, "connection", "identities")
 NODE_CONF = os.path.join(MANAGER_ETC, "connection", "node", "node.conf")
@@ -368,8 +369,8 @@ KEY_ID_RE = re.compile(r"^ed25519-[a-f0-9]{16}$")
 KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{32,80}$")
 SENSITIVE_RE = re.compile(r"(?i)(password|passwd|secret|private[_-]?key|credential|token)")
-ACTIONS = {"system.describe", "node.usage", "connection.preflight", "connection.create", "connection.status", "connection.revoke"}
-READ_ACTIONS = {"system.describe", "node.usage", "connection.status"}
+ACTIONS = {"system.describe", "node.usage", "connection.preflight", "connection.create", "connection.status", "connection.revoke", "ops.read"}
+READ_ACTIONS = {"system.describe", "node.usage", "connection.status", "ops.read"}
 RATE_READ_PER_MIN = 120.0
 RATE_READ_BURST = 20.0
 RATE_WRITE_PER_MIN = 30.0
@@ -760,6 +761,9 @@ def authorize(principal, action_id, params):
             return False, normalized, "pool-out-of-scope"
     if action_id == "system.describe": return True, normalized, "system-describe"
     if action_id == "node.usage": return role == "admin", normalized, "node-usage-admin-only"
+    if action_id == "ops.read":
+        # Principal is loaded on every call; subject/products/scopes are never client-supplied.
+        return role in {"admin", "reseller", "subreseller", "user"}, normalized, "scoped-read"
     if action_id in {"connection.preflight", "connection.create"}:
         if role not in {"admin", "reseller", "subreseller"}: return False, normalized, "role-cannot-create"
         plan = normalized.get("plan", "")
@@ -792,7 +796,7 @@ def string_param(params, key, required=True):
     return value
 
 
-def command_for(action_id, params):
+def command_for(action_id, params, principal=None):
     if not isinstance(params, dict): raise ValueError("params deve ser objeto")
     if action_id == "system.describe":
         if params: raise ValueError("system.describe não aceita parâmetros")
@@ -800,6 +804,20 @@ def command_for(action_id, params):
     if action_id == "node.usage":
         if params: raise ValueError("node.usage não aceita parâmetros")
         return [NODE_USAGE, "--show"]
+    if action_id == "ops.read":
+        if not principal or set(params) - {"view", "page", "limit"} or "view" not in params:
+            raise ValueError("parâmetros ops inválidos")
+        view = string_param(params, "view")
+        if view not in {"clients", "sessions", "products", "quotas"}:
+            raise ValueError("view operacional não permitida")
+        page = string_param(params, "page", False) or "0"
+        limit = string_param(params, "limit", False) or "8"
+        if not (page.isascii() and page.isdecimal() and len(page) <= 6 and int(page) <= 100000):
+            raise ValueError("page inválido")
+        if not (limit.isascii() and limit.isdecimal() and len(limit) <= 2 and 1 <= int(limit) <= 25):
+            raise ValueError("limit inválido")
+        return [SCOPED_READS, "--" + view, principal["role"], principal["subject"],
+                principal["products"], page, limit]
     if action_id in {"connection.status", "connection.revoke"}:
         if set(params) != {"id"}: raise ValueError("parâmetro não permitido")
         ident = string_param(params, "id")
@@ -935,7 +953,9 @@ def execute(request, uid):
         audit(request_id, action_id, uid, result, principal=principal, decision="deny", reason=rbac_reason, auth=auth_meta,
               transport=transport, replay=replay_decision, rate="allow", issued_at=request.get("issued_at")); return result
     req_hash = request_hash(principal["principal_id"], action_id, params)
-    cached = load_cache(request_id, req_hash)
+    # Never replay a cached list after a reseller loses ownership or product permission.
+    # Read requests are safe to retry; execute a fresh RBAC-filtered snapshot each time.
+    cached = None if action_id == "ops.read" else load_cache(request_id, req_hash)
     if cached == "conflict":
         result = response_error(request_id, action_id, 65, "request_id reutilizado com payload/principal diferente", principal=principal)
         audit(request_id, action_id, uid, result, principal=principal, decision="allow", reason=rbac_reason, auth=auth_meta,
@@ -943,9 +963,10 @@ def execute(request, uid):
     if isinstance(cached, dict):
         audit(request_id, action_id, uid, cached, principal=principal, decision="allow", reason=rbac_reason, cached=True, auth=auth_meta,
               transport=transport, replay=replay_decision, rate="allow", issued_at=request.get("issued_at")); return cached
-    try: cmd = command_for(action_id, params)
+    try: cmd = command_for(action_id, params, principal)
     except ValueError as exc:
-        result = response_error(request_id, action_id, 64, str(exc), principal=principal); save_cache(request_id, req_hash, result)
+        result = response_error(request_id, action_id, 64, str(exc), principal=principal)
+        if action_id != "ops.read": save_cache(request_id, req_hash, result)
         audit(request_id, action_id, uid, result, principal=principal, decision="allow", reason=rbac_reason, auth=auth_meta,
               transport=transport, replay=replay_decision, rate="allow", issued_at=request.get("issued_at")); return result
     env = os.environ.copy(); env["LC_ALL"] = "C.UTF-8"
@@ -955,10 +976,24 @@ def execute(request, uid):
         result = {"contract": CONTRACT, "version": VERSION, "request_id": request_id, "action_id": action_id,
                   "principal_id": principal["principal_id"], "principal_role": principal["role"], "ok": proc.returncode == 0,
                   "code": int(proc.returncode), "result": {"data": parse_kv(proc.stdout), "stdout": proc.stdout[:65536]}, "cached": False}
-        if proc.stderr: result["stderr"] = proc.stderr[:8192]
+        if action_id == "ops.read":
+            if proc.returncode == 0:
+                try:
+                    view = json.loads(proc.stdout)
+                    if not isinstance(view, dict) or view.get("contract") != "manager-automation-scoped-reads-v1" or view.get("view") != params["view"]:
+                        raise ValueError("contrato ops inválido")
+                    if not isinstance(view.get("items"), list) or len(view["items"]) > 25:
+                        raise ValueError("limite de operações inválido")
+                    result["result"] = {"view": view}
+                except (ValueError, TypeError, KeyError):
+                    result = response_error(request_id, action_id, 70, "resposta operacional inválida", principal=principal)
+            else:
+                result = response_error(request_id, action_id, 70, "consulta operacional indisponível", principal=principal)
+        elif proc.stderr:
+            result["stderr"] = proc.stderr[:8192]
     except subprocess.TimeoutExpired:
         result = response_error(request_id, action_id, 70, "tempo limite da operação excedido", principal=principal)
-    save_cache(request_id, req_hash, result)
+    if action_id != "ops.read": save_cache(request_id, req_hash, result)
     audit(request_id, action_id, uid, result, principal=principal, decision="allow", reason=rbac_reason, auth=auth_meta,
           transport=transport, replay=replay_decision, rate="allow", issued_at=request.get("issued_at")); return result
 

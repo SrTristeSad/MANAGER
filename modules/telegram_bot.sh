@@ -195,8 +195,9 @@ MAX_RESPONSE = 1024 * 1024
 MAX_REPLY = 3500
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$")
 SENSITIVE_RE = re.compile(r"(?i)(password|passwd|secret|private[_-]?key|credential|token|signature|hash|nonce|query_id|username|first_name|init[_-]?data)")
-READ_COMMANDS = {"/clients": "identities", "/products": "products", "/sessions": "sessions",
-                 "/nodes": "nodes", "/diagnostics": "diagnostics"}
+READ_COMMANDS = {"/nodes": "nodes", "/diagnostics": "diagnostics"}
+SCOPED_COMMANDS = {"/clients": "clients", "/products": "products",
+                   "/sessions": "sessions", "/quotas": "quotas"}
 
 
 def die(message, code=70):
@@ -305,6 +306,18 @@ def command_for(text):
         return ('node','node.usage',{})
     if cmd == '/status' and len(parts)==2 and ID_RE.fullmatch(parts[1]):
         return ('status','connection.status',{'id':parts[1]})
+    if cmd in SCOPED_COMMANDS and len(parts) in (1, 2):
+        if len(parts) == 2:
+            raw_page = parts[1]
+            if not raw_page.isascii() or not raw_page.isdecimal() or len(raw_page) > 6:
+                return ('help','',{})
+            page = int(raw_page)
+            if not (1 <= page <= 100001):
+                return ('help','',{})
+        else:
+            page = 1
+        return (cmd.lstrip('/'),'ops.read',
+                {'view': SCOPED_COMMANDS[cmd], 'page': str(page - 1), 'limit': '8'})
     if cmd in READ_COMMANDS and len(parts)==1:
         return (cmd.lstrip('/'),'read:'+READ_COMMANDS[cmd],{})
     return ('help','',{})
@@ -368,9 +381,40 @@ def format_operational_reply(payload):
     return '\n'.join(lines)[:MAX_REPLY]
 
 
+def format_scoped_reply(result):
+    if not isinstance(result, dict):
+        return 'Resposta operacional inválida.'
+    view = result.get('view')
+    if not isinstance(view, dict) or view.get('contract') != 'manager-automation-scoped-reads-v1':
+        return 'Resposta operacional inválida.'
+    kind = view.get('view')
+    configs = {
+        'clients': ('Clientes', ('identity_id', 'state', 'owner', 'product_id')),
+        'products': ('Produtos', ('product_id', 'name', 'enabled', 'max_sessions')),
+        'sessions': ('Sessões', ('identity_id', 'session_id', 'protocol', 'remaining_seconds')),
+        'quotas': ('Cotas', ('identity_id', 'product_id', 'used_bytes', 'quota_bytes', 'remaining_bytes')),
+    }
+    if kind not in configs:
+        return 'Resposta operacional inválida.'
+    rows = view.get('items')
+    page = view.get('page')
+    if not isinstance(rows, list) or type(page) is not int or not (0 <= page <= 100000):
+        return 'Resposta operacional inválida.'
+    title, fields = configs[kind]
+    lines = [f'{title} — página {page+1} ({len(rows)} registros).']
+    for row in rows[:8]:
+        if isinstance(row, dict):
+            line = ' | '.join(f'{key}: {concise(row[key])}' for key in fields if key in row)
+            if line:
+                lines.append('- ' + line)
+    if view.get('has_more') is True:
+        lines.append(f'Próxima página: /{kind} {page+2}')
+    return '\n'.join(lines)[:MAX_REPLY]
+
+
 def format_reply(command, gateway_result=None):
     if command == 'help':
-        return 'Comandos: /describe, /node, /status ID, /clients, /products, /sessions, /nodes, /diagnostics'
+        return 'Comandos: /describe, /node, /status ID, /clients [PÁGINA], /products [PÁGINA], /sessions [PÁGINA], /quotas [PÁGINA], /nodes, /diagnostics'
     if not isinstance(gateway_result,dict):
         return 'MANAGER indisponível. Tente novamente.'
     code=gateway_result.get('code',70)
@@ -385,6 +429,9 @@ def format_reply(command, gateway_result=None):
         return 'MANAGER indisponível. Tente novamente.'
     if gateway_result.get('contract') == 'manager-telegram-operations-v1':
         return format_operational_reply(gateway_result)
+    if gateway_result.get('action_id') == 'ops.read':
+        payload = gateway_result.get('result')
+        return format_scoped_reply(payload if isinstance(payload, dict) else None)
     payload={'action_id':gateway_result.get('action_id'),'cached':bool(gateway_result.get('cached',False))}
     if isinstance(gateway_result.get('result'),dict):
         payload['result']=safe_clone(gateway_result['result'])

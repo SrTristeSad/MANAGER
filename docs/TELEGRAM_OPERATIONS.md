@@ -82,3 +82,26 @@ Revendedores e subrevendedores permanecem sem acesso às listagens globais até 
 ## Próximas etapas
 
 Antes de expor listagens para `reseller`/`subreseller`, o contrato deve ganhar paginação e filtros derivados do owner/node/pool scopes. Escritas pelo Telegram continuam condicionadas a um fluxo separado com confirmação explícita e token de intenção de curta duração.
+
+## Consultas paginadas com escopo (Automation v2)
+
+O novo contrato `manager-automation-scoped-reads-v1` usa a ação tipada `ops.read` para admin, reseller, subreseller e user.
+O Telegram envia somente `view`, `page` e `limit`; não pode escolher owner, role, subject ou products.
+A autoridade fica no `managerd`, que carrega e verifica o principal autenticado, suas permissões e seus escopos de ação, nó, pool e produto.
+
+As views são `clients`, `products`, `sessions` e `quotas`. `page` começa em 0 (0..100000), `limit` varia de 1 a 25 (padrão 8). Os filtros de autorização são aplicados **antes** da paginação.
+O contrato retorna `items`, `count` (somente quantidade na página), `page`, `limit`, `has_more` e `next_page`; o total global nunca é exposto. Páginas separadas consultam snapshots novos, podendo ocorrer mudanças na ordem entre chamadas.
+
+- admin: leitura dos registros locais, sob escopos de ação/nó/pool;
+- reseller: suas identidades e de subrevendedores ativos que lhe pertencem, apenas para produtos permitidos;
+- subreseller: somente identidades próprias dentro do escopo de produtos;
+- user: somente sua identidade e respectivo plano, sessões e quota.
+
+Ação `ops.read` não faz replay de snapshots no cache de idempotência: ao revogar owner, produto ou scope, até a repetição do mesmo request_id recebe a visão atual autorizada.
+Rate limit, autenticação Ed25519, anti-replay e logs permanecem sob o controle da Automation v2.
+
+```json
+{"contract":"manager-telegram-gateway-request-v1","request_id":"miniapp-page-00000001","action_id":"ops.read","params":{"view":"clients","page":"0","limit":"8"}}
+```
+
+O Bot expõe `/clients [PÁGINA]`, `/products [PÁGINA]`, `/sessions [PÁGINA]` e `/quotas [PÁGINA]`, com página começando em 1. `/nodes` e `/diagnostics` continuam somente administrativos pelo gateway anterior usando `node.usage`.
