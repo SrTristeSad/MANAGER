@@ -31,6 +31,13 @@ read -r -p "Restaurar o código anterior? [s/N]: " answer
 
 # Unidades/hooks externos ao /opt precisam ser retirados pelo código que os
 # criou antes da troca. Estados persistentes permanecem em /etc/manager e /var/lib.
+if [[ -x "$INSTALL_DIR/modules/telegram_miniapp.sh" ]]; then
+  "$INSTALL_DIR/modules/telegram_miniapp.sh" --detach >/dev/null 2>&1 || true
+else
+  systemctl disable --now manager-telegram-miniapp.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-telegram-miniapp.service
+  systemctl daemon-reload >/dev/null 2>&1 || true
+fi
 if [[ -x "$INSTALL_DIR/modules/telegram_bot.sh" ]]; then
   "$INSTALL_DIR/modules/telegram_bot.sh" --detach >/dev/null 2>&1 || true
 else
@@ -102,6 +109,13 @@ else
 fi
 
 # Reaplica apenas os componentes disponíveis na versão que acabou de voltar.
+if [[ -x "$INSTALL_DIR/modules/telegram_miniapp.sh" ]]; then
+  "$INSTALL_DIR/modules/telegram_miniapp.sh" --install >/dev/null 2>&1 || true
+else
+  systemctl disable --now manager-telegram-miniapp.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-telegram-miniapp.service
+  systemctl daemon-reload >/dev/null 2>&1 || true
+fi
 # Isso permite rollback para uma versão anterior sem deixar units/hooks
 # apontando para módulos ausentes.
 if [[ -x "$INSTALL_DIR/modules/telegram_bot.sh" ]]; then
