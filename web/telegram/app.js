@@ -8,8 +8,10 @@
     sessions: { title: "Sessões", kicker: "CONEXÕES / ATIVIDADE", subtitle: "Conexões e sessões dentro da sua área de acesso." },
     products: { title: "Produtos", kicker: "CATÁLOGO / PLANOS", subtitle: "Planos autorizados para sua identidade." },
     quotas: { title: "Cotas", kicker: "TRÁFEGO / FRANQUIAS", subtitle: "Franquias e consumo dos clientes autorizados." },
+    nodes: { title: "Nós da Colmeia", kicker: "ADMINISTRAÇÃO / COLMEIA", subtitle: "Último estado registrado dos nós na observabilidade. Acesso administrativo." },
+    diagnostics: { title: "Diagnósticos", kicker: "ADMINISTRAÇÃO / SERVIDOR", subtitle: "Saúde local e serviços monitorados, atualizados sob demanda." },
   };
-  const state = { view: "clients", page: 0, limit: 8, rows: [], hasMore: false, loading: false, token: 0, controller: null };
+  const state = { view: "clients", page: 0, limit: 8, rows: [], hasMore: false, capped: false, loading: false, token: 0, controller: null };
   const number = new Intl.NumberFormat("pt-BR");
   const text = (value, fallback = "—") => (typeof value === "string" || typeof value === "number") && String(value).length ? String(value) : fallback;
   const integer = (value) => typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
@@ -34,6 +36,34 @@
     $("connectionStatus").className = "status" + (type ? " " + type : "");
     $("connectionText").textContent = label;
   };
+  const metric = (value) => typeof value === "number" && Number.isFinite(value)
+    ? new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 2 }).format(value) : "—";
+  const pct = (value) => typeof value === "number" && Number.isFinite(value)
+    ? metric(Math.min(100, Math.max(0, value))) + "%" : "—";
+  const diagnosticsRows = (data) => {
+    if (!data || typeof data !== "object") return [];
+    const service = (name, label) => ({ metric: name, title: label, value: text(data[name], "Desconhecido"),
+      detail: "Serviço do sistema", off: data[name] !== "active", initial: "S" });
+    const gauge = (name, label) => ({ metric: name, title: label,
+      value: pct(data[name]), detail: "Utilização atual",
+      progress: typeof data[name] === "number" ? Math.max(0, Math.min(100, data[name])) : null,
+      off: typeof data[name] === "number" && data[name] >= 90, initial: "%" });
+    return [
+      { metric: "load1", title: "Carga (1 / 5 / 15 min)",
+        value: [data.load1, data.load5, data.load15].map(metric).join(" / "), detail: "Load average do servidor", off: false, initial: "↗" },
+      gauge("memory_used_percent", "Memória RAM"),
+      gauge("root_disk_used_percent", "Disco /"),
+      { metric: "reboot_required", title: "Reinicialização",
+        value: data.reboot_required === 1 ? "Pendente" : "Não pendente",
+        detail: "Reinicialização sinalizada pelo sistema", off: data.reboot_required === 1, initial: "R" },
+      { metric: "default_ipv4_route", title: "Rota IPv4 padrão",
+        value: data.default_ipv4_route === 1 ? "Detectada" : "Não detectada",
+        detail: "Tabela de roteamento do host", off: data.default_ipv4_route !== 1, initial: "IP" },
+      service("ssh", "SSH"), service("wireguard", "WireGuard"),
+      service("openvpn", "OpenVPN"), service("automation_v2", "Automation v2"),
+      service("telegram_bot", "Telegram Bot"),
+    ];
+  };
   const info = (row) => {
     if (state.view === "clients") {
       const stateName = { active: "Ativo", disabled: "Desativado", expired: "Expirado" }[row.state] || text(row.state, "Indefinido");
@@ -48,6 +78,23 @@
     if (state.view === "products") {
       return { name: text(row.name, text(row.product_id)), sub: "ID: " + text(row.product_id) + " · " + number.format(integer(row.max_sessions)) + " sessões",
         tag: row.enabled === 1 ? "Ativo" : "Inativo", off: row.enabled !== 1, detail: "Franquia: " + bytes(row.traffic_quota_bytes), initial: "P" };
+    }
+    if (state.view === "nodes") {
+      const rawState = text(row.state, "Desconhecido");
+      const healthy = ["healthy", "active", "online"].includes(rawState.toLowerCase());
+      return {
+        name: text(row.node_id, "Nó desconhecido"),
+        sub: "Sessões: " + number.format(integer(row.sessions)) + " / " + number.format(integer(row.max_sessions)) +
+          " · CPU: " + pct(row.cpu_percent) + " · RAM: " + pct(row.memory_used_percent),
+        tag: rawState, off: !healthy,
+        detail: "RTT: " + (typeof row.rtt_ms === "number" ? metric(row.rtt_ms) + " ms" : "—") +
+          " · Rede: " + text(row.hive_network_service),
+        initial: "N",
+      };
+    }
+    if (state.view === "diagnostics") {
+      return { name: row.title, sub: row.detail, tag: row.value, off: row.off,
+        detail: "", initial: row.initial, progress: row.progress };
     }
     const used = integer(row.used_bytes);
     const quota = integer(row.quota_bytes);
@@ -73,7 +120,7 @@
       for (const row of visible) {
         const data = info(row);
         const record = el("article", "record");
-        const icon = el("div", "avatar " + state.view.slice(0, -1), data.initial || "•");
+        const icon = el("div", "avatar " + (["nodes", "diagnostics"].includes(state.view) ? "system" : state.view.slice(0, -1)), data.initial || "•");
         const content = el("div", "record-main");
         content.append(el("div", "record-name", data.name), el("div", "record-sub", data.sub));
         const side = el("div", "record-side");
@@ -99,7 +146,11 @@
     $("pageIndicator").textContent = "PÁGINA " + String(state.page + 1).padStart(2, "0");
     $("prevButton").disabled = state.loading || state.page === 0;
     $("nextButton").disabled = state.loading || !state.hasMore;
-    $("pageMeta").textContent = "Até " + state.limit + " registros por página · acesso limitado à sua conta";
+    $("pageMeta").textContent = state.view === "diagnostics"
+      ? "Leitura local sob demanda · acesso administrativo"
+      : state.view === "nodes"
+        ? "Até 100 nós no snapshot da Colmeia" + (state.capped ? " · limite do backend atingido" : "")
+        : "Até " + state.limit + " registros por página · acesso limitado à sua conta";
     records.setAttribute("aria-busy", "false");
   };
   const loading = (isLoading) => {
@@ -123,6 +174,7 @@
       loading(false);
       state.rows = [];
       state.hasMore = false;
+      state.capped = false;
       status("failed", "Sem autenticação");
       showNotice("Abra este painel pelo botão Mini App do bot no Telegram. Não é possível consultar dados fora de uma sessão autenticada.");
       return draw();
@@ -139,7 +191,9 @@
       });
       const payload = await response.json();
       if (!response.ok || payload.ok !== true) {
-        if (response.status === 403) throw new Error("Acesso recusado ou autenticação Telegram expirada. Reabra o Mini App pelo bot.");
+        if (response.status === 403) throw new Error(["nodes", "diagnostics"].includes(state.view)
+          ? "Esta consulta exige perfil administrador e permissão node.usage. Se sua sessão expirou, reabra pelo bot."
+          : "Acesso recusado ou autenticação Telegram expirada. Reabra o Mini App pelo bot.");
         if (response.status === 429) throw new Error("Muitas consultas. Aguarde um pouco antes de atualizar.");
         throw new Error("Não foi possível carregar os dados. Tente novamente.");
       }
@@ -147,13 +201,21 @@
         throw new Error("O servidor retornou uma resposta inválida.");
       }
       if (requestToken !== state.token) return;
-      state.rows = payload.data.items;
+      if (["nodes", "diagnostics"].includes(state.view)) {
+        if (payload.data.contract !== "manager-telegram-miniapp-admin-view-v1") {
+          throw new Error("Contrato administrativo inválido.");
+        }
+      }
+      state.rows = state.view === "diagnostics"
+        ? diagnosticsRows(payload.data.summary) : payload.data.items;
       state.hasMore = payload.data.has_more === true;
+      state.capped = payload.data.capped === true;
       status("connected", "Conexão segura");
     } catch (e) {
       if (controller.signal.aborted || requestToken !== state.token) return;
       state.rows = [];
       state.hasMore = false;
+      state.capped = false;
       status("failed", "Indisponível");
       showNotice(e instanceof Error ? e.message : "Não foi possível conectar ao MANAGER.");
     } finally {
@@ -169,6 +231,7 @@
     state.page = 0;
     state.rows = [];
     state.hasMore = false;
+    state.capped = false;
     $("searchInput").value = "";
     $("sectionTitle").textContent = views[view].title;
     $("sectionKicker").textContent = views[view].kicker;
