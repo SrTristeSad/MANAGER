@@ -25,17 +25,17 @@ def save(path, content):
 for plan in ('PLAN_A','PLAN_B'):
     save(root/'products'/'catalog'/f'{plan}.conf',
          f'id={plan}\nname={plan}\nenabled=1\nduration_days=30\nmax_sessions=2\nprotocols=ssh\ntraffic_quota_bytes=1000000\nquota_period=monthly\nquota_action=warn\n')
-for name,owner,plan in (('alpha1','resellerA','PLAN_A'),('alpha2','resellerA','PLAN_B'),
+for idx,(name,owner,plan) in enumerate((('alpha1','resellerA','PLAN_A'),('alpha2','resellerA','PLAN_B'),
                         ('sub1','subA','PLAN_A'),('beta1','resellerB','PLAN_A'),
-                        ('public1','','PLAN_B')):
+                        ('public1','','PLAN_B')),1):
     save(root/'identities'/f'{name}.conf',
-         f'id={name}\nowner={owner}\nenabled=1\nexpires_epoch={now+7200}\nmax_sessions=2\nprotocols=ssh\n')
+         f'id={name}\nowner={owner}\nenabled=1\nexpires_epoch={now+7200}\nmax_sessions=2\nprotocols=ssh\nssh_user={name}\n')
     save(root/'products'/'assignments'/f'{name}.conf',
          f'identity_id={name}\nproduct_id={plan}\nassigned_epoch={now}\n')
     save(root/'product-usage'/'identities'/f'{name}.state',
          f'identity_id={name}\nproduct_id={plan}\nquota_bytes=1000000\nused_bytes=2000\nenforceable=1\ncycle=2026-10\n')
-    save(Path('/run/manager-session-leases/active')/f'{name}.lease',
-         f'identity_id={name}\nprotocol=ssh\nsession_epoch=1\nexpires_epoch={now+7200}\nresource=DO_NOT_EXPOSE\ndevice_id=DO_NOT_EXPOSE\n')
+    save(Path('/run/manager-session-leases/active')/f'{idx:032x}.lease',
+         f'identity_id={name}\nprotocol=ssh\nsession_epoch=1\nexpires_epoch={now+7200}\nresource={name}\ndevice_id=DO_NOT_EXPOSE\n')
 PY
 
 sudo manager automation v2 principal create testadmin admin '*'
