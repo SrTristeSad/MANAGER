@@ -7,6 +7,8 @@ test "$(sudo cat /opt/manager/VERSION)" = "$(cat VERSION)"
 sudo test -x /opt/manager/modules/automation_scoped_reads.sh
 sudo manager telegram gateway status | grep -q 'ops.read'
 bash -n modules/automation_scoped_reads.sh modules/automation_v2.sh modules/telegram_gateway.sh modules/telegram_bot.sh
+sudo systemctl disable --now manager-session-cleanup.timer manager-session-reconcile.path >/dev/null 2>&1 || true
+sudo systemctl stop manager-session-cleanup.service >/dev/null 2>&1 || true
 sudo /opt/manager/modules/resellers.sh --create-reseller resellerA reseller '' 100 1
 sudo /opt/manager/modules/resellers.sh --create-reseller subA subreseller resellerA 100 1
 sudo /opt/manager/modules/resellers.sh --create-reseller resellerB reseller '' 100 1
@@ -102,9 +104,9 @@ assert ids('reseller','products','product_id') == {'PLAN_A'}
 assert ids('sub','products','product_id') == {'PLAN_A'}
 assert ids('user','products','product_id') == {'PLAN_A'}
 for collection in ('sessions','quotas'):
-    assert ids('reseller',collection,'identity_id') == {'alpha1','sub1'}
-    assert ids('sub',collection,'identity_id') == {'sub1'}
-    assert ids('user',collection,'identity_id') == {'alpha1'}
+    assert ids('reseller',collection,'identity_id') == {'alpha1','sub1'}, (collection, view('reseller',collection))
+    assert ids('sub',collection,'identity_id') == {'sub1'}, (collection, view('sub',collection))
+    assert ids('user',collection,'identity_id') == {'alpha1'}, (collection, view('user',collection))
 for name in ('clients','sessions','quotas'):
     p0=view('reseller',name,0,1)
     p1=view('reseller',name,1,1)
