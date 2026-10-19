@@ -239,10 +239,9 @@ O contrato de saída é `manager-telegram-gateway-v1`. O audit `/var/log/manager
 
 O Bot também pode expor as **consultas operacionais somente leitura já existentes** por comandos fixos:
 `/clients` (identidades), `/products`, `/sessions`, `/nodes` e `/diagnostics`.
-Esses comandos encaminham a solicitação ao `manager-telegram-operations-v1`, não ao shell.
-A autorização continua exigindo a capability administrativa `node.usage` na Automation v2, com role admin e escopos compatíveis.
-Revendedores/subrevendedores não recebem listagens globais: a liberação depende de paginação e filtragem por owner/produto no `managerd`.
-As respostas no Bot exibem um resumo de até oito registros entre os primeiros cem retornados pelo backend; o limite não representa a quantidade global. Não existem comandos de escrita nesta integração.
+`/clients`, `/products` e `/sessions`, além de `/quotas`, usam a ação tipada `ops.read`, com páginas de até oito registros e escopos do principal autenticado. Exemplo: `/clients 2` apresenta a segunda página **já filtrada**.
+Revendedores veem clientes próprios e de subrevendedores ativos dentro dos produtos permitidos; subrevendedores veem somente seus clientes; usuários veem a própria identidade. `/nodes` e `/diagnostics` permanecem exclusivamente administrativos, usando o gateway `manager-telegram-operations-v1` com `node.usage`.
+O Mini App pode consumir `ops.read` pelo gateway já existente, mas ainda não dispõe das telas visuais. Nenhum dos comandos executa shell ou cria/revoga acessos.
 
 O Bot usa `getUpdates` por HTTPS contra `https://api.telegram.org`, portanto não abre porta pública, não exige webhook e não altera firewall. O bot token é lido do mesmo arquivo root-only usado pela autenticação do Mini App e nunca aparece em argv, audit ou mensagens de erro.
 
