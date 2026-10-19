@@ -17,6 +17,7 @@ DATA_DIR="${MANAGER_TELEGRAM_BOT_DATA_DIR:-/var/lib/manager/telegram-bot}"
 OFFSET_FILE="$DATA_DIR/offset"
 AUDIT_FILE="${MANAGER_TELEGRAM_BOT_AUDIT_FILE:-/var/log/manager/telegram-bot-audit.jsonl}"
 GATEWAY_MODULE="${MANAGER_TELEGRAM_GATEWAY_MODULE:-$MANAGER_HOME/modules/telegram_gateway.sh}"
+OPERATIONS_MODULE="${MANAGER_TELEGRAM_OPERATIONS_MODULE:-$MANAGER_HOME/modules/telegram_operations.sh}"
 SERVICE_FILE="/etc/systemd/system/manager-telegram-bot.service"
 CONTRACT="manager-telegram-bot-ingress-v1"
 OFFICIAL_API_BASE="https://api.telegram.org"
@@ -145,6 +146,7 @@ status() {
   printf 'gateway_contract=manager-telegram-gateway-request-v1\n'
   printf 'authorization_authority=automation-v2\n'
   printf 'typed_bot_actions=system.describe,node.usage,connection.status\n'
+  printf 'read_only_bot_operations=identities,products,sessions,nodes,diagnostics\n'
   printf 'service_enabled=%s\nservice_active=%s\n' "$enabled" "$active"
   printf 'token_configured=%s\npoll_timeout_seconds=%s\n' "$token" "$timeout"
   printf 'arbitrary_shell=0\n'
@@ -173,7 +175,7 @@ poll_once() {
   local timeout
   timeout="$(read_field "$CONFIG_FILE" poll_timeout_seconds)"
   [[ "$timeout" =~ ^[0-9]+$ ]] && (( 10#$timeout >= 1 && 10#$timeout <= 50 )) || timeout="$DEFAULT_POLL_TIMEOUT"
-  python3 - "$CONTRACT" "$TOKEN_FILE" "$OFFSET_FILE" "$AUDIT_FILE" "$GATEWAY_MODULE" "$BOT_DIR" "$timeout" "$OFFICIAL_API_BASE" <<'PY'
+  python3 - "$CONTRACT" "$TOKEN_FILE" "$OFFSET_FILE" "$AUDIT_FILE" "$GATEWAY_MODULE" "$BOT_DIR" "$timeout" "$OFFICIAL_API_BASE" "$OPERATIONS_MODULE" <<'PY'
 import json
 import os
 import re
@@ -187,12 +189,14 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-contract, token_file, offset_file, audit_file, gateway, bot_dir, timeout_s, official_base = sys.argv[1:9]
+contract, token_file, offset_file, audit_file, gateway, bot_dir, timeout_s, official_base, operations_module = sys.argv[1:10]
 timeout = int(timeout_s)
 MAX_RESPONSE = 1024 * 1024
 MAX_REPLY = 3500
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$")
 SENSITIVE_RE = re.compile(r"(?i)(password|passwd|secret|private[_-]?key|credential|token|signature|hash|nonce|query_id|username|first_name|init[_-]?data)")
+READ_COMMANDS = {"/clients": "identities", "/products": "products", "/sessions": "sessions",
+                 "/nodes": "nodes", "/diagnostics": "diagnostics"}
 
 
 def die(message, code=70):
@@ -301,6 +305,8 @@ def command_for(text):
         return ('node','node.usage',{})
     if cmd == '/status' and len(parts)==2 and ID_RE.fullmatch(parts[1]):
         return ('status','connection.status',{'id':parts[1]})
+    if cmd in READ_COMMANDS and len(parts)==1:
+        return (cmd.lstrip('/'),'read:'+READ_COMMANDS[cmd],{})
     return ('help','',{})
 
 
@@ -321,9 +327,50 @@ def safe_clone(value):
     return str(value)[:1000]
 
 
+def concise(value, limit=90):
+    if not isinstance(value, (str, int, float, bool)):
+        return ""
+    return re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", str(value))[:limit]
+
+
+def format_operational_reply(payload):
+    operation = payload.get('operation')
+    data = payload.get('result')
+    if not isinstance(data, dict) or data.get('contract') != 'manager-automation-read-ops-v1' or data.get('kind') != operation:
+        return 'Resposta operacional indisponível.'
+    if operation == 'diagnostics':
+        summary = data.get('summary')
+        if not isinstance(summary, dict):
+            return 'Resposta operacional indisponível.'
+        fields = ('load1', 'memory_used_percent', 'root_disk_used_percent',
+                  'ssh', 'wireguard', 'openvpn', 'automation_v2', 'telegram_bot')
+        lines = ['Diagnóstico do nó']
+        lines += [f'{key}: {concise(summary[key])}' for key in fields if key in summary]
+        return '\n'.join(lines)[:MAX_REPLY]
+    headings = {
+        'identities': ('Clientes', ('id', 'state', 'owner', 'product_id', 'quota_used_bytes', 'quota_bytes')),
+        'products': ('Produtos', ('id', 'name', 'enabled', 'max_sessions', 'traffic_quota_bytes')),
+        'sessions': ('Sessões', ('identity_id', 'session_id', 'protocol', 'remaining_seconds')),
+        'nodes': ('Nós', ('node_id', 'state', 'sessions', 'capacity', 'cpu_percent')),
+    }
+    if operation not in headings or not isinstance(data.get('items'), list):
+        return 'Resposta operacional indisponível.'
+    title, fields = headings[operation]
+    items = data['items']
+    lines = [f'{title} — {len(items)} resultado(s) nesta consulta (máximo 100).']
+    for item in items[:8]:
+        if isinstance(item, dict):
+            summary = ' | '.join(f'{key}: {concise(item[key])}' for key in fields if key in item)
+            if summary:
+                lines.append('- ' + summary)
+    if len(items) > 8:
+        lines.append(f'... mais {len(items)-8} resultado(s) não exibidos.')
+    return '\n'.join(lines)[:MAX_REPLY]
+
+
 def format_reply(command, gateway_result=None):
     if command == 'help':
-        return 'Comandos: /describe, /node, /status ID'
+        return 'Comandos: /describe, /node, /status ID, /clients, /products, /sessions, /nodes, /diagnostics'
     if not isinstance(gateway_result,dict):
         return 'MANAGER indisponível. Tente novamente.'
     code=gateway_result.get('code',70)
@@ -336,6 +383,8 @@ def format_reply(command, gateway_result=None):
         if code == 64:
             return 'Comando ou parâmetros recusados.'
         return 'MANAGER indisponível. Tente novamente.'
+    if gateway_result.get('contract') == 'manager-telegram-operations-v1':
+        return format_operational_reply(gateway_result)
     payload={'action_id':gateway_result.get('action_id'),'cached':bool(gateway_result.get('cached',False))}
     if isinstance(gateway_result.get('result'),dict):
         payload['result']=safe_clone(gateway_result['result'])
@@ -346,14 +395,25 @@ def format_reply(command, gateway_result=None):
 
 
 def dispatch(uid, update_id, action, params):
-    request={'contract':'manager-telegram-gateway-request-v1','request_id':f'bot-{update_id:020d}','action_id':action,'params':params}
+    is_read = action.startswith('read:')
+    if is_read:
+        operation = action[5:]
+        if operation not in READ_COMMANDS.values() or params:
+            raise RuntimeError('bot-operation-invalid')
+        request = {'contract':'manager-telegram-operations-request-v1',
+                   'request_id':f'bot-ops-{update_id:020d}', 'operation':operation, 'params':{}}
+    else:
+        request={'contract':'manager-telegram-gateway-request-v1','request_id':f'bot-{update_id:020d}','action_id':action,'params':params}
     fd,path=tempfile.mkstemp(prefix='.bot-request.',suffix='.json',dir=bot_dir,text=True)
     try:
         os.fchmod(fd,0o600)
         with os.fdopen(fd,'w',encoding='utf-8') as fh:
             json.dump(request,fh,sort_keys=True,separators=(',',':'),ensure_ascii=False); fh.write('\n')
-        proc=subprocess.run([gateway,'--call-bot-user',str(uid),path],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL,text=True,timeout=210,check=False)
+        target = operations_module if is_read else gateway
+        if is_read and not (os.path.isfile(target) and os.access(target, os.X_OK)):
+            raise RuntimeError('bot-operations-unavailable')
+        proc=subprocess.run([target,'--call-bot-user',str(uid),path],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL,text=True,timeout=280 if is_read else 210,check=False)
         try:
             obj=json.loads(proc.stdout)
         except Exception:
@@ -408,7 +468,7 @@ try:
             raise RuntimeError('gateway-temporary-failure')
         reply=format_reply(command,obj)
         send(chat_id,reply)
-        cached=1 if obj.get('cached') else 0
+        cached=1 if obj.get('cached') or obj.get('authorization_cached') else 0
         audit('gateway-reply',update_id,uid,command,action,code,cached,'allow' if code==0 else 'deny')
         write_offset(update_id+1); offset=update_id+1; processed+=1
     print(f'processed={processed}')
