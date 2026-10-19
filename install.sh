@@ -113,6 +113,11 @@ FILES=(
   "modules/telegram_gateway.sh"
   "modules/telegram_operations.sh"
   "modules/telegram_bot.sh"
+  "modules/telegram_miniapp.sh"
+  "modules/telegram_miniapp_server.py"
+  "web/telegram/index.html"
+  "web/telegram/app.css"
+  "web/telegram/app.js"
   "modules/policy_engine.sh"
   "modules/session_engine.sh"
   "modules/protocol_leases.sh"
@@ -166,6 +171,10 @@ for file in "${FILES[@]}"; do
   [[ -s "$TMP/$file" ]] || { echo "[ERRO] Arquivo vazio: $file" >&2; exit 1; }
 done
 
+python3 - "$TMP/modules/telegram_miniapp_server.py" <<'PYTEST'
+import ast, pathlib, sys
+ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+PYTEST
 for script in manager rollback.sh uninstall.sh lib/*.sh modules/*.sh; do
   [[ -f "$TMP/$script" ]] || continue
   bash -n "$TMP/$script"
@@ -178,7 +187,7 @@ NEW_VERSION="$(tr -d '[:space:]' < "$TMP/VERSION")"
 }
 
 STAGE="$TMP/stage"
-mkdir -p "$STAGE/lib" "$STAGE/modules" "$ETC_DIR"
+mkdir -p "$STAGE/lib" "$STAGE/modules" "$STAGE/web/telegram" "$ETC_DIR"
 chmod 0755 "$ETC_DIR"
 install -m 0644 "$TMP/VERSION" "$STAGE/VERSION"
 for lib in "$TMP"/lib/*.sh; do install -m 0644 "$lib" "$STAGE/lib/$(basename "$lib")"; done
@@ -188,13 +197,17 @@ install -m 0755 "$TMP/uninstall.sh" "$STAGE/uninstall.sh"
 for script in "$TMP"/modules/*.sh; do
   install -m 0755 "$script" "$STAGE/modules/$(basename "$script")"
 done
+install -m 0644 "$TMP/modules/telegram_miniapp_server.py" "$STAGE/modules/telegram_miniapp_server.py"
+for asset in index.html app.css app.js; do
+  install -m 0644 "$TMP/web/telegram/$asset" "$STAGE/web/telegram/$asset"
+done
 
 if [[ -d "$INSTALL_DIR" ]]; then
   rm -rf "$ROLLBACK_DIR"
   cp -a "$INSTALL_DIR" "$ROLLBACK_DIR"
 fi
 
-mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/modules"
+mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/modules" "$INSTALL_DIR/web/telegram"
 find "$INSTALL_DIR/lib" -maxdepth 1 -type f -name '*.sh' -delete 2>/dev/null || true
 find "$INSTALL_DIR/modules" -maxdepth 1 -type f -name '*.sh' -delete 2>/dev/null || true
 install -m 0644 "$STAGE/VERSION" "$INSTALL_DIR/VERSION"
@@ -204,6 +217,10 @@ install -m 0755 "$STAGE/rollback.sh" "$INSTALL_DIR/rollback.sh"
 install -m 0755 "$STAGE/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
 for script in "$STAGE"/modules/*.sh; do
   install -m 0755 "$script" "$INSTALL_DIR/modules/$(basename "$script")"
+done
+install -m 0644 "$STAGE/modules/telegram_miniapp_server.py" "$INSTALL_DIR/modules/telegram_miniapp_server.py"
+for asset in index.html app.css app.js; do
+  install -m 0644 "$STAGE/web/telegram/$asset" "$INSTALL_DIR/web/telegram/$asset"
 done
 
 ln -sfn "$INSTALL_DIR/manager" "$BIN"
@@ -298,6 +315,9 @@ fi
 }
 "$INSTALL_DIR/modules/telegram_bot.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] O ingresso Telegram Bot não pôde reanexar seu estado. Use: manager telegram bot status" >&2
+}
+"$INSTALL_DIR/modules/telegram_miniapp.sh" --install >/dev/null 2>&1 || {
+  echo "[AVISO] Mini App não pôde reanexar sua unidade. Use: manager telegram miniapp status" >&2
 }
 "$INSTALL_DIR/modules/hive_lifecycle.sh" --install >/dev/null 2>&1 || {
   echo "[AVISO] A Colmeia iniciou, mas não pôde se vincular ao lifecycle de uninstall/rollback. Revise: /opt/manager/modules/hive_lifecycle.sh --status" >&2
