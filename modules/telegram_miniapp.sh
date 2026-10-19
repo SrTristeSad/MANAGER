@@ -96,7 +96,7 @@ status() {
   init_state
   local enabled active=0
   enabled="$(field "$CONF" enabled)"
-  systemctl is-active --quiet manager-telegram-miniapp.service && active=1 || true
+  if systemctl is-active --quiet manager-telegram-miniapp.service; then active=1; fi
   printf 'contract=%s\norigin=%s\nport=%s\nenabled=%s\nactive=%s\n' \
     "$CONTRACT" "$(field "$CONF" origin)" "$(field "$CONF" port)" "$enabled" "$active"
   printf 'bind_address=127.0.0.1\ntransport=external-https-reverse-proxy\nmode=read-only\n'
@@ -109,7 +109,10 @@ enable() {
   local origin port
   origin="$(field "$CONF" origin)"
   port="$(field "$CONF" port)"
-  valid_origin "$origin" && valid_port "$port" || { echo "Configure primeiro a origem HTTPS" >&2; return 64; }
+  if ! valid_origin "$origin" || ! valid_port "$port"; then
+    echo "Configure primeiro a origem HTTPS" >&2
+    return 64
+  fi
   [[ -f "$SERVER" ]] && [[ -f "$MANAGER_HOME/web/telegram/index.html" ]] || return 70
   service_file
   write_conf 1 "$origin" "$port"
@@ -143,7 +146,7 @@ serve() {
   local origin port
   origin="$(field "$CONF" origin)"
   port="$(field "$CONF" port)"
-  valid_origin "$origin" && valid_port "$port" || exit 64
+  if ! valid_origin "$origin" || ! valid_port "$port"; then exit 64; fi
   exec python3 -B "$SERVER" "$origin" "$port"
 }
 
