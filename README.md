@@ -606,3 +606,8 @@ O CI cobre syntax/ShellCheck, lifecycle, Connection/Session Engine, products/quo
 ## Origem
 
 O SSHPlus Manager original foi desenvolvido por **@crazy_vpn** e deu origem a vários forks comunitários. O MANAGER preserva a administração simples por terminal, evoluindo para identidade, automação, leases, accounting, produtos e operação multi-servidor.
+
+
+### Telegram Mini App visual (0.9 em desenvolvimento)
+
+O painel responsivo permite consultar clientes, sessões, produtos e cotas com RBAC e paginação. A porta do backend abre apenas em `127.0.0.1` e exige reverse proxy HTTPS configurado pelo operador; o Mini App fica desabilitado por padrão. Consulte [Guia do Telegram Mini App](docs/TELEGRAM_MINIAPP.md).

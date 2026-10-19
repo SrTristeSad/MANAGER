@@ -1,0 +1,42 @@
+name: Telegram Mini App UI E2E
+
+on:
+  pull_request:
+    paths:
+      - modules/telegram_miniapp.sh
+      - modules/telegram_miniapp_server.py
+      - web/telegram/**
+      - modules/telegram_gateway.sh
+      - modules/telegram_auth.sh
+      - modules/automation_v2.sh
+      - install.sh
+      - uninstall.sh
+      - rollback.sh
+      - manager
+      - docs/TELEGRAM_MINIAPP.md
+      - .github/scripts/telegram-miniapp-ui-e2e.sh
+      - .github/workflows/telegram-miniapp-ui.yml
+  push:
+    branches: [main]
+    paths:
+      - modules/telegram_miniapp.sh
+      - modules/telegram_miniapp_server.py
+      - web/telegram/**
+      - install.sh
+      - uninstall.sh
+      - rollback.sh
+      - manager
+      - .github/scripts/telegram-miniapp-ui-e2e.sh
+      - .github/workflows/telegram-miniapp-ui.yml
+
+permissions:
+  contents: read
+
+jobs:
+  miniapp-ui-e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify Mini App HTTP bridge, auth, RBAC and lifecycle
+        shell: bash
+        run: bash .github/scripts/telegram-miniapp-ui-e2e.sh

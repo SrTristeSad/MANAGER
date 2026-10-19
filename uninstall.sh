@@ -127,6 +127,20 @@ elif $PURGE; then
   rm -f /etc/manager/automation/v2/hive-controller.conf /var/log/manager/hive-remote-audit.jsonl
 fi
 
+# Mini App sempre usa porta local opt-in. Detach antes da Automation v2.
+if [[ -x /opt/manager/modules/telegram_miniapp.sh ]]; then
+  if $PURGE; then
+    /opt/manager/modules/telegram_miniapp.sh --purge >/dev/null 2>&1 || true
+  else
+    /opt/manager/modules/telegram_miniapp.sh --detach >/dev/null 2>&1 || true
+  fi
+else
+  systemctl disable --now manager-telegram-miniapp.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/manager-telegram-miniapp.service
+  if $PURGE; then rm -rf /etc/manager/telegram/miniapp; fi
+  systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
 # Telegram Bot long polling não abre listener, mas depende da Automation v2.
 # A unidade sai antes do managerd; estado/offset sobrevivem ao uninstall normal.
 if [[ -x /opt/manager/modules/telegram_bot.sh ]]; then
