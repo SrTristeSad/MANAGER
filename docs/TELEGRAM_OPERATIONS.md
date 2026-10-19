@@ -74,7 +74,10 @@ Mini App/backend, passando `initData` por stdin:
 cat initdata.txt | sudo /opt/manager/modules/telegram_operations.sh --call-stdin request.json
 ```
 
-O modo `--call-bot-user` existe apenas como integração interna e não adiciona novos comandos de escrita ou leitura ao parser público do Bot nesta etapa.
+O Bot utiliza o modo interno `--call-bot-user` para os comandos públicos `/clients`, `/products`, `/sessions`, `/nodes` e `/diagnostics`.
+Cada comando corresponde a uma operação allowlisted sem parâmetros, exige a autorização administrativa `node.usage` pelo gateway existente e devolve um resumo textual sem chaves ou credenciais.
+Erros de autorização e limites são devolvidos como mensagens genéricas. Falhas temporárias não avançam o offset de processamento até que a operação possa ser repetida.
+Revendedores e subrevendedores permanecem sem acesso às listagens globais até a implementação de filtros por escopo no lado servidor.
 
 ## Próximas etapas
 
