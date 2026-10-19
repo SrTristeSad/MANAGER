@@ -267,6 +267,6 @@ A unidade `manager-telegram-bot.service` é opcional e usa long polling. Estado 
 
 ## Próximas fatias da 0.9
 
-A fundação de ingresso Bot + Mini App da 0.9.0 fica funcionalmente completa com o long polling. A interface visual de clientes, sessões, produtos e cotas está disponível; as fases seguintes ampliam recursos administrativos de nós e diagnósticos. Operações de escrita no Bot serão expostas apenas com confirmação explícita na UX. Webhook pode ser adicionado como transporte alternativo futuro sem mudar a autoridade do gateway.
+A fundação de ingresso Bot + Mini App da 0.9.0 fica funcionalmente completa com o long polling. A interface visual de clientes, sessões, produtos e cotas está disponível, junto às telas administrativas de nós e diagnósticos protegidas pela capability `node.usage`. Operações de escrita no Bot serão expostas apenas com confirmação explícita na UX. Webhook pode ser adicionado como transporte alternativo futuro sem mudar a autoridade do gateway.
 
 O Telegram permanece apenas uma interface do control plane existente, não uma nova autoridade paralela.
