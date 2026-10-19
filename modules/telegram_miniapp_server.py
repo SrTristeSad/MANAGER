@@ -90,9 +90,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(403, {"ok": False, "error": "host-not-allowed"})
         if self.path == "/healthz":
             return self.reply(200, {"ok": True, "contract": CONTRACT})
-        if self.path not in ASSET_MAP:
+        # Telegram launch parameters may appear in the initial URL query.
+        static_path = urllib.parse.urlsplit(self.path).path
+        if static_path not in ASSET_MAP:
             return self.reply(404, {"ok": False, "error": "not-found"})
-        filename, kind = ASSET_MAP[self.path]
+        filename, kind = ASSET_MAP[static_path]
         try:
             file = ASSETS / filename
             if file.is_symlink() or not file.is_file():
@@ -171,7 +173,7 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, TypeError):
                 return self.reply(503, {"ok": False, "error": "backend-unavailable"})
             if result.returncode != 0 or not data.get("ok"):
-                http_code = {64: 400, 65: 409, 67: 403, 75: 429}.get(status, 503)
+                http_code = {64: 400, 65: 409, 66: 403, 67: 403, 75: 429, 77: 403}.get(status, 503)
                 return self.reply(http_code, {"ok": False, "error": "access-denied" if http_code == 403 else "request-failed"})
             result_data = data.get("result")
             view_data = result_data.get("view") if isinstance(result_data, dict) else None
