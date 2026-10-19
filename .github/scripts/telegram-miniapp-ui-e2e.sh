@@ -19,10 +19,10 @@ sudo manager telegram miniapp status | grep -q '^origin=https://mini.example.inv
 sudo /opt/manager/modules/resellers.sh --create-reseller resellerA reseller '' 10 1
 sudo /opt/manager/modules/resellers.sh --create-reseller resellerB reseller '' 10 1
 sudo manager automation v2 principal create app-admin admin '*'
-sudo manager automation v2 principal scope app-admin '*' '*' ops.read
+sudo manager automation v2 principal scope app-admin '*' '*' ops.read,node.usage
 sudo manager telegram identity bind 123456789 app-admin
 sudo manager automation v2 principal create app-reseller reseller resellerA PLAN_A
-sudo manager automation v2 principal scope app-reseller '*' '*' ops.read
+sudo manager automation v2 principal scope app-reseller '*' '*' ops.read,node.usage
 sudo manager telegram identity bind 223456789 app-reseller
 sudo manager automation v2 principal create app-denied admin '*'
 sudo manager automation v2 principal scope app-denied '*' '*' system.describe
@@ -122,6 +122,40 @@ assert status==200 and {x['product_id'] for x in plans['data']['items']}=={'PLAN
 status,quotas=scoped(223456789,'quotas')
 assert status==200 and {x['identity_id'] for x in quotas['data']['items']}=={'clientA'},quotas
 
+# Administrative snapshots reuse node.usage and never grant global visibility to resellers.
+status,nodes=scoped(123456789,'nodes')
+assert status==200 and nodes['ok'],(status,nodes)
+assert nodes['data']['contract']=='manager-telegram-miniapp-admin-view-v1'
+assert nodes['data']['view']=='nodes' and nodes['data']['page']==0
+assert nodes['data']['limit']==8 and nodes['data']['count']==len(nodes['data']['items'])
+assert len(nodes['data']['items'])<=8
+assert isinstance(nodes['data']['has_more'],bool)
+assert isinstance(nodes['data']['capped'],bool)
+assert nodes['data']['has_more'] is False or nodes['data']['next_page']==1
+for node in nodes['data']['items']:
+    assert isinstance(node,dict)
+    assert 'password' not in node and 'private_key' not in node and 'token' not in node
+status,node_page=scoped(123456789,'nodes',page=1,limit=1)
+assert status==200 and node_page['data']['page']==1 and len(node_page['data']['items'])<=1
+
+status,diagnostics=scoped(123456789,'diagnostics')
+assert status==200 and diagnostics['ok'],(status,diagnostics)
+assert diagnostics['data']['contract']=='manager-telegram-miniapp-admin-view-v1'
+assert diagnostics['data']['view']=='diagnostics'
+assert diagnostics['data']['has_more'] is False
+summary=diagnostics['data']['summary']
+assert 0<=summary['memory_used_percent']<=100
+assert 0<=summary['root_disk_used_percent']<=100
+for key in ('ssh','wireguard','openvpn','automation_v2','telegram_bot'):
+    assert summary[key] in ('active','inactive','failed','activating','deactivating','unknown')
+assert not ({'password','token','private_key','request_id','telegram_user_id','principal_id'} & set(summary))
+assert scoped(123456789,'diagnostics',page=1)[0]==400
+
+for who in (223456789,323456789):
+    for op in ('nodes','diagnostics'):
+        code,data=scoped(who,op)
+        assert code==403,(who,op,code,data)
+# RBAC revalidation: removing the admin capability blocks even fresh snapshots.
 status,p0=scoped(123456789,page=0,limit=1)
 status2,p1=scoped(123456789,page=1,limit=1)
 assert status==status2==200
@@ -134,6 +168,8 @@ assert scoped(123456789,init='tampered')[0]==403
 assert scoped(123456789,view='nodes')[0]==400
 assert scoped(123456789,limit=999)[0]==400
 assert call('/api/read',{'init_data':init_data(123456789),'view':'clients','page':0,'limit':8,'owner':'resellerB'})['status']==400
+assert call('/api/read',{'init_data':init_data(123456789),'view':'nodes','page':0,'limit':8,'operation':'diagnostics'})['status']==400
+assert call('/api/read',{'init_data':init_data(123456789),'view':'diagnostics','page':0,'limit':8,'params':{}})['status']==400
 assert call('/api/read',{'init_data':init_data(123456789),'view':'clients','page':0,'limit':8},method='PUT')['status']==405
 
 # No replay of owner access after revocation; backend must recheck scope.
@@ -154,4 +190,5 @@ python3 - <<'PY'
 import ast,pathlib
 ast.parse(pathlib.Path('modules/telegram_miniapp_server.py').read_text())
 PY
+node --check web/telegram/app.js
 git diff --exit-code
