@@ -610,4 +610,4 @@ O SSHPlus Manager original foi desenvolvido por **@crazy_vpn** e deu origem a v�
 
 ### Telegram Mini App visual (0.9 em desenvolvimento)
 
-O painel responsivo permite consultar clientes, sessões, produtos e cotas com RBAC e paginação. A porta do backend abre apenas em `127.0.0.1` e exige reverse proxy HTTPS configurado pelo operador; o Mini App fica desabilitado por padrão. Consulte [Guia do Telegram Mini App](docs/TELEGRAM_MINIAPP.md).
+O painel responsivo permite consultar clientes, sessões, produtos e cotas com RBAC e paginação, além de nós e diagnósticos para administradores autorizados. A porta do backend abre apenas em `127.0.0.1` e exige reverse proxy HTTPS configurado pelo operador; o Mini App fica desabilitado por padrão. Consulte [Guia do Telegram Mini App](docs/TELEGRAM_MINIAPP.md).
