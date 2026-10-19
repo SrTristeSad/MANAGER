@@ -330,7 +330,7 @@ def safe_clone(value):
 def concise(value, limit=90):
     if not isinstance(value, (str, int, float, bool)):
         return ""
-    return re.sub(r"[\\x00-\\x1f\\x7f-\\x9f]", " ", str(value))[:limit]
+    return re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", str(value))[:limit]
 
 
 def format_operational_reply(payload):
@@ -346,7 +346,7 @@ def format_operational_reply(payload):
                   'ssh', 'wireguard', 'openvpn', 'automation_v2', 'telegram_bot')
         lines = ['Diagnóstico do nó']
         lines += [f'{key}: {concise(summary[key])}' for key in fields if key in summary]
-        return '\\n'.join(lines)[:MAX_REPLY]
+        return '\n'.join(lines)[:MAX_REPLY]
     headings = {
         'identities': ('Clientes', ('id', 'state', 'owner', 'product_id', 'quota_used_bytes', 'quota_bytes')),
         'products': ('Produtos', ('id', 'name', 'enabled', 'max_sessions', 'traffic_quota_bytes')),
@@ -365,7 +365,7 @@ def format_operational_reply(payload):
                 lines.append('- ' + summary)
     if len(items) > 8:
         lines.append(f'... mais {len(items)-8} resultado(s) não exibidos.')
-    return '\\n'.join(lines)[:MAX_REPLY]
+    return '\n'.join(lines)[:MAX_REPLY]
 
 
 def format_reply(command, gateway_result=None):
