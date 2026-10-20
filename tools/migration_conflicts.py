@@ -31,8 +31,20 @@ def main():
     parser.add_argument("archive", type=Path)
     args = parser.parse_args()
     try:
-        # Use NSS to include system and network-backed account names.
-        output = conflicts(args.archive, (entry.pw_name for entry in pwd.getpwall()))
+        # NSS name lookup also detects accounts not enumerated by getpwall().
+        validation = inspect(args.archive)
+        if not validation["ok"]:
+            raise ValueError("archive-invalid")
+        with tarfile.open(args.archive, "r:gz") as handle:
+            names = [row.split("|", 1)[0] for row in handle.extractfile("users.db").read().decode("utf-8").splitlines()]
+        existing = []
+        for name in names:
+            try:
+                pwd.getpwnam(name)
+            except KeyError:
+                continue
+            existing.append(name)
+        output = conflicts(args.archive, existing)
     except (OSError, ValueError, UnicodeError, tarfile.TarError):
         print(json.dumps({"contract": "manager-migration-conflicts-v1",
                           "ok": False, "error": "preflight-failed", "read_only": True}))
