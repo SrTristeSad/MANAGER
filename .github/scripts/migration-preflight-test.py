@@ -39,7 +39,7 @@ with tempfile.TemporaryDirectory() as temp:
     safe = archive_at(folder, {"manifest": manifest, "users.db": "alice|hash||/bin/bash|1|owner\n"})
     check(safe, True)
     digest = hashlib.sha256(safe.read_bytes()).hexdigest()
-    Path(str(safe) + ".sha256").write_text(f"{digest}  {safe.resolve()}\\n")
+    Path(str(safe) + ".sha256").write_text(f"{digest}  {safe.resolve()}\n")
     check(safe, True)
     Path(str(safe) + ".sha256").write_text("0" * 64 + f"  {safe.name}\n")
     check(safe, False)
