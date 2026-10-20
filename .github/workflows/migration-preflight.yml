@@ -4,15 +4,19 @@ on:
     paths:
       - 'tools/migration_preflight.py'
       - 'tools/migration_conflicts.py'
+      - 'tools/migration_plan.py'
       - '.github/scripts/migration-preflight-test.py'
       - '.github/scripts/migration-conflicts-test.py'
+      - '.github/scripts/migration-plan-test.py'
       - '.github/workflows/migration-preflight.yml'
   pull_request:
     paths:
       - 'tools/migration_preflight.py'
       - 'tools/migration_conflicts.py'
+      - 'tools/migration_plan.py'
       - '.github/scripts/migration-preflight-test.py'
       - '.github/scripts/migration-conflicts-test.py'
+      - '.github/scripts/migration-plan-test.py'
       - '.github/workflows/migration-preflight.yml'
 jobs:
   archive-preflight:
@@ -25,3 +29,5 @@ jobs:
           python3 .github/scripts/migration-preflight-test.py
           python3 -m py_compile tools/migration_conflicts.py
           python3 .github/scripts/migration-conflicts-test.py
+          python3 -m py_compile tools/migration_plan.py
+          python3 .github/scripts/migration-plan-test.py
