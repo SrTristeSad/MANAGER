@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 set -x
 
+sudo python3 .github/scripts/telegram-confirmed-revoke-unit.py
 source_url="file://${GITHUB_WORKSPACE}"
 sudo env MANAGER_ALLOW_FILE_SOURCE=1 MANAGER_REPO_RAW="$source_url" bash install.sh
 test "$(sudo cat /opt/manager/VERSION)" = "$(cat VERSION)"
