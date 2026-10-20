@@ -142,6 +142,10 @@ FILES=(
   "modules/performance.sh"
   "modules/logs.sh"
   "modules/profiles.sh"
+  "tools/migration_preflight.py"
+  "tools/migration_conflicts.py"
+  "tools/migration_plan.py"
+  "tools/migration_approval.py"
 )
 
 curl_fetch() {
@@ -171,9 +175,10 @@ for file in "${FILES[@]}"; do
   [[ -s "$TMP/$file" ]] || { echo "[ERRO] Arquivo vazio: $file" >&2; exit 1; }
 done
 
-python3 - "$TMP/modules/telegram_miniapp_server.py" <<'PYTEST'
+python3 - "$TMP/modules/telegram_miniapp_server.py" "$TMP"/tools/*.py <<'PYTEST'
 import ast, pathlib, sys
-ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+for path in sys.argv[1:]:
+    ast.parse(pathlib.Path(path).read_text(encoding="utf-8"))
 PYTEST
 for script in manager rollback.sh uninstall.sh lib/*.sh modules/*.sh; do
   [[ -f "$TMP/$script" ]] || continue
@@ -187,7 +192,7 @@ NEW_VERSION="$(tr -d '[:space:]' < "$TMP/VERSION")"
 }
 
 STAGE="$TMP/stage"
-mkdir -p "$STAGE/lib" "$STAGE/modules" "$STAGE/web/telegram" "$ETC_DIR"
+mkdir -p "$STAGE/lib" "$STAGE/modules" "$STAGE/tools" "$STAGE/web/telegram" "$ETC_DIR"
 chmod 0755 "$ETC_DIR"
 install -m 0644 "$TMP/VERSION" "$STAGE/VERSION"
 for lib in "$TMP"/lib/*.sh; do install -m 0644 "$lib" "$STAGE/lib/$(basename "$lib")"; done
@@ -198,6 +203,7 @@ for script in "$TMP"/modules/*.sh; do
   install -m 0755 "$script" "$STAGE/modules/$(basename "$script")"
 done
 install -m 0644 "$TMP/modules/telegram_miniapp_server.py" "$STAGE/modules/telegram_miniapp_server.py"
+for tool in "$TMP"/tools/*.py; do install -m 0644 "$tool" "$STAGE/tools/$(basename "$tool")"; done
 for asset in index.html app.css app.js; do
   install -m 0644 "$TMP/web/telegram/$asset" "$STAGE/web/telegram/$asset"
 done
@@ -207,7 +213,7 @@ if [[ -d "$INSTALL_DIR" ]]; then
   cp -a "$INSTALL_DIR" "$ROLLBACK_DIR"
 fi
 
-mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/modules" "$INSTALL_DIR/web/telegram"
+mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/modules" "$INSTALL_DIR/tools" "$INSTALL_DIR/web/telegram"
 find "$INSTALL_DIR/lib" -maxdepth 1 -type f -name '*.sh' -delete 2>/dev/null || true
 find "$INSTALL_DIR/modules" -maxdepth 1 -type f -name '*.sh' -delete 2>/dev/null || true
 install -m 0644 "$STAGE/VERSION" "$INSTALL_DIR/VERSION"
@@ -219,6 +225,7 @@ for script in "$STAGE"/modules/*.sh; do
   install -m 0755 "$script" "$INSTALL_DIR/modules/$(basename "$script")"
 done
 install -m 0644 "$STAGE/modules/telegram_miniapp_server.py" "$INSTALL_DIR/modules/telegram_miniapp_server.py"
+for tool in "$STAGE"/tools/*.py; do install -m 0644 "$tool" "$INSTALL_DIR/tools/$(basename "$tool")"; done
 for asset in index.html app.css app.js; do
   install -m 0644 "$STAGE/web/telegram/$asset" "$INSTALL_DIR/web/telegram/$asset"
 done
