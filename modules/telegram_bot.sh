@@ -147,6 +147,7 @@ status() {
   printf 'authorization_authority=automation-v2\n'
   printf 'typed_bot_actions=system.describe,node.usage,connection.status\n'
   printf 'read_only_bot_operations=identities,products,sessions,nodes,diagnostics\n'
+  printf 'confirmed_bot_writes=connection.revoke\n'
   printf 'service_enabled=%s\nservice_active=%s\n' "$enabled" "$active"
   printf 'token_configured=%s\npoll_timeout_seconds=%s\n' "$token" "$timeout"
   printf 'arbitrary_shell=0\n'
@@ -179,6 +180,8 @@ poll_once() {
 import json
 import os
 import re
+import secrets
+import time
 import ssl
 import stat
 import subprocess
@@ -196,6 +199,8 @@ MAX_REPLY = 3500
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$")
 SENSITIVE_RE = re.compile(r"(?i)(password|passwd|secret|private[_-]?key|credential|token|signature|hash|nonce|query_id|username|first_name|init[_-]?data)")
 READ_COMMANDS = {"/nodes": "nodes", "/diagnostics": "diagnostics"}
+PENDING_TTL_SECONDS = 120
+CONFIRM_RE = re.compile(r'^[a-f0-9]{16}$')
 SCOPED_COMMANDS = {"/clients": "clients", "/products": "products",
                    "/sessions": "sessions", "/quotas": "quotas"}
 
@@ -304,6 +309,12 @@ def command_for(text):
         return ('describe','system.describe',{})
     if cmd == '/node' and len(parts)==1:
         return ('node','node.usage',{})
+    if cmd == '/revoke' and len(parts)==2 and ID_RE.fullmatch(parts[1]):
+        return ('revoke-propose','',{'id':parts[1]})
+    if cmd == '/confirm' and len(parts)==2 and CONFIRM_RE.fullmatch(parts[1]):
+        return ('revoke-confirm','',{'code':parts[1]})
+    if cmd == '/cancel' and len(parts)==1:
+        return ('revoke-cancel','',{})
     if cmd == '/status' and len(parts)==2 and ID_RE.fullmatch(parts[1]):
         return ('status','connection.status',{'id':parts[1]})
     if cmd in SCOPED_COMMANDS and len(parts) in (1, 2):
@@ -321,6 +332,51 @@ def command_for(text):
     if cmd in READ_COMMANDS and len(parts)==1:
         return (cmd.lstrip('/'),'read:'+READ_COMMANDS[cmd],{})
     return ('help','',{})
+
+
+def pending_path(uid):
+    return os.path.join(bot_dir, f'.pending-revoke-{uid}.json')
+
+
+def write_pending(uid, target):
+    code = secrets.token_hex(8)
+    record = {'uid': uid, 'id': target, 'code': code, 'expires': int(time.time()) + PENDING_TTL_SECONDS}
+    path = pending_path(uid)
+    fd, tmp = tempfile.mkstemp(prefix='.pending.', dir=bot_dir, text=True)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+            json.dump(record, fh, separators=(',', ':'))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    finally:
+        try: os.unlink(tmp)
+        except FileNotFoundError: pass
+    return code
+
+
+def read_pending(uid, code):
+    path = pending_path(uid)
+    try:
+        secure_file(path)
+        record = json.loads(Path(path).read_text(encoding='utf-8'))
+    except (OSError, ValueError, PermissionError):
+        return None
+    if not isinstance(record, dict) or set(record) != {'uid','id','code','expires'}:
+        return None
+    if record['uid'] != uid or not isinstance(record['code'], str) or not secrets.compare_digest(record['code'], code):
+        return None
+    if type(record['expires']) is not int or record['expires'] < int(time.time()):
+        return None
+    if not isinstance(record['id'], str) or not ID_RE.fullmatch(record['id']):
+        return None
+    return record['id']
+
+
+def clear_pending(uid):
+    try: os.unlink(pending_path(uid))
+    except FileNotFoundError: pass
 
 
 def safe_clone(value):
@@ -414,7 +470,7 @@ def format_scoped_reply(result):
 
 def format_reply(command, gateway_result=None):
     if command == 'help':
-        return 'Comandos: /describe, /node, /status ID, /clients [PÁGINA], /products [PÁGINA], /sessions [PÁGINA], /quotas [PÁGINA], /nodes, /diagnostics'
+        return 'Comandos: /describe, /node, /status ID, /clients [PÁGINA], /products [PÁGINA], /sessions [PÁGINA], /quotas [PÁGINA], /nodes, /diagnostics, /revoke ID, /confirm CÓDIGO, /cancel'
     if not isinstance(gateway_result,dict):
         return 'MANAGER indisponível. Tente novamente.'
     code=gateway_result.get('code',70)
@@ -509,12 +565,31 @@ try:
             send(chat_id,format_reply('help'))
             audit('reply-help',update_id,uid,command,decision='allow',code=0)
             write_offset(update_id+1); offset=update_id+1; processed+=1; continue
+        if command == 'revoke-propose':
+            confirmation = write_pending(uid, params['id'])
+            send(chat_id, f'REVOGAÇÃO de {params["id"]}. Confirme em até 120 segundos com /confirm {confirmation} ou cancele com /cancel. A confirmação é definitiva.')
+            audit('revoke-pending',update_id,uid,command,'connection.revoke',0,decision='pending')
+            write_offset(update_id+1); offset=update_id+1; processed+=1; continue
+        if command == 'revoke-cancel':
+            clear_pending(uid)
+            send(chat_id, 'Operação pendente cancelada.')
+            audit('revoke-cancel',update_id,uid,command,decision='cancel',code=0)
+            write_offset(update_id+1); offset=update_id+1; processed+=1; continue
+        if command == 'revoke-confirm':
+            target = read_pending(uid,params['code'])
+            if target is None:
+                send(chat_id,'Confirmação inexistente, inválida ou expirada. Use /revoke ID para iniciar novamente.')
+                audit('revoke-confirm-denied',update_id,uid,command,'connection.revoke',67,decision='deny')
+                write_offset(update_id+1); offset=update_id+1; processed+=1; continue
+            action,params = 'connection.revoke', {'id':target}
         code,obj=dispatch(uid,update_id,action,params)
         if code == 70:
             audit('gateway-temporary-failure',update_id,uid,command,action,code,decision='retry')
             raise RuntimeError('gateway-temporary-failure')
         reply=format_reply(command,obj)
         send(chat_id,reply)
+        if command == 'revoke-confirm':
+            clear_pending(uid)
         cached=1 if obj.get('cached') or obj.get('authorization_cached') else 0
         audit('gateway-reply',update_id,uid,command,action,code,cached,'allow' if code==0 else 'deny')
         write_offset(update_id+1); offset=update_id+1; processed+=1
