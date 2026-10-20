@@ -270,3 +270,10 @@ A unidade `manager-telegram-bot.service` é opcional e usa long polling. Estado 
 A fundação de ingresso Bot + Mini App da 0.9.0 fica funcionalmente completa com o long polling. A interface visual de clientes, sessões, produtos e cotas está disponível, junto às telas administrativas de nós e diagnósticos protegidas pela capability `node.usage`. Operações de escrita no Bot serão expostas apenas com confirmação explícita na UX. Webhook pode ser adicionado como transporte alternativo futuro sem mudar a autoridade do gateway.
 
 O Telegram permanece apenas uma interface do control plane existente, não uma nova autoridade paralela.
+
+
+## Revogação com confirmação no Bot (série 0.9 em desenvolvimento)
+
+Em conversa privada autenticada, `/revoke ID` cria somente uma proposta. O Bot responde com `/confirm CÓDIGO`, válido por 120 segundos e associado ao `from.id` autenticado. `/cancel` descarta a proposta. Nenhuma revogação acontece na primeira mensagem. Somente a confirmação encaminha `connection.revoke` ao gateway tipado e a Automation v2 revalida permissões, escopos e estado da credencial no momento da execução. Código inválido, expirado, conversa não privada ou principal sem permissão não executam a operação. Uma confirmação já processada não pode ser reutilizada; as tentativas temporariamente malsucedidas preservam o identificador idempotente do update Telegram.
+
+**Atenção:** habilitar operações de escrita requer validar o E2E e o ambiente Ubuntu antes de implantação em VPS de produção. Não existe shell remoto arbitrário.
