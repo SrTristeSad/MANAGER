@@ -26,8 +26,8 @@ def inspect(path):
     if sidecar.is_symlink() or not sidecar.is_file():
         raise ValueError("checksum-missing")
     checksum = sidecar.read_text(encoding="ascii")
-    match = re.fullmatch(r"([a-fA-F0-9]{64})  ([^/\\\r\n]+)\n?", checksum)
-    if not match or match.group(2) != path.name:
+    match = re.fullmatch(r"([a-fA-F0-9]{64})  ([^\r\n]+)\n?", checksum)
+    if not match or match.group(2) not in {path.name, str(path.resolve())}:
         raise ValueError("checksum-format-invalid")
     h = hashlib.sha256()
     with path.open("rb") as file:
