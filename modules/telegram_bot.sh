@@ -200,7 +200,8 @@ ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$")
 SENSITIVE_RE = re.compile(r"(?i)(password|passwd|secret|private[_-]?key|credential|token|signature|hash|nonce|query_id|username|first_name|init[_-]?data)")
 READ_COMMANDS = {"/nodes": "nodes", "/diagnostics": "diagnostics"}
 PENDING_TTL_SECONDS = 120
-CONFIRM_RE = re.compile(r'^[a-f0-9]{16}"/clients": "clients", "/products": "products",
+CONFIRM_RE = re.compile(r'^[a-f0-9]{16}$')
+SCOPED_COMMANDS = {"/clients": "clients", "/products": "products",
                    "/sessions": "sessions", "/quotas": "quotas"}
 
 
