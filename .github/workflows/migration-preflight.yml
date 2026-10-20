@@ -1,0 +1,21 @@
+name: Migration Archive Preflight
+on:
+  push:
+    paths:
+      - 'tools/migration_preflight.py'
+      - '.github/scripts/migration-preflight-test.py'
+      - '.github/workflows/migration-preflight.yml'
+  pull_request:
+    paths:
+      - 'tools/migration_preflight.py'
+      - '.github/scripts/migration-preflight-test.py'
+      - '.github/workflows/migration-preflight.yml'
+jobs:
+  archive-preflight:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and test migration preflight
+        run: |
+          python3 -m py_compile tools/migration_preflight.py
+          python3 .github/scripts/migration-preflight-test.py
