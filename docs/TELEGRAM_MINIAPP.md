@@ -43,3 +43,17 @@ A interface usa os endpoints existentes somente de leitura e o `initData` enviad
 O backend operacional limita a consulta de nós a **até 100 registros** e a Mini App pagina *esse snapshot já limitado* em grupos de até 25. Isso não é paginação global da Colmeia: uma indicação visual aparece quando o limite do backend é atingido. Cada atualização consulta novamente a autoridade. Diagnósticos exibem um único snapshot sem paginação.
 
 A busca atua somente sobre o grupo de registros carregados no cliente, não sobre todos os nós. Os indicadores usam apenas dados disponíveis; nenhum percentual ou status é inventado.
+
+
+## Telas administrativas: Nós e Diagnósticos
+
+As abas **Nós** e **Diagnósticos** utilizam o gateway operacional somente leitura já existente (`manager-telegram-operations-v1`) e sua capability `node.usage`, verificada dentro da Automation v2. Não estendem `ops.read` a dados globais.
+
+- **Nós**: último health registrado pela Colmeia no período de observação do backend, com status, sessões/capacidade, CPU, RAM, RTT e rede. É um *snapshot*, não telemetria contínua. O backend retorna no máximo 100 nós; a interface pagina o snapshot sem indicar que ele representa a totalidade da Colmeia quando o limite é atingido.
+- **Diagnósticos**: resumo local de carga, RAM, disco, reboot pendente, rota IPv4 e estados dos serviços SSH, WireGuard, OpenVPN, Automation v2 e Telegram Bot.
+
+As duas abas são **exclusivas para administradores** com o escopo de ação `node.usage`, além dos escopos de nó e pool exigidos pelo `managerd`. Revendedores, subrevendedores e usuários não recebem essas informações, mesmo se enviarem uma requisição HTTP manual à API, e a interface mostra uma mensagem de acesso recusado. Administradores sem `node.usage` também não têm acesso.
+
+`POST /api/read` aceita `view=nodes|diagnostics` sem permitir escolher principal, role ou operação interna. A ponte deriva o contrato tipado, chama `telegram_operations.sh --call-stdin`, verifica a autorização do gateway e devolve apenas o snapshot sanitizado.
+
+O snapshot de **Nós** tem paginação local de até 25 registros por vez, dentro dos 100 registros já limitados pelo backend. **Diagnósticos** não tem paginação (somente a página 0). A interface não escreve, reinicia nem altera serviços; a atualização manual refaz a autorização e a consulta.
