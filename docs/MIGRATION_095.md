@@ -12,19 +12,19 @@ Os arquivos contêm hashes de senha e são **segredos**: transporte somente por 
 
 1. Na origem, exporte os usuários pelo menu de transferência SSH do MANAGER; mantenha o `.tar.gz` e o `.sha256` juntos.
 2. Em uma VPS descartável de destino, copie ambos os arquivos por meio de um canal autenticado e criptografado. Verifique permissões restritas nos arquivos.
-3. Execute, no diretório de instalação do MANAGER:
+3. Execute a partir de um checkout confiável do repositório MANAGER (os scripts em `tools/` ainda não são distribuídos pelo instalador):
 
 ```bash
-python3 /opt/manager/tools/migration_preflight.py /caminho/manager-users-EXEMPLO.tar.gz
-python3 /opt/manager/tools/migration_conflicts.py /caminho/manager-users-EXEMPLO.tar.gz
-python3 /opt/manager/tools/migration_plan.py /caminho/manager-users-EXEMPLO.tar.gz
+python3 tools/migration_preflight.py /caminho/manager-users-EXEMPLO.tar.gz
+python3 tools/migration_conflicts.py /caminho/manager-users-EXEMPLO.tar.gz
+python3 tools/migration_plan.py /caminho/manager-users-EXEMPLO.tar.gz
 ```
 
 4. Revise `blocked_users`, `eligible_users` e `archive_sha256`. Se houver qualquer conflito de nomes, interrompa o procedimento e resolva manualmente antes de aprovar.
 5. Para validar a confirmação **sem executar restauração**, use o SHA-256 do plano:
 
 ```bash
-python3 /opt/manager/tools/migration_approval.py \
+python3 tools/migration_approval.py \
   /caminho/manager-users-EXEMPLO.tar.gz \
   --expected-sha256 SHA256_DO_PLANO
 ```
