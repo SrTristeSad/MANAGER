@@ -26,7 +26,7 @@ jobs:
   archive-preflight:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Compile and test migration preflight
         run: |
           python3 -m py_compile tools/migration_preflight.py
